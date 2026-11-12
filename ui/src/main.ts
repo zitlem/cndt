@@ -16,6 +16,7 @@ import {
   type StepInfo,
   stepPreview,
 } from "./api";
+import { SketchEditor, type Tool } from "./sketch";
 import { Viewer } from "./viewer";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -41,17 +42,52 @@ const ui = {
   modelNote: element<HTMLParagraphElement>("model-note"),
   statusPath: element<HTMLSpanElement>("status-path"),
   statusUndo: element<HTMLSpanElement>("status-undo"),
+  statusSketch: element<HTMLSpanElement>("status-sketch"),
+  sketchList: element<HTMLUListElement>("sketch-list"),
+  noSketches: element<HTMLParagraphElement>("no-sketches"),
+  newSketch: element<HTMLButtonElement>("new-sketch"),
+  planeMenu: element<HTMLDivElement>("plane-menu"),
+  sketchTools: element<HTMLDivElement>("sketch-tools"),
   toast: element<HTMLDivElement>("toast"),
 };
 
 const viewer = new Viewer(element("viewport"));
+const editor = new SketchEditor(element("viewport"), {
+  async execute(command, args) {
+    const next = await execute(command, args);
+    render(next);
+    return next;
+  },
+  fail(error) {
+    showError(error);
+    return error instanceof ApiFailure ? (error.details?.constraints ?? []) : [];
+  },
+  changed: () => updateSketchUi(),
+});
 const appWindow = getCurrentWindow();
 let current: DocumentState | null = null;
 let toastTimer: number | undefined;
 
+/** Messages for failures the interface explains better than the raw text. */
+function explain(error: unknown): string {
+  if (error instanceof ApiFailure) {
+    const named = (error.details?.constraints?.length ?? 0) > 0;
+    if (error.kind === "conflict") {
+      return named
+        ? "That can't hold together with the constraints highlighted in red. Change or delete one of them first."
+        : "The constraints can't all hold at once.";
+    }
+    if (error.kind === "redundant") {
+      return named
+        ? "Not needed: the constraints highlighted in red already fix that."
+        : "Not needed: the existing constraints already fix that.";
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function showError(error: unknown): void {
-  const message =
-    error instanceof ApiFailure || error instanceof Error ? error.message : String(error);
+  const message = explain(error);
   ui.toast.textContent = message;
   ui.toast.hidden = false;
   window.clearTimeout(toastTimer);
@@ -125,10 +161,92 @@ function render(next: DocumentState): void {
     ui.parameterList.append(item);
   }
 
+  renderSketches(next);
+  editor.update(next);
+  updateSketchUi();
+
   const title = `${dirty ? "• " : ""}${doc.name} — CNDT`;
   appWindow.setTitle(title).catch(() => {
     // The title is cosmetic; never interrupt work over it.
   });
+}
+
+const statusText: Record<string, string> = {
+  fully: "Fully constrained",
+  over: "Over-constrained",
+  unknown: "Too large to analyse",
+};
+
+function freedomText(id: string, state: DocumentState): string {
+  const freedom = state.freedom[id];
+  if (!freedom) return "";
+  const entities = state.document.sketches?.[id]?.sketch.entities ?? {};
+  if (Object.keys(entities).length === 0) return "Empty";
+  if (freedom.status === "under") {
+    const n = freedom.dof ?? 0;
+    return `${n} degree${n === 1 ? "" : "s"} of freedom`;
+  }
+  return statusText[freedom.status] ?? "";
+}
+
+function renderSketches(state: DocumentState): void {
+  const sketches = Object.entries(state.document.sketches ?? {});
+  ui.sketchList.replaceChildren();
+  ui.noSketches.hidden = sketches.length > 0;
+  for (const [id, record] of sketches) {
+    const item = globalThis.document.createElement("li");
+    item.classList.toggle("editing", editor.editing === Number(id));
+    item.title = "Click to edit";
+    const name = globalThis.document.createElement("span");
+    name.className = "name";
+    name.textContent = record.name;
+    const badge = globalThis.document.createElement("span");
+    const empty = Object.keys(record.sketch.entities).length === 0;
+    const status = empty ? "under" : (state.freedom[id]?.status ?? "under");
+    badge.className = `badge ${status}`;
+    badge.textContent = status === "fully" ? "✓" : `${record.plane.toUpperCase()}`;
+    badge.title = freedomText(id, state);
+    const remove = globalThis.document.createElement("button");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Delete ${record.name}`);
+    remove.innerHTML =
+      '<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" /></svg>';
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      guarded(async () => {
+        if (editor.editing === Number(id)) editor.close();
+        render(await execute("sketch.delete", { sketch: Number(id) }));
+      })();
+    });
+    item.addEventListener("click", () => {
+      if (current) editor.open(Number(id), current);
+      updateSketchUi();
+    });
+    item.append(name, badge, remove);
+    ui.sketchList.append(item);
+  }
+  viewer.setSketches(sketches.map(([, record]) => record));
+}
+
+function updateSketchUi(): void {
+  const editing = editor.editing;
+  ui.sketchTools.hidden = editing === null;
+  ui.sketchTools.parentElement?.classList.toggle("sketching", editing !== null);
+  ui.viewportHint.hidden = editing !== null || ui.modelEmpty.hidden;
+  for (const button of ui.sketchTools.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
+    button.classList.toggle("active", button.dataset["tool"] === editor.tool);
+  }
+  for (const item of ui.sketchList.querySelectorAll("li")) item.classList.remove("editing");
+  if (editing === null || !current) {
+    ui.statusSketch.hidden = true;
+    return;
+  }
+  const id = String(editing);
+  const index = Object.keys(current.document.sketches ?? {}).indexOf(id);
+  ui.sketchList.querySelectorAll("li")[index]?.classList.add("editing");
+  const name = current.document.sketches?.[id]?.name ?? "Sketch";
+  ui.statusSketch.textContent = `${name}: ${freedomText(id, current)}`;
+  ui.statusSketch.hidden = false;
 }
 
 /** Asks before throwing away unsaved changes. Returns true to go ahead. */
@@ -252,7 +370,55 @@ element("import-step").addEventListener(
   }),
 );
 
-element("fit").addEventListener("click", () => viewer.fit());
+element("fit").addEventListener("click", () => {
+  if (editor.editing !== null) editor.fit();
+  else viewer.fit();
+});
+
+ui.newSketch.addEventListener("click", () => {
+  const open = ui.planeMenu.hidden;
+  ui.planeMenu.hidden = !open;
+  ui.newSketch.setAttribute("aria-expanded", String(open));
+});
+for (const button of ui.planeMenu.querySelectorAll<HTMLButtonElement>("[data-plane]")) {
+  button.addEventListener(
+    "click",
+    guarded(async () => {
+      ui.planeMenu.hidden = true;
+      ui.newSketch.setAttribute("aria-expanded", "false");
+      const next = await execute("sketch.create", { plane: button.dataset["plane"] });
+      render(next);
+      const ids = Object.keys(next.document.sketches ?? {}).map(Number);
+      const created = Math.max(...ids);
+      editor.open(created, next);
+      editor.setTool("line");
+    }),
+  );
+}
+globalThis.document.addEventListener("pointerdown", (event) => {
+  const target = event.target as Node;
+  if (!ui.planeMenu.hidden && !ui.planeMenu.contains(target) && !ui.newSketch.contains(target)) {
+    ui.planeMenu.hidden = true;
+    ui.newSketch.setAttribute("aria-expanded", "false");
+  }
+});
+
+for (const button of ui.sketchTools.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
+  button.addEventListener("click", () => editor.setTool(button.dataset["tool"] as Tool));
+}
+for (const button of ui.sketchTools.querySelectorAll<HTMLButtonElement>("[data-constraint]")) {
+  button.addEventListener(
+    "click",
+    guarded(() => editor.constrain(button.dataset["constraint"] ?? "")),
+  );
+}
+element("construction").addEventListener("click", guarded(() => editor.toggleConstruction()));
+element("sketch-fit").addEventListener("click", () => editor.fit());
+element("finish-sketch").addEventListener("click", () => {
+  editor.close();
+  updateSketchUi();
+  viewer.fit();
+});
 
 ui.undo.addEventListener(
   "click",
@@ -296,10 +462,31 @@ ui.parameterForm.addEventListener("submit", (event) => {
 });
 
 // Keyboard shortcuts. Text fields keep their own undo.
+const toolKeys: Record<string, Tool> = {
+  l: "line",
+  r: "rectangle",
+  c: "circle",
+  a: "arc",
+  p: "point",
+  d: "dimension",
+};
+
 window.addEventListener("keydown", (event) => {
   const target = event.target as HTMLElement | null;
   if (target && (target.tagName === "INPUT" || target.tagName === "SELECT")) return;
   const mod = event.metaKey || event.ctrlKey;
+  if (!mod && editor.editing !== null) {
+    const key = event.key.toLowerCase();
+    const tool = toolKeys[key];
+    if (event.key === "Escape") editor.escape();
+    else if (event.key === "Delete" || event.key === "Backspace") guarded(() => editor.deleteSelection())();
+    else if (tool) editor.setTool(tool);
+    else if (key === "x") guarded(() => editor.toggleConstruction())();
+    else if (key === "f") editor.fit();
+    else return;
+    event.preventDefault();
+    return;
+  }
   if (!mod) return;
   const key = event.key.toLowerCase();
   if (key === "z" && !event.shiftKey) {

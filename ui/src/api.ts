@@ -14,12 +14,64 @@ export interface Parameter {
   comment?: string;
 }
 
+export interface XY {
+  x: number;
+  y: number;
+}
+
+export type Geometry =
+  | { type: "point"; at: XY }
+  | { type: "line"; start: number; end: number }
+  | { type: "circle"; center: number; radius: number }
+  | { type: "arc"; center: number; start: number; end: number };
+
+export interface Entity {
+  geometry: Geometry;
+  construction?: boolean;
+}
+
+/** A constraint as the core stores it: a type plus its references. */
+export interface Constraint {
+  type: string;
+  value?: number;
+  [reference: string]: unknown;
+}
+
+export interface Sketch {
+  entities: Record<string, Entity>;
+  constraints: Record<string, Constraint>;
+  next_entity: number;
+  next_constraint: number;
+}
+
+export type Plane = "xy" | "xz" | "yz";
+
+export interface SketchRecord {
+  name: string;
+  plane: Plane;
+  sketch: Sketch;
+}
+
+export type FreedomStatus = "under" | "fully" | "over" | "unknown";
+
+export interface Freedom {
+  dof: number | null;
+  redundant: number;
+  status: FreedomStatus;
+  entities: { id: number; dof: number | null; status: FreedomStatus }[];
+}
+
 export interface DocumentState {
-  document: { name: string; parameters: Record<string, Parameter> };
+  document: {
+    name: string;
+    parameters: Record<string, Parameter>;
+    sketches?: Record<string, SketchRecord>;
+  };
   path: string | null;
   dirty: boolean;
   undo: string | null;
   redo: string | null;
+  freedom: Record<string, Freedom>;
 }
 
 export interface Point3 {
@@ -42,6 +94,8 @@ export class ApiFailure extends Error {
   constructor(
     readonly kind: string,
     message: string,
+    /** For `conflict` and `redundant`: `{constraints: number[]}`. */
+    readonly details?: { constraints?: number[] },
   ) {
     super(message);
   }
@@ -50,7 +104,7 @@ export class ApiFailure extends Error {
 interface Reply<T> {
   ok: boolean;
   result?: T;
-  error?: { kind: string; message: string };
+  error?: { kind: string; message: string; details?: { constraints?: number[] } };
 }
 
 /** Sends one request and returns its result, or throws an ApiFailure. */
@@ -63,6 +117,7 @@ export async function request<T>(body: Record<string, unknown>): Promise<T> {
   throw new ApiFailure(
     reply.error?.kind ?? "internal",
     reply.error?.message ?? "the API sent an unreadable reply",
+    reply.error?.details,
   );
 }
 
