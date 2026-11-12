@@ -4,8 +4,10 @@
 //! All lengths are millimetres stored as `f64`. Inch exists only as a display
 //! and post-output setting. See `docs/architecture.md`, rules 10 and 11.
 
+use serde::{Deserialize, Serialize};
+
 /// A point in model space. Coordinates are millimetres.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point3 {
     /// X coordinate in millimetres.
     pub x: f64,
@@ -24,7 +26,7 @@ impl Point3 {
 }
 
 /// An axis-aligned bounding box in millimetres.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoundingBox {
     /// The corner with the smallest coordinates.
     pub min: Point3,

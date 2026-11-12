@@ -64,6 +64,8 @@ The process-module interface stays internal and may change until a second proces
 
 A toolpath is a sequence of typed moves and process events with per-move metadata. Simulation, the post engine and the viewport all consume this format. A post never sees model geometry.
 
+In code: `cndt_cam_core::Program` holds operations of `Step`s, each a `Move` (rapid, linear, arc, dwell) or an `Event` (tool change, spindle, coolant, stop, comment). `Program::validate` refuses unsafe programs before anything consumes them. `cndt_post::Post` loads a TOML definition from `posts/` and turns a valid program into G-code.
+
 ### 8. Machines are data
 
 A machine definition describes axes, travel limits, the kinematic chain, capabilities and controller dialect. The model must be able to describe 3-axis mills, lathes, rotary axes, and the UV axes of a wire machine from the first version, even where only 3-axis is implemented.

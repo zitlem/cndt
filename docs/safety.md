@@ -35,7 +35,7 @@ Early versions simulate the internal toolpath, not the posted G-code. A post bug
 ## Rules for contributors
 
 - Never weaken a verification check, tolerance or test to make something pass.
-- Anything that emits G-code has a golden-file test.
+- Anything that emits G-code has a golden-file test. Regenerate golden files only with `CNDT_UPDATE_GOLDEN=1 cargo test -p cndt-post`, and only after reviewing every changed line.
 - Defaults must be conservative. When a value is unknown, choose the safer one or refuse.
 - A toolpath generator that cannot produce a safe result fails with a reason. It never emits a partial or best-guess path.
 - Report a suspected unsafe-output bug as high priority, with the part, the post and the program.
