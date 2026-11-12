@@ -1,0 +1,56 @@
+# GRBL post for CNDT, for hobby and light-duty routers and mills.
+#
+# GRBL has no automatic tool changer, so a tool change stops the spindle and
+# pauses for the operator.
+#
+# UNVERIFIED: this post has not been run on a real controller. Do not set
+# `verified = true` until its output has cut a test part, and record that
+# run as docs/safety.md describes.
+
+[post]
+id = "grbl"
+name = "GRBL"
+version = "0.1.0"
+verified = false
+
+[format]
+decimals = 3
+feed_decimals = 0
+trim_zeros = true
+keep_decimal_point = false
+comment = { open = "(", close = ")", uppercase = false }
+percent_wrapped = false
+program_number_digits = 0
+
+[program]
+first_line = "({program_name})"
+start = [
+    "{header}",
+    "G21 G17 G90 G94",
+    "{work_offset}",
+]
+end = [
+    "M5",
+    "M30",
+]
+
+[codes]
+rapid = "G0"
+linear = "G1"
+arc_cw = "G2"
+arc_ccw = "G3"
+spindle_cw = "M3 S{rpm}"
+spindle_ccw = "M4 S{rpm}"
+spindle_off = "M5"
+coolant_flood = "M8"
+coolant_mist = "M7"
+coolant_off = "M9"
+stop = "M0"
+optional_stop = "M1"
+dwell = "G4 P{seconds}"
+tool_change = [
+    "M5",
+    "(Load tool {tool}, then resume)",
+    "M0",
+]
+# GRBL has no tool length table: the operator re-zeroes Z after each change.

@@ -1,0 +1,60 @@
+# Fanuc-style milling post for CNDT.
+#
+# UNVERIFIED: this post has not been run on a real controller. Do not set
+# `verified = true` until its output has cut a test part on the named
+# controller, and record that run as docs/safety.md describes.
+
+[post]
+id = "fanuc-mill"
+name = "Fanuc milling"
+version = "0.1.0"
+verified = false
+
+[format]
+decimals = 3
+feed_decimals = 1
+trim_zeros = true
+# Fanuc reads "X10" as 0.010 mm on many machines, so always keep the point.
+keep_decimal_point = true
+line_numbers = { start = 10, step = 10 }
+comment = { open = "(", close = ")", uppercase = true }
+percent_wrapped = true
+program_number_digits = 4
+
+[program]
+first_line = "O{program_number} ({program_name})"
+start = [
+    "{header}",
+    "G21 G17 G40 G49 G80 G90",
+    "{work_offset}",
+]
+end = [
+    "M9",
+    "M5",
+    "G91 G28 Z0.",
+    "G90",
+    "M30",
+]
+
+[codes]
+rapid = "G0"
+linear = "G1"
+arc_cw = "G2"
+arc_ccw = "G3"
+spindle_cw = "M3 S{rpm}"
+spindle_ccw = "M4 S{rpm}"
+spindle_off = "M5"
+coolant_flood = "M8"
+coolant_mist = "M7"
+coolant_off = "M9"
+stop = "M0"
+optional_stop = "M1"
+dwell = "G4 P{milliseconds}"
+tool_change = [
+    "M5",
+    "G91 G28 Z0.",
+    "G90",
+    "T{tool} M6",
+]
+# Applied with the first Z move after every tool change.
+tool_length_compensation = "G43 H{tool}"
