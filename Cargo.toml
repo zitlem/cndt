@@ -12,6 +12,7 @@ rust-version = "1.99"
 # Internal crates are declared here once and used as `cndt-geom.workspace = true`.
 # The layer check in xtask reads these names; see docs/architecture.md.
 [workspace.dependencies]
+cndt-api = { path = "crates/api" }
 cndt-engine = { path = "crates/engine" }
 cndt-format = { path = "crates/format" }
 cndt-geom = { path = "crates/geom" }
