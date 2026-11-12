@@ -17,6 +17,7 @@ const HEADER: &str = "// SPDX-License-Identifier: AGPL-3.0-or-later";
 /// Layer 6 is the TypeScript frontend, which has no crate.
 const LAYERS: &[(&str, u8)] = &[
     ("cndt-geom", 0),
+    ("cndt-occt-sys", 0),
     ("cndt-kernel", 1),
     ("cndt-sketch", 1),
     ("cndt-model", 2),
@@ -34,8 +35,13 @@ const LAYERS: &[(&str, u8)] = &[
     ("cndt-web", 7),
 ];
 
-/// External crates that only the named workspace crates may depend on.
-const RESTRICTED: &[(&str, &[&str])] = &[("tauri", &["cndt-desktop"])];
+/// Crates that only the named workspace crates may depend on.
+const RESTRICTED: &[(&str, &[&str])] = &[
+    // The kernel is the only door to OpenCascade (architecture rule 3).
+    ("cndt-occt-sys", &["cndt-kernel"]),
+    // Nothing below the desktop app may know about the UI shell (rule 4).
+    ("tauri", &["cndt-desktop"]),
+];
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1);

@@ -8,7 +8,7 @@ These rules exist so that nothing has to be rewritten when the UI changes, when 
 
 | Layer | Crates | Responsibility |
 | --- | --- | --- |
-| L0 | `geom` | 2D and 3D primitives, units, tolerances, 2D offsets |
+| L0 | `geom`, `occt-sys` | 2D and 3D primitives, units, tolerances, 2D offsets. The C bridge to OpenCascade, which only `kernel` may use. |
 | L1 | `kernel`, `sketch` | B-rep, booleans, fillets, STEP and IGES. 2D entities and the constraint solver. |
 | L2 | `model`, `cam-core` | Feature tree, history, rebuild graph, naming. Setups, stock, machines, consumables, operations, toolpath format. |
 | L3 | `process-mill`, `process-turn`, `process-wedm`, `sim`, `post` | Toolpath generators per process, simulation, post engine |
@@ -31,7 +31,7 @@ Every change to a document is a registered command with a name, a parameter sche
 
 ### 3. The kernel is behind a trait
 
-Only the `kernel` crate calls the geometry kernel. Every other crate uses the trait and CNDT's own types. No kernel type appears in a public signature outside `kernel`.
+Only the `kernel` crate calls the geometry kernel, through the `occt-sys` bridge. Every other crate uses the trait and CNDT's own types. No kernel type appears in a public signature outside `kernel`. `occt-sys` is the only crate allowed `unsafe` code (decision 0008).
 
 ### 4. The core has no UI
 

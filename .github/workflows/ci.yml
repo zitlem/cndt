@@ -16,9 +16,40 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Login shell, so the conda environment below is active in every step.
+        shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
+
+      # OpenCascade 7.9.3 on every system (decision 0008).
+      - name: Install OpenCascade (Homebrew)
+        if: runner.os == 'macOS'
+        run: brew install opencascade
+
+      - name: Install OpenCascade (conda-forge)
+        if: runner.os != 'macOS'
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: occt
+          create-args: occt=7.9.3
+          init-shell: bash
+          cache-environment: true
+
+      - name: Point the build at OpenCascade
+        if: runner.os != 'macOS'
+        run: echo "OCCT_DIR=$(cygpath -w "$CONDA_PREFIX" 2>/dev/null || echo "$CONDA_PREFIX")" >> "$GITHUB_ENV"
+
+      # Every linked program needs to find the conda libraries at run time.
+      # A build script's rpath only reaches its own crate, so set it for all.
+      # (Windows finds them on PATH; Homebrew libraries use absolute paths.)
+      - name: Let Linux programs find OpenCascade
+        if: runner.os == 'Linux'
+        run: echo "RUSTFLAGS=-C link-arg=-Wl,-rpath,$CONDA_PREFIX/lib" >> "$GITHUB_ENV"
+
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
+
       - name: Format, lints, tests, layers, headers
         run: cargo xtask ci

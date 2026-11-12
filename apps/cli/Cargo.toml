@@ -10,5 +10,8 @@ publish.workspace = true
 name = "cndt"
 path = "src/main.rs"
 
+[dependencies]
+cndt-kernel.workspace = true
+
 [lints]
 workspace = true

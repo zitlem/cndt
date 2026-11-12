@@ -19,6 +19,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0005](0005-engine-first-architecture.md) | Engine-first layered workspace with a command engine | Accepted |
 | [0006](0006-rust-core.md) | Rust for the core | Accepted |
 | [0007](0007-geometry-kernel.md) | New app on OpenCascade behind a trait | Accepted |
+| [0008](0008-opencascade-bridge.md) | Own C bridge to OpenCascade 7.9.3 | Accepted |
 
 ## Open decisions
 

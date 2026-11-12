@@ -24,11 +24,18 @@ CNDT is an open-source CAD/CAM application for designing parts and machining the
 
 ## Building
 
-You need [Rust](https://rustup.rs). The exact version is pinned in `rust-toolchain.toml` and installs automatically.
+You need:
+
+- [Rust](https://rustup.rs). The exact version is pinned in `rust-toolchain.toml` and installs automatically.
+- A C++ compiler (Xcode command-line tools, GCC or Clang, or Visual Studio).
+- [OpenCascade](https://dev.opencascade.org) 7.9.3, the geometry kernel:
+  - macOS: `brew install opencascade`
+  - Linux and Windows: `micromamba create -n occt -c conda-forge occt=7.9.3`, then set `OCCT_DIR` to that environment's folder.
+  - On Linux, also set `RUSTFLAGS="-C link-arg=-Wl,-rpath,$OCCT_DIR/lib"` so programs find the libraries when they run.
 
 ```sh
-cargo xtask ci          # run every check CI runs
-cargo run -p cndt-cli   # run the command-line app
+cargo xtask ci                                     # run every check CI runs
+cargo run -p cndt-cli -- info path/to/part.step    # show a STEP file's topology and size
 ```
 
 ## Safety
