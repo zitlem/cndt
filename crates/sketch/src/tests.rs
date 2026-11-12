@@ -772,3 +772,51 @@ fn arcs_joined_end_to_end_stay_tangent() {
     // Both centres on one line through the joint.
     assert!((p1.x * p2.y - p1.y * p2.x).abs() < 1e-6, "{p1:?} {p2:?}");
 }
+
+#[test]
+fn validation_catches_damaged_files() {
+    let o = outline(0.0);
+    assert_eq!(o.s.validate(), Ok(()));
+    let mut text = serde_json::to_value(&o.s).unwrap();
+    // A line whose end point is missing.
+    text["entities"]["13"]["geometry"]["end"] = serde_json::json!(999);
+    let broken: Sketch = serde_json::from_value(text).unwrap();
+    assert_eq!(
+        broken.validate(),
+        Err(SketchError::UnknownEntity(EntityId(999)))
+    );
+    let mut r = rectangle();
+    r.s.next_constraint = 1;
+    assert!(matches!(r.s.validate(), Err(SketchError::Corrupt(_))));
+}
+
+#[test]
+fn construction_flag() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    assert_eq!(s.set_construction(a, true), Ok(false));
+    assert!(s.entity(a).unwrap().construction);
+    assert_eq!(
+        s.set_construction(EntityId(9), true),
+        Err(SketchError::UnknownEntity(EntityId(9)))
+    );
+}
+
+#[test]
+fn held_points_do_not_move() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    let b = pt(&mut s, 10.0, 0.0);
+    let line = s.add_line(a, b).unwrap();
+    s.constraints
+        .insert(ConstraintId(0), Constraint::Length { line, value: 4.0 });
+    s.next_constraint = 1;
+    let hold = BTreeSet::from([a]);
+    s.solve(&SolveOptions {
+        hold,
+        ..SolveOptions::default()
+    })
+    .unwrap();
+    assert_eq!(at(&s, a), Point2::new(0.0, 0.0));
+    assert!(close(at(&s, b).x, 4.0));
+}

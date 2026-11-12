@@ -38,3 +38,12 @@ Rules:
 - New dependency: `zip` (MIT) with deflate support, and its dependencies. All pass `cargo xtask licenses`.
 - Geometry is not stored yet. When it is, the regenerable cache goes under `cache/` and never counts as the source of truth; adding it will bump the schema version.
 - Cloud sync and collaboration are still open. If they are wanted, objects will need stable IDs, which also means a schema version bump.
+
+## Version 2 (2026-11-12)
+
+Sketches are stored in `design/document.json`, under `sketches`, keyed by sketch id, with `next_sketch` so deleted ids are never reused. Each holds a name, its origin plane (`xy`, `xz` or `yz`) and the sketch: entities, constraints and the next free ids.
+
+- **Why a version bump:** a version 1 build would open a file with sketches, ignore them, and drop them on the next save. With the bump, it refuses the file and tells the user to update, as this record requires.
+- **Migration:** a version 1 file reads as version 2 with no sketches. A version 1 file that does contain sketches is refused as damaged.
+- **Unknown fields** in the document, a sketch, an entity or a constraint are refused when reading, so a newer build's additions are never silently lost.
+- **Exact numbers:** JSON floats are parsed exactly (serde_json's `float_roundtrip`), so a saved project reopens bit for bit and gives the same toolpaths.

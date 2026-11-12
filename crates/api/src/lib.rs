@@ -24,7 +24,8 @@ use cndt_engine::{CommandError, Registry, Session};
 use cndt_format::{FormatError, Project};
 use cndt_geom::TriangleMesh;
 use cndt_kernel::{Kernel, KernelError, OpenCascade};
-use cndt_model::Document;
+use cndt_model::sketch::Freedom;
+use cndt_model::{Document, ModelError, SketchError, SketchId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -98,6 +99,11 @@ pub struct ApiError {
     pub kind: &'static str,
     /// A readable explanation.
     pub message: String,
+    /// Structured detail for some kinds. `conflict` and `redundant` carry
+    /// `{"sketch": id, "constraints": [ids]}` so the interface can highlight
+    /// them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 impl ApiError {
@@ -105,12 +111,30 @@ impl ApiError {
         Self {
             kind,
             message: message.into(),
+            details: None,
         }
     }
 }
 
 impl From<CommandError> for ApiError {
     fn from(error: CommandError) -> Self {
+        if let CommandError::Model(ModelError::Sketch(
+            SketchError::Conflict { constraints } | SketchError::Redundant { constraints },
+        )) = &error
+        {
+            let kind = if matches!(
+                error,
+                CommandError::Model(ModelError::Sketch(SketchError::Conflict { .. }))
+            ) {
+                "conflict"
+            } else {
+                "redundant"
+            };
+            let ids: Vec<u32> = constraints.iter().map(|id| id.0).collect();
+            let mut api = Self::new(kind, error.to_string());
+            api.details = Some(serde_json::json!({ "constraints": ids }));
+            return api;
+        }
         let kind = match &error {
             CommandError::UnknownCommand(_) => "unknown_command",
             CommandError::InvalidArguments { .. } => "invalid_arguments",
@@ -155,6 +179,9 @@ struct StateView<'a> {
     dirty: bool,
     undo: Option<String>,
     redo: Option<String>,
+    /// Degrees of freedom of each sketch, for colouring what is fully
+    /// constrained.
+    freedom: BTreeMap<SketchId, Freedom>,
 }
 
 /// One open document and everything needed to work on it.
@@ -311,6 +338,13 @@ impl Api {
             dirty: self.session.is_dirty(),
             undo: self.session.undo_label(),
             redo: self.session.redo_label(),
+            freedom: self
+                .session
+                .document()
+                .sketches()
+                .iter()
+                .map(|(id, record)| (*id, record.sketch.freedom()))
+                .collect(),
         };
         serde_json::to_value(view).map_err(|error| ApiError::new("internal", error.to_string()))
     }
@@ -478,6 +512,84 @@ mod tests {
     }
 
     #[test]
+    fn sketch_through_json_with_freedom_and_conflicts() {
+        let mut api = Api::new();
+        let exec = |api: &mut Api, command: &str, args: Value| {
+            call(
+                api,
+                json!({"method": "execute", "command": command, "args": args}),
+            )
+        };
+        let reply = exec(&mut api, "sketch.create", json!({"plane": "xy"}));
+        assert_eq!(
+            reply["result"]["document"]["sketches"]["0"]["name"],
+            "Sketch1"
+        );
+        let reply = exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 90, "y": 50}}),
+        );
+        assert_eq!(reply["result"]["freedom"]["0"]["dof"], 4);
+        assert_eq!(reply["result"]["freedom"]["0"]["status"], "under");
+        // Bottom-left corner fixed, then width and height: fully constrained.
+        exec(
+            &mut api,
+            "sketch.constrain",
+            json!({"sketch": 0, "constraint": {"type": "fix", "point": 0}}),
+        );
+        exec(
+            &mut api,
+            "sketch.constrain",
+            json!({"sketch": 0, "constraint": {"type": "length", "line": 4, "value": 96}}),
+        );
+        let reply = exec(
+            &mut api,
+            "sketch.constrain",
+            json!({"sketch": 0, "constraint": {"type": "length", "line": 5, "value": 56}}),
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["freedom"]["0"]["status"], "fully");
+        let corner = &reply["result"]["document"]["sketches"]["0"]["sketch"]["entities"]["2"]["geometry"]
+            ["at"];
+        assert!(
+            (corner["x"].as_f64().unwrap() - 96.0).abs() < 1e-7,
+            "{corner}"
+        );
+        assert_eq!(reply["result"]["undo"], "Add constraint");
+        // A conflicting dimension names the constraints it fights.
+        let reply = exec(
+            &mut api,
+            "sketch.constrain",
+            json!({"sketch": 0, "constraint": {"type": "length", "line": 6, "value": 80}}),
+        );
+        assert_eq!(reply["error"]["kind"], "conflict", "{reply}");
+        let ids = reply["error"]["details"]["constraints"].as_array().unwrap();
+        assert_eq!(ids.first(), Some(&json!(7)), "the new one first");
+        assert!(ids.contains(&json!(5)), "the 96 mm width: {ids:?}");
+        // A redundant one names what already implies it.
+        let reply = exec(
+            &mut api,
+            "sketch.constrain",
+            json!({"sketch": 0, "constraint": {"type": "parallel", "a": 4, "b": 6}}),
+        );
+        assert_eq!(reply["error"]["kind"], "redundant", "{reply}");
+        // Changing a dimension moves the geometry; undo puts it back.
+        exec(
+            &mut api,
+            "sketch.set_dimension",
+            json!({"sketch": 0, "constraint": 5, "value": 100}),
+        );
+        let reply = call(&mut api, json!({"method": "undo"}));
+        let corner = &reply["result"]["document"]["sketches"]["0"]["sketch"]["entities"]["2"]["geometry"]
+            ["at"];
+        assert!(
+            (corner["x"].as_f64().unwrap() - 96.0).abs() < 1e-7,
+            "{corner}"
+        );
+    }
+
+    #[test]
     fn errors_carry_a_stable_kind() {
         let mut api = Api::new();
         let cases = [
@@ -637,9 +749,15 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(
-            names,
-            ["document.rename", "parameter.remove", "parameter.set"]
-        );
+        assert_eq!(names.len(), 16, "{names:?}");
+        for expected in [
+            "document.rename",
+            "parameter.set",
+            "sketch.create",
+            "sketch.constrain",
+        ] {
+            assert!(names.contains(&expected), "{expected} missing: {names:?}");
+        }
+        assert!(names.is_sorted(), "listed in name order");
     }
 }

@@ -10,6 +10,7 @@
 mod commands;
 mod registry;
 mod session;
+mod sketch_commands;
 
 use std::fmt;
 
@@ -18,6 +19,7 @@ use cndt_model::{Document, ModelError};
 pub use commands::{RemoveParameter, RenameDocument, SetParameter};
 pub use registry::{ArgKind, ArgSpec, CommandSpec, Registry};
 pub use session::Session;
+pub use sketch_commands::{CreateSketch, DeleteSketch, EditSketch, PointRef, SketchEdit};
 
 /// A change to a document that can be undone.
 ///
@@ -50,7 +52,7 @@ pub trait Command: fmt::Debug + Send {
 }
 
 /// Why a command could not be built, applied or undone.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CommandError {
     /// No command is registered under this name.
     UnknownCommand(String),
