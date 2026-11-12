@@ -11,7 +11,7 @@ These rules exist so that nothing has to be rewritten when the UI changes, when 
 | L0 | `geom`, `occt-sys` | 2D and 3D primitives, units, tolerances, 2D offsets. The C bridge to OpenCascade, which only `kernel` may use. |
 | L1 | `kernel`, `sketch` | B-rep, booleans, fillets, STEP and IGES. 2D entities and the constraint solver. |
 | L2 | `model`, `cam-core` | Feature tree, history, rebuild graph, naming. Setups, stock, machines, consumables, operations, toolpath format. |
-| L3 | `process-mill`, `process-turn`, `process-wedm`, `sim`, `post` | Toolpath generators per process, simulation, post engine |
+| L3 | `process-mill`, `process-turn`, `process-wedm`, `sim`, `post`, `format` | Toolpath generators per process, simulation, post engine, project file reading and writing |
 | L4 | `engine` | Command registry, undo and redo, session, background jobs |
 | L5 | `api`, `mcp` | Transport-neutral API, automation |
 | L6 | `ui` | Frontend |
@@ -28,6 +28,8 @@ A crate may only depend on lower layers. The check runs in CI and fails the buil
 ### 2. Commands are the only way to change state
 
 Every change to a document is a registered command with a name, a parameter schema, an apply step and an undo step. The UI, the CLI, scripts and tests all go through the same registry. This is what gives undo and redo, scripting, automation and headless testing from one mechanism.
+
+In code: `cndt_engine::Command` is the trait, `Session` owns the document and its history, and `Registry` builds commands by name from JSON arguments. The session only hands out `&Document`, so nothing outside a command can change it. A command's `apply` must either succeed completely or leave the document untouched.
 
 ### 3. The kernel is behind a trait
 

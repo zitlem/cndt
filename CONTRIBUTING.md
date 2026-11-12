@@ -29,6 +29,8 @@ When you implement an algorithm, add its source to [docs/provenance.md](docs/pro
 
 New dependencies must be compatible with AGPL-3.0. MIT, Apache-2.0, BSD, Boost, LGPL and GPL-3.0 are acceptable. GPL-2.0-only and proprietary licenses are not. Explain why the dependency is needed in your change.
 
+`cargo xtask licenses` checks every package in the dependency tree against the allow list in `xtask/src/main.rs`, and CI runs it on every change.
+
 ## Architecture
 
 Read [docs/architecture.md](docs/architecture.md) first. Changes that break a rule there will not be merged. A change that needs a rule to move starts with a decision record in [docs/decisions/](docs/decisions/README.md).
