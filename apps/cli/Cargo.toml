@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 cndt-api.workspace = true
-cndt-kernel.workspace = true
 serde_json.workspace = true
 
 [lints]

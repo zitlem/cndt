@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 cndt-engine.workspace = true
 cndt-format.workspace = true
+cndt-geom.workspace = true
+cndt-kernel.workspace = true
 cndt-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true

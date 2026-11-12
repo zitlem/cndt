@@ -28,15 +28,20 @@ You need:
 
 - [Rust](https://rustup.rs). The exact version is pinned in `rust-toolchain.toml` and installs automatically.
 - A C++ compiler (Xcode command-line tools, GCC or Clang, or Visual Studio).
+- [Node.js](https://nodejs.org) 22 or later, for the desktop app's interface.
+- On Linux, Tauri's system libraries: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev`.
 - [OpenCascade](https://dev.opencascade.org) 7.9.3, the geometry kernel:
   - macOS: `brew install opencascade`
   - Linux and Windows: `micromamba create -n occt -c conda-forge occt=7.9.3`, then set `OCCT_DIR` to that environment's folder.
   - On Linux, also set `RUSTFLAGS="-C link-arg=-Wl,-rpath,$OCCT_DIR/lib"` so programs find the libraries when they run.
 
 ```sh
-cargo xtask ci                                     # run every check CI runs
+cargo xtask ci                                     # build the interface and run every check CI runs
+cargo run -p cndt-desktop                          # start the desktop app
 cargo run -p cndt-cli -- info path/to/part.step    # show a STEP file's topology and size
 ```
+
+The desktop app embeds the built interface, so after changing anything in `ui/`, rebuild it with `npm --prefix ui run build` (or run `cargo xtask ci`).
 
 ## Safety
 

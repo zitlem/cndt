@@ -100,6 +100,13 @@ fn root() -> Result<PathBuf, String> {
 
 fn ci() -> Result<(), String> {
     let root = root()?;
+    // The desktop app embeds the built frontend, so build it first. This
+    // also type-checks every TypeScript file.
+    let ui = root.join("ui");
+    if !ui.join("node_modules").is_dir() {
+        npm(&ui, &["ci", "--no-fund", "--no-audit"])?;
+    }
+    npm(&ui, &["run", "build"])?;
     cargo(&root, &["fmt", "--all", "--check"])?;
     cargo(
         &root,
@@ -133,6 +140,22 @@ fn cargo(root: &Path, args: &[&str]) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("`cargo {}` failed", args.join(" ")))
+    }
+}
+
+fn npm(dir: &Path, args: &[&str]) -> Result<(), String> {
+    // On Windows npm is a batch file, which must be named with its extension.
+    let program = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    println!("> npm {}", args.join(" "));
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .map_err(|error| format!("could not run npm (is Node.js installed?): {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`npm {}` failed", args.join(" ")))
     }
 }
 

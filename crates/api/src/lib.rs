@@ -18,10 +18,12 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cndt_engine::{CommandError, Registry, Session};
 use cndt_format::{FormatError, Project};
+use cndt_geom::TriangleMesh;
+use cndt_kernel::{Kernel, KernelError, OpenCascade};
 use cndt_model::Document;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -69,6 +71,11 @@ pub enum Request {
     State,
     /// Describe every registered command and its arguments.
     Commands,
+    /// Summarise a STEP file's topology and size without importing it.
+    StepInfo {
+        /// The STEP file.
+        path: PathBuf,
+    },
 }
 
 /// The answer to a request.
@@ -116,6 +123,17 @@ impl From<CommandError> for ApiError {
     }
 }
 
+impl From<KernelError> for ApiError {
+    fn from(error: KernelError) -> Self {
+        let kind = match &error {
+            KernelError::Unreadable { .. } => "unreadable",
+            KernelError::Empty { .. } => "empty",
+            KernelError::Internal(_) => "kernel",
+        };
+        Self::new(kind, error.to_string())
+    }
+}
+
 impl From<FormatError> for ApiError {
     fn from(error: FormatError) -> Self {
         let kind = match &error {
@@ -147,6 +165,7 @@ pub struct Api {
     path: Option<PathBuf>,
     /// Module data from the opened file, written back unchanged on save.
     extensions: BTreeMap<String, Vec<u8>>,
+    kernel: Box<dyn Kernel>,
 }
 
 impl Default for Api {
@@ -155,16 +174,62 @@ impl Default for Api {
     }
 }
 
+/// Identifies the binary mesh layout returned by [`Api::step_preview`].
+pub const MESH_MAGIC: &[u8; 8] = b"CNDTMSH1";
+
 impl Api {
-    /// Starts with an empty, unsaved document.
+    /// Starts with an empty, unsaved document and the OpenCascade kernel.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_kernel(Box::new(OpenCascade))
+    }
+
+    /// Starts with an empty, unsaved document and the given kernel.
+    #[must_use]
+    pub fn with_kernel(kernel: Box<dyn Kernel>) -> Self {
         Self {
             session: Session::new(Document::default()),
             registry: Registry::standard(),
             path: None,
             extensions: BTreeMap::new(),
+            kernel,
         }
+    }
+
+    /// The geometry kernel's name and version, such as `OpenCascade 7.9.3`.
+    #[must_use]
+    pub fn kernel_description(&self) -> String {
+        self.kernel.description()
+    }
+
+    /// Triangulates a STEP file for display and returns the mesh in binary
+    /// (architecture rule 12: geometry never travels as JSON).
+    ///
+    /// Layout, all little-endian, every array 4-byte aligned:
+    ///
+    /// | Offset | Content |
+    /// | --- | --- |
+    /// | 0 | `CNDTMSH1` |
+    /// | 8 | `u32` vertex count `v` |
+    /// | 12 | `u32` triangle count `t` |
+    /// | 16 | `u32` model face count |
+    /// | 20 | `f32` positions, `3 v` values, millimetres |
+    /// | then | `u32` vertex indices, `3 t` values |
+    /// | then | `u32` model face of each triangle, `t` values |
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or triangulated.
+    pub fn step_preview(&self, path: &Path) -> Result<Vec<u8>, ApiError> {
+        let summary = self.kernel.import_step(path)?;
+        // Tolerance follows the part's size: 0.05 % of its diagonal, kept
+        // between 0.005 mm and 1 mm, so small and large parts both look right.
+        let deflection = summary.bounds.map_or(0.05, |bounds| {
+            let [x, y, z] = bounds.size();
+            (x.hypot(y).hypot(z) * 0.0005).clamp(0.005, 1.0)
+        });
+        let mesh = self.kernel.mesh_step(path, deflection)?;
+        encode_mesh(&mesh)
     }
 
     /// Handles a request given as JSON and answers in JSON. This is the whole
@@ -192,8 +257,13 @@ impl Api {
             } => self.open(path, discard_changes),
             Request::Save => self.save(),
             Request::SaveAs { path } => {
-                self.path = Some(path);
-                self.save()
+                // Adopt the new path only once saving to it has worked.
+                let previous = self.path.replace(path);
+                let result = self.save();
+                if result.is_err() {
+                    self.path = previous;
+                }
+                result
             }
             Request::Execute { command, args } => self
                 .registry
@@ -208,6 +278,15 @@ impl Api {
                 return match serde_json::to_value(specs) {
                     Ok(value) => success(value),
                     Err(error) => failure(ApiError::new("internal", error.to_string())),
+                };
+            }
+            Request::StepInfo { path } => {
+                return match self.kernel.import_step(&path) {
+                    Ok(summary) => match serde_json::to_value(summary) {
+                        Ok(value) => success(value),
+                        Err(error) => failure(ApiError::new("internal", error.to_string())),
+                    },
+                    Err(error) => failure(error.into()),
                 };
             }
         };
@@ -294,6 +373,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("redo", &[]),
     ("state", &[]),
     ("commands", &[]),
+    ("step_info", &["path"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo
@@ -321,6 +401,26 @@ fn parse_request(text: &str) -> Result<Request, ApiError> {
         return Err(bad(format!("{method} does not accept the field {key:?}")));
     }
     serde_json::from_value(value).map_err(|error| bad(error.to_string()))
+}
+
+fn encode_mesh(mesh: &TriangleMesh) -> Result<Vec<u8>, ApiError> {
+    let too_large = || ApiError::new("kernel", "the mesh is too large to send");
+    let vertices = u32::try_from(mesh.vertex_count()).map_err(|_| too_large())?;
+    let triangles = u32::try_from(mesh.triangle_count()).map_err(|_| too_large())?;
+    let mut bytes = Vec::with_capacity(
+        20 + 4 * (mesh.positions.len() + mesh.indices.len() + mesh.triangle_faces.len()),
+    );
+    bytes.extend_from_slice(MESH_MAGIC);
+    bytes.extend_from_slice(&vertices.to_le_bytes());
+    bytes.extend_from_slice(&triangles.to_le_bytes());
+    bytes.extend_from_slice(&mesh.face_count.to_le_bytes());
+    for value in &mesh.positions {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in mesh.indices.iter().chain(&mesh.triangle_faces) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(bytes)
 }
 
 fn success(result: Value) -> Response {
@@ -467,6 +567,64 @@ mod tests {
         assert_eq!(back.document.name(), "Ext2");
         assert_eq!(back.extensions().get("future/blob"), Some(&vec![7, 8, 9]));
         std::fs::remove_file(path).unwrap();
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn step_info_and_binary_preview() {
+        let mut api = Api::new();
+        let path = fixture("box-10x20x30.step");
+        let reply = call(&mut api, json!({"method": "step_info", "path": path}));
+        assert_eq!(reply["result"]["faces"], 6, "{reply}");
+        assert_eq!(reply["result"]["bounds"]["max"]["z"], 30.0);
+
+        let bytes = api.step_preview(&path).unwrap();
+        assert_eq!(&bytes[..8], MESH_MAGIC);
+        let word = |offset: usize| {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let (vertices, triangles, faces) = (word(8) as usize, word(12) as usize, word(16));
+        assert_eq!(triangles, 12);
+        assert_eq!(faces, 6);
+        assert_eq!(
+            bytes.len(),
+            20 + 4 * (vertices * 3 + triangles * 3 + triangles)
+        );
+
+        let reply = call(
+            &mut api,
+            json!({"method": "step_info", "path": "missing.step"}),
+        );
+        assert_eq!(reply["error"]["kind"], "unreadable");
+        assert_eq!(
+            api.step_preview(Path::new("missing.step"))
+                .unwrap_err()
+                .kind,
+            "unreadable"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_as_keeps_the_old_path() {
+        let good = temp_file("keep-path.cndt");
+        let mut api = Api::new();
+        call(&mut api, json!({"method": "save_as", "path": good}));
+        let bad = temp_file("no-such-dir").join("deeper").join("x.cndt");
+        let reply = call(&mut api, json!({"method": "save_as", "path": bad}));
+        assert_eq!(reply["error"]["kind"], "io", "{reply}");
+        let reply = call(&mut api, json!({"method": "state"}));
+        assert_eq!(reply["result"]["path"], good.display().to_string());
+        std::fs::remove_file(good).unwrap();
     }
 
     #[test]

@@ -9,10 +9,11 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use cndt_geom::{BoundingBox, Point3};
+use cndt_geom::{BoundingBox, Point3, TriangleMesh};
+use serde::Serialize;
 
 /// Topology counts and size of an imported shape.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ImportSummary {
     /// Number of distinct solids.
     pub solids: u32,
@@ -63,7 +64,7 @@ impl fmt::Display for KernelError {
 impl std::error::Error for KernelError {}
 
 /// The operations CNDT needs from a geometry kernel.
-pub trait Kernel {
+pub trait Kernel: fmt::Debug + Send + Sync {
     /// The kernel's name and version, such as `OpenCascade 7.9.3`.
     fn description(&self) -> String;
 
@@ -74,6 +75,15 @@ pub trait Kernel {
     /// Returns [`KernelError`] if the file cannot be read, holds no geometry,
     /// or the kernel fails while processing it.
     fn import_step(&self, path: &Path) -> Result<ImportSummary, KernelError>;
+
+    /// Triangulates a STEP file for display. `deflection` is the largest
+    /// allowed distance, in millimetres, between triangles and the surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KernelError`] if the file cannot be read, holds no geometry,
+    /// or cannot be triangulated.
+    fn mesh_step(&self, path: &Path, deflection: f64) -> Result<TriangleMesh, KernelError>;
 }
 
 /// The OpenCascade implementation of [`Kernel`].
@@ -86,22 +96,7 @@ impl Kernel for OpenCascade {
     }
 
     fn import_step(&self, path: &Path) -> Result<ImportSummary, KernelError> {
-        use cndt_occt_sys::OcctError;
-
-        let summary = cndt_occt_sys::read_step(path).map_err(|error| match error {
-            OcctError::InvalidPath(_) => KernelError::Unreadable {
-                path: path.to_path_buf(),
-                reason: String::from("the path is not valid UTF-8"),
-            },
-            OcctError::ReadFailed(reason) => KernelError::Unreadable {
-                path: path.to_path_buf(),
-                reason,
-            },
-            OcctError::NoShapes => KernelError::Empty {
-                path: path.to_path_buf(),
-            },
-            OcctError::Kernel(reason) => KernelError::Internal(reason),
-        })?;
+        let summary = cndt_occt_sys::read_step(path).map_err(|error| kernel_error(path, error))?;
 
         Ok(ImportSummary {
             solids: summary.solids,
@@ -114,6 +109,38 @@ impl Kernel for OpenCascade {
                 max: Point3::new(max[0], max[1], max[2]),
             }),
         })
+    }
+
+    fn mesh_step(&self, path: &Path, deflection: f64) -> Result<TriangleMesh, KernelError> {
+        let mesh = cndt_occt_sys::mesh_step(path, deflection)
+            .map_err(|error| kernel_error(path, error))?;
+        Ok(TriangleMesh {
+            positions: mesh.positions,
+            indices: mesh.indices,
+            triangle_faces: mesh.triangle_faces,
+            face_count: mesh.face_count,
+        })
+    }
+}
+
+fn kernel_error(path: &Path, error: cndt_occt_sys::OcctError) -> KernelError {
+    use cndt_occt_sys::OcctError;
+    match error {
+        OcctError::InvalidPath(_) => KernelError::Unreadable {
+            path: path.to_path_buf(),
+            reason: String::from("the path is not valid UTF-8"),
+        },
+        OcctError::ReadFailed(reason) => KernelError::Unreadable {
+            path: path.to_path_buf(),
+            reason,
+        },
+        OcctError::NoShapes => KernelError::Empty {
+            path: path.to_path_buf(),
+        },
+        OcctError::Kernel(reason) => KernelError::Internal(reason),
+        OcctError::MeshFailed(reason) => {
+            KernelError::Internal(format!("triangulation failed: {reason}"))
+        }
     }
 }
 
@@ -146,6 +173,16 @@ mod tests {
         let error = OpenCascade.import_step(&path).unwrap_err();
         assert!(matches!(error, KernelError::Unreadable { .. }), "{error:?}");
         assert!(error.to_string().contains("missing.step"), "{error}");
+    }
+
+    #[test]
+    fn meshes_the_box_through_the_trait() {
+        let kernel: &dyn Kernel = &OpenCascade;
+        let mesh = kernel
+            .mesh_step(&fixture("box-10x20x30.step"), 0.05)
+            .unwrap();
+        assert_eq!(mesh.face_count, 6);
+        assert_eq!(mesh.triangle_count(), 12);
     }
 
     #[test]
