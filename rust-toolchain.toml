@@ -1,0 +1,6 @@
+# Everyone, and CI, builds with exactly this toolchain, so output stays
+# byte-identical across machines (architecture rule 11).
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

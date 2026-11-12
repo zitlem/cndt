@@ -13,7 +13,7 @@ These rules exist so that nothing has to be rewritten when the UI changes, when 
 | L2 | `model`, `cam-core` | Feature tree, history, rebuild graph, naming. Setups, stock, machines, consumables, operations, toolpath format. |
 | L3 | `process-mill`, `process-turn`, `process-wedm`, `sim`, `post` | Toolpath generators per process, simulation, post engine |
 | L4 | `engine` | Command registry, undo and redo, session, background jobs |
-| L5 | `api`, `cli`, `mcp` | Transport-neutral API, headless runner, automation |
+| L5 | `api`, `mcp` | Transport-neutral API, automation |
 | L6 | `ui` | Frontend |
 | L7 | `apps` | Desktop, CLI and web shells |
 
@@ -23,7 +23,7 @@ Crates in the same layer may not depend on each other, with one exception: proce
 
 ### 1. Layering is enforced
 
-A crate may only depend on lower layers. The check runs in CI and fails the build. If a lower layer needs something from a higher one, define a trait in the lower layer and implement it higher up.
+A crate may only depend on lower layers. The check runs in CI and fails the build. The authoritative layer map is the `LAYERS` table in `xtask/src/main.rs`; keep this document in step with it. If a lower layer needs something from a higher one, define a trait in the lower layer and implement it higher up.
 
 ### 2. Commands are the only way to change state
 

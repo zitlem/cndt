@@ -1,0 +1,10 @@
+[package]
+name = "cndt-geom"
+description = "Layer 0: geometry primitives, units and tolerances"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
