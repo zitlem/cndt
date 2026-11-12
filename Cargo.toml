@@ -12,9 +12,16 @@ rust-version = "1.99"
 # Internal crates are declared here once and used as `cndt-geom.workspace = true`.
 # The layer check in xtask reads these names; see docs/architecture.md.
 [workspace.dependencies]
+cndt-engine = { path = "crates/engine" }
 cndt-geom = { path = "crates/geom" }
 cndt-kernel = { path = "crates/kernel" }
+cndt-model = { path = "crates/model" }
 cndt-occt-sys = { path = "crates/occt-sys" }
+
+# External crates. Each must be AGPL-3.0 compatible; `cargo xtask licenses`
+# checks every crate in the dependency tree.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
