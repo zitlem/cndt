@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+rust-version = "1.99"
+
+# Internal crates are declared here once and used as `cndt-geom.workspace = true`.
+# The layer check in xtask reads these names; see docs/architecture.md.
+[workspace.dependencies]
+cndt-geom = { path = "crates/geom" }
+cndt-kernel = { path = "crates/kernel" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Core crates must not panic on bad input (architecture rule 14).
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# Geometry compares with tolerances, never exact float equality (rule 10).
+float_cmp = "deny"
+# HashMap, HashSet and wall-clock time are blocked in clippy.toml (rule 11).
+disallowed_types = "deny"
+disallowed_methods = "deny"

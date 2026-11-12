@@ -1,0 +1,12 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# Architecture rule 11: output must be byte-identical on every platform.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use BTreeMap or an ordered map" },
+    { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use BTreeSet or an ordered set" },
+]
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "output must not depend on wall-clock time; pass the time in explicitly" },
+]

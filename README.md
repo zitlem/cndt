@@ -17,10 +17,19 @@ CNDT is an open-source CAD/CAM application for designing parts and machining the
 
 | Phase | Scope | State |
 | --- | --- | --- |
-| 0 | Foundations: workspace, CI, geometry kernel build, command engine | Not started |
+| 0 | Foundations: workspace, CI, geometry kernel build, command engine | In progress |
 | 1 | CAD core: sketcher, solid features, timeline | Not started |
 | 2 | 2.5D milling and first posts | Not started |
 | 3 | Simulation and verification (v1.0) | Not started |
+
+## Building
+
+You need [Rust](https://rustup.rs). The exact version is pinned in `rust-toolchain.toml` and installs automatically.
+
+```sh
+cargo xtask ci          # run every check CI runs
+cargo run -p cndt-cli   # run the command-line app
+```
 
 ## Safety
 
