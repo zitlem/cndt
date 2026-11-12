@@ -17,4 +17,8 @@ Never: decompiled or disassembled code, leaked source, or proprietary file-forma
 
 | Area | Algorithm | Crate | Source | License of source (if code) | Added |
 | --- | --- | --- | --- | --- | --- |
-| | | | | | |
+| Sketch | Damped weighted minimum-norm Gauss-Newton (Levenberg-Marquardt style) with a central-difference Jacobian | `sketch` (`solver.rs`) | CADCraft `crates/constraints/src/lm.rs`, commit ca87680; method: K. Levenberg (1944), D. Marquardt (1963) | MIT OR Apache-2.0 (used under MIT, see `NOTICE`) | 2026-11-12 |
+| Sketch | Numerical rank and null space by Householder QR with column pivoting, rows and columns balanced | `sketch` (`solver.rs`) | CADCraft `lm.rs`, commit ca87680; method: Golub and Van Loan, *Matrix Computations*, 4th ed., §5.4 | MIT OR Apache-2.0 (used under MIT) | 2026-11-12 |
+| Sketch | Constraint residual equations (coincident, tangent, distance, angle and the rest) | `sketch` (`equations.rs`) | CADCraft `crates/constraints/src/residual.rs`, commit ca87680; rewritten for CNDT's point-based model | MIT OR Apache-2.0 (used under MIT) | 2026-11-12 |
+| Sketch | Tangency at a shared end point as "line perpendicular to the radius" (non-degenerate form) | `sketch` (`equations.rs`) | Standard geometry; same idea as CADCraft's joined-end form in `residual.rs` | MIT OR Apache-2.0 (used under MIT) | 2026-11-12 |
+| Sketch | Independent components by union-find; degrees of freedom as free parameters minus Jacobian rank, per entity as the rank of the null space restricted to its parameters; conflicts by leave-one-out solves; redundancy by rank increase | `sketch` (`system.rs`) | CADCraft `crates/constraints/src/lib.rs` and `dof.rs`, commit ca87680 | MIT OR Apache-2.0 (used under MIT) | 2026-11-12 |
