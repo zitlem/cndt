@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CNDT</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">CNDT</div>
+        <label class="doc-name">
+          <span class="visually-hidden">Document name</span>
+          <input id="doc-name" type="text" spellcheck="false" autocomplete="off" />
+        </label>
+        <span id="saved-state" class="saved-state">Saved</span>
+        <div class="topbar-actions">
+          <button id="undo" type="button" class="icon-button" aria-label="Undo">
+            <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M7 4L3 8l4 4M3 8h9a4 4 0 0 1 0 8H9" /></svg>
+          </button>
+          <button id="redo" type="button" class="icon-button" aria-label="Redo">
+            <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M13 4l4 4-4 4M17 8H8a4 4 0 0 0 0 8h3" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="ribbon" role="toolbar" aria-label="Commands">
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button id="new" type="button" class="tool">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 2h7l4 4v12H5zM12 2v4h4" /></svg>New
+            </button>
+            <button id="open" type="button" class="tool">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M2 6h6l2 2h8v9H2zM2 6V4h5" /></svg>Open
+            </button>
+            <button id="save" type="button" class="tool">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 3h11l3 3v11H3zM6 3v5h7V3M6 17v-5h8v5" /></svg>Save
+            </button>
+            <button id="save-as" type="button" class="tool">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 3h11l3 3v6M3 3v14h8M6 3v5h7V3M14 14h5M16.5 11.5v5" /></svg>Save as
+            </button>
+          </div>
+          <span class="ribbon-label">File</span>
+        </div>
+        <div class="ribbon-divider" aria-hidden="true"></div>
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button id="import-step" type="button" class="tool">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 3v9M6.5 8.5L10 12l3.5-3.5M4 16h12" /></svg>Import STEP
+            </button>
+            <button id="fit" type="button" class="tool">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" /></svg>Fit view
+            </button>
+          </div>
+          <span class="ribbon-label">Model</span>
+        </div>
+      </div>
+
+      <main class="workspace">
+        <aside class="panel" aria-labelledby="parameters-title">
+          <h2 id="parameters-title" class="panel-title">Parameters</h2>
+          <ul id="parameter-list" class="parameter-list"></ul>
+          <p id="no-parameters" class="muted">No parameters yet.</p>
+          <form id="parameter-form" class="parameter-form">
+            <label>Name<input id="param-name" type="text" required spellcheck="false" autocomplete="off" placeholder="thickness" /></label>
+            <div class="form-row">
+              <label>Value<input id="param-value" type="number" required step="any" placeholder="12" /></label>
+              <label>Unit
+                <select id="param-unit">
+                  <option value="mm">mm</option>
+                  <option value="deg">deg</option>
+                  <option value="none">none</option>
+                </select>
+              </label>
+            </div>
+            <button type="submit" class="primary">Set parameter</button>
+          </form>
+        </aside>
+
+        <section id="viewport" class="viewport" aria-label="3D view">
+          <div id="viewport-hint" class="viewport-hint">Import a STEP file to see it here.</div>
+        </section>
+
+        <aside class="panel" aria-labelledby="model-title">
+          <h2 id="model-title" class="panel-title">Model</h2>
+          <div id="model-empty" class="muted">No model loaded.</div>
+          <dl id="model-info" class="model-info" hidden></dl>
+          <p id="model-note" class="note" hidden>
+            Preview only. Imported geometry is not saved in the project yet.
+          </p>
+        </aside>
+      </main>
+
+      <footer class="statusbar">
+        <span id="status-path">Not saved yet</span>
+        <span id="status-undo"></span>
+        <span class="status-right">Millimetres</span>
+      </footer>
+
+      <div id="toast" class="toast" role="alert" hidden></div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

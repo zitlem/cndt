@@ -23,6 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The desktop app's frontend (ui/) is built with Node.js.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Tauri's system libraries on Linux (webview, GTK).
+      - name: Install Tauri's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev
+
       # OpenCascade 7.9.3 on every system (decision 0008).
       - name: Install OpenCascade (Homebrew)
         if: runner.os == 'macOS'
@@ -51,5 +65,5 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
 
-      - name: Format, lints, tests, layers, headers
+      - name: Frontend build, format, lints, tests, layers, headers, licenses
         run: cargo xtask ci
