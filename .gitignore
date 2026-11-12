@@ -31,7 +31,11 @@ Thumbs.db
 # Local settings and secrets
 .env
 .env.*
-.claude/settings.local.json
+
+# Maintainers' private AI-assistant notes and settings
+CLAUDE.md
+CLAUDE.local.md
+.claude/
 
 # Test scratch output (golden files themselves are committed)
 *.actual
