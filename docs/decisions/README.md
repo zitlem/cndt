@@ -20,6 +20,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0006](0006-rust-core.md) | Rust for the core | Accepted |
 | [0007](0007-geometry-kernel.md) | New app on OpenCascade behind a trait | Accepted |
 | [0008](0008-opencascade-bridge.md) | Own C bridge to OpenCascade 7.9.3 | Accepted |
+| [0009](0009-project-file-format.md) | Project file format, version 1 | Accepted |
 
 ## Open decisions
 
@@ -33,7 +34,6 @@ These have no record yet. Each needs one before the work that depends on it star
 | Constraint solver | Sketcher |
 | Topological naming approach | Feature tree |
 | Post script language (Rhai or Lua) | Post engine |
-| Project file format details | First save and load |
 | Cloud sync and collaboration | File format freeze |
 | Product name and trademark check | Public launch |
 

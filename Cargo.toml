@@ -13,6 +13,7 @@ rust-version = "1.99"
 # The layer check in xtask reads these names; see docs/architecture.md.
 [workspace.dependencies]
 cndt-engine = { path = "crates/engine" }
+cndt-format = { path = "crates/format" }
 cndt-geom = { path = "crates/geom" }
 cndt-kernel = { path = "crates/kernel" }
 cndt-model = { path = "crates/model" }
@@ -22,6 +23,8 @@ cndt-occt-sys = { path = "crates/occt-sys" }
 # checks every crate in the dependency tree.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Project files are ZIP containers. Only deflate support is built in.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
