@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/target/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Tauri
+/apps/desktop/gen/
+
+# Native build output
+/build/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Local settings and secrets
+.env
+.env.*
+.claude/settings.local.json
+
+# Test scratch output (golden files themselves are committed)
+*.actual
+/tmp/

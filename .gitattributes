@@ -1,0 +1,13 @@
+# Golden files and posted programs must be byte-identical on every platform.
+* text=auto eol=lf
+*.nc text eol=lf
+*.gcode text eol=lf
+*.golden text eol=lf
+
+# Binary
+*.step binary
+*.stp binary
+*.iges binary
+*.igs binary
+*.stl binary
+*.png binary
