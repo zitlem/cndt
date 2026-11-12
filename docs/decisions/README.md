@@ -21,6 +21,9 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0007](0007-geometry-kernel.md) | New app on OpenCascade behind a trait | Accepted |
 | [0008](0008-opencascade-bridge.md) | Own C bridge to OpenCascade 7.9.3 | Accepted |
 | [0009](0009-project-file-format.md) | Project file format, version 1 | Accepted |
+| [0010](0010-first-user-story.md) | First user story: the CNDT test block | Accepted |
+| [0011](0011-constraint-solver.md) | Sketch constraint solver adapted from CADCraft | Accepted |
+| [0012](0012-stable-references.md) | Stable references through edits, the Fusion 360 way | Accepted |
 
 ## Open decisions
 
@@ -28,11 +31,7 @@ These have no record yet. Each needs one before the work that depends on it star
 
 | Decision | Needed before |
 | --- | --- |
-| First user story (the part that drives Phases 1 and 2) | Phase 0 |
-| Team size and funding | Any schedule |
 | Turning in v1.0 or right after the milling MVP | Phase 2 planning |
-| Constraint solver | Sketcher |
-| Topological naming approach | Feature tree |
 | Post script language (Rhai or Lua) | Post engine |
 | Cloud sync and collaboration | File format freeze |
 | Product name and trademark check | Public launch |
