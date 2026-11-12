@@ -7,10 +7,29 @@
 //!
 //! Only `cndt-kernel` may depend on this crate; the layer check enforces it.
 //! Everything else goes through the kernel's trait (decision 0007).
+//!
+//! # Threads
+//!
+//! OpenCascade's data exchange code (STEP, IGES) keeps global state and is
+//! not safe to call from several threads at once: concurrent reads crashed
+//! the process in testing. Every call into the shim therefore holds
+//! [`OCCT_LOCK`]. This serialises kernel work; parallelism, where it is
+//! wanted later, has to come from inside OpenCascade or from separate
+//! processes.
 
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::fmt;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// Held for the whole of every call into OpenCascade. See the crate docs.
+static OCCT_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock() -> MutexGuard<'static, ()> {
+    // A poisoned lock only means another thread panicked while holding it.
+    // The shim keeps no Rust state, so carrying on is safe.
+    OCCT_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Layout must match `cndt_shape_summary` in `cpp/occt_shim.cpp`.
 #[repr(C)]
@@ -92,6 +111,7 @@ impl std::error::Error for OcctError {}
 /// The OpenCascade version this build is linked against, such as `7.9.3`.
 #[must_use]
 pub fn version() -> String {
+    let _guard = lock();
     // SAFETY: the shim returns a pointer to a static NUL-terminated string
     // literal, or null. It takes no arguments and cannot fail.
     let ptr = unsafe { cndt_occt_version() };
@@ -119,6 +139,7 @@ pub fn read_step(path: &Path) -> Result<ShapeSummary, OcctError> {
     let mut summary = RawSummary::default();
     let mut err = [0_u8; ERROR_BUFFER];
 
+    let guard = lock();
     // SAFETY: `c_path` is a valid NUL-terminated string that outlives the
     // call. `summary` is a valid, exclusively borrowed `RawSummary` whose
     // layout matches the C struct. `err` is a writable buffer of exactly
@@ -132,6 +153,7 @@ pub fn read_step(path: &Path) -> Result<ShapeSummary, OcctError> {
             err.len(),
         )
     };
+    drop(guard);
 
     let message = || {
         CStr::from_bytes_until_nul(&err)
@@ -201,6 +223,27 @@ mod tests {
             matches!(result, Err(OcctError::ReadFailed(_))),
             "got {result:?}"
         );
+    }
+
+    /// Regression test: unserialised concurrent reads crashed the process
+    /// about once in a few hundred test runs.
+    #[test]
+    fn concurrent_reads_are_safe() {
+        let path = fixture("box-10x20x30.step");
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        assert_eq!(read_step(&path).unwrap().faces, 6);
+                        assert!(read_step(Path::new("missing.step")).is_err());
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
     }
 
     #[test]
