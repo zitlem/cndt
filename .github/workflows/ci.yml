@@ -41,6 +41,13 @@ jobs:
         if: runner.os != 'macOS'
         run: echo "OCCT_DIR=$(cygpath -w "$CONDA_PREFIX" 2>/dev/null || echo "$CONDA_PREFIX")" >> "$GITHUB_ENV"
 
+      # Every linked program needs to find the conda libraries at run time.
+      # A build script's rpath only reaches its own crate, so set it for all.
+      # (Windows finds them on PATH; Homebrew libraries use absolute paths.)
+      - name: Let Linux programs find OpenCascade
+        if: runner.os == 'Linux'
+        run: echo "RUSTFLAGS=-C link-arg=-Wl,-rpath,$CONDA_PREFIX/lib" >> "$GITHUB_ENV"
+
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
 

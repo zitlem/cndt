@@ -31,6 +31,7 @@ You need:
 - [OpenCascade](https://dev.opencascade.org) 7.9.3, the geometry kernel:
   - macOS: `brew install opencascade`
   - Linux and Windows: `micromamba create -n occt -c conda-forge occt=7.9.3`, then set `OCCT_DIR` to that environment's folder.
+  - On Linux, also set `RUSTFLAGS="-C link-arg=-Wl,-rpath,$OCCT_DIR/lib"` so programs find the libraries when they run.
 
 ```sh
 cargo xtask ci                                     # run every check CI runs
