@@ -5,12 +5,13 @@
 //! rule 2). The engine's session owns the document and hands out shared
 //! references, so code outside a command cannot reach the mutating methods.
 //!
-//! For now the document holds a name and user parameters. Sketches, features
-//! and CAM data arrive in later phases.
+//! For now the document holds a name, user parameters and sketches. Solid
+//! features and CAM data arrive later.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 use serde::{Deserialize, Serialize};
 
 /// Longest allowed parameter name, in characters.
@@ -79,8 +80,59 @@ impl Parameter {
     }
 }
 
+/// Identifies a sketch within a document. Never reused after deletion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SketchId(pub u32);
+
+impl fmt::Display for SketchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "sketch {}", self.0)
+    }
+}
+
+/// The plane a sketch is drawn on. Sketches on model faces arrive with solid
+/// features and stable references (decision 0012).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Plane {
+    /// The XY origin plane, seen from +Z. Sketch X is model X.
+    Xy,
+    /// The XZ origin plane, seen from −Y. Sketch X is model X, sketch Y is
+    /// model Z.
+    Xz,
+    /// The YZ origin plane, seen from +X. Sketch X is model Y, sketch Y is
+    /// model Z.
+    Yz,
+}
+
+impl Plane {
+    /// Parses `xy`, `xz` or `yz`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "xy" => Some(Self::Xy),
+            "xz" => Some(Self::Xz),
+            "yz" => Some(Self::Yz),
+            _ => None,
+        }
+    }
+}
+
+/// A named sketch on a plane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchRecord {
+    /// Shown in the browser tree, such as `Sketch1`.
+    pub name: String,
+    /// Where it is drawn.
+    pub plane: Plane,
+    /// Its geometry and constraints.
+    pub sketch: Sketch,
+}
+
 /// Why a change to the model was refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ModelError {
     /// A document or parameter name breaks the naming rules.
     InvalidName {
@@ -96,6 +148,16 @@ pub enum ModelError {
     },
     /// No parameter has this name.
     UnknownParameter(String),
+    /// No sketch has this id.
+    UnknownSketch(SketchId),
+    /// The sketch refused the change.
+    Sketch(SketchError),
+}
+
+impl From<SketchError> for ModelError {
+    fn from(error: SketchError) -> Self {
+        Self::Sketch(error)
+    }
 }
 
 impl fmt::Display for ModelError {
@@ -104,6 +166,8 @@ impl fmt::Display for ModelError {
             Self::InvalidName { name, reason } => write!(f, "invalid name {name:?}: {reason}"),
             Self::NotFinite { name } => write!(f, "parameter {name} must be a finite number"),
             Self::UnknownParameter(name) => write!(f, "there is no parameter named {name}"),
+            Self::UnknownSketch(id) => write!(f, "{id} does not exist"),
+            Self::Sketch(error) => error.fmt(f),
         }
     }
 }
@@ -111,11 +175,25 @@ impl fmt::Display for ModelError {
 impl std::error::Error for ModelError {}
 
 /// A CNDT project document.
+///
+/// Unknown fields are refused when reading, so a file from a newer build is
+/// never opened and then saved without the parts this build does not know
+/// (decision 0009, "never drop data").
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Document {
     name: String,
     #[serde(default)]
     parameters: BTreeMap<String, Parameter>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    sketches: BTreeMap<SketchId, SketchRecord>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    next_sketch: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes fields by reference
+const fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl Default for Document {
@@ -136,6 +214,8 @@ impl Document {
         Self {
             name,
             parameters: BTreeMap::new(),
+            sketches: BTreeMap::new(),
+            next_sketch: 0,
         }
     }
 
@@ -199,6 +279,98 @@ impl Document {
             .ok_or_else(|| ModelError::UnknownParameter(name.to_owned()))
     }
 
+    /// All sketches, in id order.
+    #[must_use]
+    pub const fn sketches(&self) -> &BTreeMap<SketchId, SketchRecord> {
+        &self.sketches
+    }
+
+    /// One sketch.
+    #[must_use]
+    pub fn sketch(&self, id: SketchId) -> Option<&SketchRecord> {
+        self.sketches.get(&id)
+    }
+
+    /// Adds an empty sketch. An empty name gets the next free `SketchN`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidName`] for a name with control
+    /// characters or over 200 characters.
+    pub fn add_sketch(&mut self, name: &str, plane: Plane) -> Result<SketchId, ModelError> {
+        let id = SketchId(self.next_sketch);
+        let name = if name.trim().is_empty() {
+            (1..)
+                .map(|n| format!("Sketch{n}"))
+                .find(|candidate| self.sketches.values().all(|s| s.name != *candidate))
+                .unwrap_or_default()
+        } else {
+            check_document_name(name)?;
+            name.to_owned()
+        };
+        self.restore_sketch(
+            id,
+            SketchRecord {
+                name,
+                plane,
+                sketch: Sketch::new(),
+            },
+        );
+        Ok(id)
+    }
+
+    /// Puts a sketch back under its old id, as undoing a deletion does.
+    pub fn restore_sketch(&mut self, id: SketchId, record: SketchRecord) {
+        self.next_sketch = self.next_sketch.max(id.0.saturating_add(1));
+        self.sketches.insert(id, record);
+    }
+
+    /// Deletes a sketch and returns it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::UnknownSketch`] if there is no such sketch.
+    pub fn remove_sketch(&mut self, id: SketchId) -> Result<SketchRecord, ModelError> {
+        self.sketches
+            .remove(&id)
+            .ok_or(ModelError::UnknownSketch(id))
+    }
+
+    /// Changes a sketch's contents. The edit runs on a copy, and the
+    /// sketch only changes if it succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::UnknownSketch`], or the edit's own error.
+    pub fn edit_sketch<T>(
+        &mut self,
+        id: SketchId,
+        edit: impl FnOnce(&mut Sketch) -> Result<T, SketchError>,
+    ) -> Result<T, ModelError> {
+        let record = self
+            .sketches
+            .get_mut(&id)
+            .ok_or(ModelError::UnknownSketch(id))?;
+        let mut copy = record.sketch.clone();
+        let out = edit(&mut copy)?;
+        record.sketch = copy;
+        Ok(out)
+    }
+
+    /// Replaces a sketch's contents wholesale, returning the old ones. Used
+    /// by undo.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::UnknownSketch`] if there is no such sketch.
+    pub fn replace_sketch(&mut self, id: SketchId, sketch: Sketch) -> Result<Sketch, ModelError> {
+        let record = self
+            .sketches
+            .get_mut(&id)
+            .ok_or(ModelError::UnknownSketch(id))?;
+        Ok(std::mem::replace(&mut record.sketch, sketch))
+    }
+
     /// Checks every rule the setters enforce. Used after loading a file,
     /// which bypasses the setters.
     ///
@@ -212,6 +384,15 @@ impl Document {
             if !parameter.value.is_finite() {
                 return Err(ModelError::NotFinite { name: name.clone() });
             }
+        }
+        for (id, record) in &self.sketches {
+            if id.0 >= self.next_sketch {
+                return Err(ModelError::Sketch(SketchError::Corrupt(format!(
+                    "{id} is beyond the next free sketch id"
+                ))));
+            }
+            check_document_name(&record.name)?;
+            record.sketch.validate()?;
         }
         Ok(())
     }
@@ -301,6 +482,41 @@ mod tests {
         assert!(document.set_name("tab\there").is_err());
         assert_eq!(document.name(), "Bracket");
         assert_eq!(document.set_name("Plate").as_deref(), Ok("Bracket"));
+    }
+
+    #[test]
+    fn sketches_are_added_named_and_edited_atomically() {
+        let mut document = Document::default();
+        let first = document.add_sketch("", Plane::Xy).unwrap();
+        let second = document.add_sketch("", Plane::Xz).unwrap();
+        assert_eq!(document.sketch(first).unwrap().name, "Sketch1");
+        assert_eq!(document.sketch(second).unwrap().name, "Sketch2");
+        let point = document
+            .edit_sketch(first, |s| s.add_point(sketch::Point2::new(1.0, 2.0)))
+            .unwrap();
+        // A failing edit leaves the sketch exactly as it was.
+        let before = document.clone();
+        let error = document.edit_sketch(first, |s| {
+            s.add_point(sketch::Point2::new(5.0, 5.0))?;
+            s.add_line(point, point)
+        });
+        assert!(matches!(
+            error,
+            Err(ModelError::Sketch(SketchError::SameEntity(_)))
+        ));
+        assert_eq!(document, before);
+        // Deleted ids are not reused.
+        let removed = document.remove_sketch(second).unwrap();
+        assert_eq!(document.add_sketch("Top", Plane::Xy), Ok(SketchId(2)));
+        document.restore_sketch(second, removed);
+        assert_eq!(document.sketches().len(), 3);
+        assert_eq!(document.validate(), Ok(()));
+    }
+
+    #[test]
+    fn unknown_fields_are_refused() {
+        let json = r#"{"name":"x","bodies":{}}"#;
+        assert!(serde_json::from_str::<Document>(json).is_err());
     }
 
     #[test]

@@ -4,11 +4,15 @@
 
 use std::collections::BTreeMap;
 
-use cndt_model::{Parameter, Unit};
+use cndt_model::sketch::{Constraint, ConstraintId, EntityId, Point2};
+use cndt_model::{Parameter, Plane, SketchId, Unit};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{Command, CommandError, RemoveParameter, RenameDocument, SetParameter};
+use crate::{
+    Command, CommandError, CreateSketch, DeleteSketch, EditSketch, PointRef, RemoveParameter,
+    RenameDocument, SetParameter, SketchEdit,
+};
 
 /// The type of a command argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -20,6 +24,18 @@ pub enum ArgKind {
     Number,
     /// A unit symbol: `mm`, `deg` or `none`.
     Unit,
+    /// A whole number id, such as a sketch, entity or constraint id.
+    Id,
+    /// `true` or `false`.
+    Boolean,
+    /// A sketch position `{"x": 1, "y": 2}` in millimetres, or where noted,
+    /// the id of an existing sketch point instead.
+    Point,
+    /// A sketch plane: `xy`, `xz` or `yz`.
+    Plane,
+    /// A sketch constraint object, such as
+    /// `{"type": "length", "line": 4, "value": 96}`.
+    Constraint,
 }
 
 /// One argument a command accepts.
@@ -130,6 +146,303 @@ impl Registry {
                 }],
                 build: |args| Ok(Box::new(RemoveParameter::new(&text(args, "name")?))),
             },
+            CommandSpec {
+                name: "sketch.create",
+                description: "Create an empty sketch on an origin plane.",
+                args: &[
+                    ArgSpec {
+                        name: "plane",
+                        kind: ArgKind::Plane,
+                        required: true,
+                        description: "xy, xz or yz.",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next SketchN.",
+                    },
+                ],
+                build: |args| {
+                    let name = if args.contains_key("name") {
+                        text(args, "name")?
+                    } else {
+                        String::new()
+                    };
+                    Ok(Box::new(CreateSketch::new(&name, plane(args, "plane")?)))
+                },
+            },
+            CommandSpec {
+                name: "sketch.delete",
+                description: "Delete a sketch.",
+                args: &[SKETCH],
+                build: |args| Ok(Box::new(DeleteSketch::new(sketch_id(args)?))),
+            },
+            CommandSpec {
+                name: "sketch.add_point",
+                description: "Add a point.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "at",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Position in millimetres.",
+                    },
+                ],
+                build: |args| edit(args, SketchEdit::AddPoint(position(args, "at")?)),
+            },
+            CommandSpec {
+                name: "sketch.add_line",
+                description: "Add a line. Each end is a new position or an existing point's id.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "start",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Position, or existing point id.",
+                    },
+                    ArgSpec {
+                        name: "end",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Position, or existing point id.",
+                    },
+                ],
+                build: |args| {
+                    let (start, end) = (point_ref(args, "start")?, point_ref(args, "end")?);
+                    edit(args, SketchEdit::AddLine { start, end })
+                },
+            },
+            CommandSpec {
+                name: "sketch.add_circle",
+                description: "Add a circle.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "center",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Position, or existing point id.",
+                    },
+                    ArgSpec {
+                        name: "radius",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres.",
+                    },
+                ],
+                build: |args| {
+                    let center = point_ref(args, "center")?;
+                    edit(
+                        args,
+                        SketchEdit::AddCircle {
+                            center,
+                            radius: number(args, "radius")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.add_arc",
+                description: "Add an arc, counter-clockwise from start to end around center. The end is brought onto the circle through the start.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "center",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Position, or existing point id.",
+                    },
+                    ArgSpec {
+                        name: "start",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Position, or existing point id.",
+                    },
+                    ArgSpec {
+                        name: "end",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Position, or existing point id.",
+                    },
+                ],
+                build: |args| {
+                    let center = point_ref(args, "center")?;
+                    let (start, end) = (point_ref(args, "start")?, point_ref(args, "end")?);
+                    edit(args, SketchEdit::AddArc { center, start, end })
+                },
+            },
+            CommandSpec {
+                name: "sketch.add_rectangle",
+                description: "Add a rectangle from two opposite corners, with horizontal and vertical constraints.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "from",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "One corner, in millimetres.",
+                    },
+                    ArgSpec {
+                        name: "to",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "The opposite corner.",
+                    },
+                ],
+                build: |args| {
+                    let (from, to) = (position(args, "from")?, position(args, "to")?);
+                    edit(args, SketchEdit::AddRectangle { from, to })
+                },
+            },
+            CommandSpec {
+                name: "sketch.constrain",
+                description: "Add a constraint or dimension. Refused if it conflicts with or repeats the existing ones.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "constraint",
+                        kind: ArgKind::Constraint,
+                        required: true,
+                        description: "The constraint, with its type and references.",
+                    },
+                ],
+                build: |args| {
+                    let value = args.get("constraint").cloned().unwrap_or_default();
+                    let constraint: Constraint =
+                        serde_json::from_value(value).map_err(|error| {
+                            format!("\"constraint\" is not a valid constraint: {error}")
+                        })?;
+                    edit(args, SketchEdit::Constrain(constraint))
+                },
+            },
+            CommandSpec {
+                name: "sketch.set_dimension",
+                description: "Change a dimension's value.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "constraint",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The dimension's id.",
+                    },
+                    ArgSpec {
+                        name: "value",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres, or degrees for an angle.",
+                    },
+                ],
+                build: |args| {
+                    let constraint = ConstraintId(id(args, "constraint")?);
+                    edit(
+                        args,
+                        SketchEdit::SetDimension {
+                            constraint,
+                            value: number(args, "value")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.move_point",
+                description: "Drag a point; the constraints keep holding.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "point",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The point's id.",
+                    },
+                    ArgSpec {
+                        name: "to",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "Where to, in millimetres.",
+                    },
+                ],
+                build: |args| {
+                    let point = EntityId(id(args, "point")?);
+                    edit(
+                        args,
+                        SketchEdit::MovePoint {
+                            point,
+                            to: position(args, "to")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.set_construction",
+                description: "Mark an entity as construction geometry, or back.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entity",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The entity's id.",
+                    },
+                    ArgSpec {
+                        name: "construction",
+                        kind: ArgKind::Boolean,
+                        required: true,
+                        description: "true for construction.",
+                    },
+                ],
+                build: |args| {
+                    let entity = EntityId(id(args, "entity")?);
+                    edit(
+                        args,
+                        SketchEdit::SetConstruction {
+                            entity,
+                            construction: boolean(args, "construction")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.remove_entity",
+                description: "Delete an entity and its constraints. Deleting a point deletes what is drawn from it.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entity",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The entity's id.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::RemoveEntity(EntityId(id(args, "entity")?)),
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.remove_constraint",
+                description: "Delete a constraint or dimension.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "constraint",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The constraint's id.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::RemoveConstraint(ConstraintId(id(args, "constraint")?)),
+                    )
+                },
+            },
         ];
         Self {
             commands: specs.into_iter().map(|spec| (spec.name, spec)).collect(),
@@ -199,6 +512,60 @@ fn number(args: &Map<String, Value>, key: &str) -> Result<f64, String> {
     }
 }
 
+/// The `sketch` argument every sketch command takes.
+const SKETCH: ArgSpec = ArgSpec {
+    name: "sketch",
+    kind: ArgKind::Id,
+    required: true,
+    description: "The sketch's id.",
+};
+
+fn id(args: &Map<String, Value>, key: &str) -> Result<u32, String> {
+    args.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| format!("{key:?} must be a whole number id"))
+}
+
+fn sketch_id(args: &Map<String, Value>) -> Result<SketchId, String> {
+    id(args, "sketch").map(SketchId)
+}
+
+fn boolean(args: &Map<String, Value>, key: &str) -> Result<bool, String> {
+    args.get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("{key:?} must be true or false"))
+}
+
+fn plane(args: &Map<String, Value>, key: &str) -> Result<Plane, String> {
+    let name = text(args, key)?;
+    Plane::from_name(&name).ok_or_else(|| format!("unknown plane {name:?}; use xy, xz or yz"))
+}
+
+fn position(args: &Map<String, Value>, key: &str) -> Result<Point2, String> {
+    let bad = || format!("{key:?} must be a position like {{\"x\": 1, \"y\": 2}}");
+    let object = args.get(key).and_then(Value::as_object).ok_or_else(bad)?;
+    if object.keys().any(|k| k != "x" && k != "y") {
+        return Err(bad());
+    }
+    let x = number(object, "x").map_err(|_| bad())?;
+    let y = number(object, "y").map_err(|_| bad())?;
+    Ok(Point2::new(x, y))
+}
+
+fn point_ref(args: &Map<String, Value>, key: &str) -> Result<PointRef, String> {
+    if args.get(key).is_some_and(Value::is_number) {
+        return id(args, key).map(|value| PointRef::Existing(EntityId(value)));
+    }
+    position(args, key).map(PointRef::New).map_err(|_| {
+        format!("{key:?} must be a position like {{\"x\": 1, \"y\": 2}} or a point id")
+    })
+}
+
+fn edit(args: &Map<String, Value>, edit: SketchEdit) -> Result<Box<dyn Command>, String> {
+    Ok(Box::new(EditSketch::new(sketch_id(args)?, edit)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +615,38 @@ mod tests {
                 json!({"name": "a", "colour": "red"}),
                 "unexpected argument",
             ),
+            ("sketch.create", json!({"plane": "top"}), "unknown plane"),
+            ("sketch.delete", json!({"sketch": -1}), "whole number id"),
+            (
+                "sketch.add_point",
+                json!({"sketch": 0, "at": [1, 2]}),
+                "must be a position",
+            ),
+            (
+                "sketch.add_point",
+                json!({"sketch": 0, "at": {"x": 1, "y": 2, "z": 3}}),
+                "must be a position",
+            ),
+            (
+                "sketch.add_line",
+                json!({"sketch": 0, "start": "a", "end": 1}),
+                "or a point id",
+            ),
+            (
+                "sketch.constrain",
+                json!({"sketch": 0, "constraint": {"type": "glue"}}),
+                "not a valid constraint",
+            ),
+            (
+                "sketch.constrain",
+                json!({"sketch": 0, "constraint": {"type": "fix", "point": 1, "extra": 2}}),
+                "not a valid constraint",
+            ),
+            (
+                "sketch.set_construction",
+                json!({"sketch": 0, "entity": 1, "construction": 1}),
+                "true or false",
+            ),
         ];
         for (name, args, expected) in cases {
             let error = registry.build(name, &args).unwrap_err().to_string();
@@ -265,6 +664,49 @@ mod tests {
                 json!({"name": "x", "value": 1, "unit": "none"}),
             ),
             ("parameter.remove", json!({"name": "x"})),
+            ("sketch.create", json!({"plane": "xy"})),
+            ("sketch.delete", json!({"sketch": 0})),
+            (
+                "sketch.add_point",
+                json!({"sketch": 0, "at": {"x": 1, "y": 2}}),
+            ),
+            (
+                "sketch.add_line",
+                json!({"sketch": 0, "start": 3, "end": {"x": 1, "y": 2}}),
+            ),
+            (
+                "sketch.add_circle",
+                json!({"sketch": 0, "center": {"x": 0, "y": 0}, "radius": 3.3}),
+            ),
+            (
+                "sketch.add_arc",
+                json!({"sketch": 0, "center": 0, "start": 1, "end": 2}),
+            ),
+            (
+                "sketch.add_rectangle",
+                json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 96, "y": 56}}),
+            ),
+            (
+                "sketch.constrain",
+                json!({"sketch": 0, "constraint": {"type": "length", "line": 4, "value": 96}}),
+            ),
+            (
+                "sketch.set_dimension",
+                json!({"sketch": 0, "constraint": 4, "value": 100}),
+            ),
+            (
+                "sketch.move_point",
+                json!({"sketch": 0, "point": 1, "to": {"x": 3, "y": 4}}),
+            ),
+            (
+                "sketch.set_construction",
+                json!({"sketch": 0, "entity": 1, "construction": true}),
+            ),
+            ("sketch.remove_entity", json!({"sketch": 0, "entity": 1})),
+            (
+                "sketch.remove_constraint",
+                json!({"sketch": 0, "constraint": 1}),
+            ),
         ];
         assert_eq!(
             registry.specs().count(),

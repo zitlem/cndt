@@ -33,7 +33,10 @@ use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 pub const FORMAT_NAME: &str = "cndt-project";
 
 /// The schema version this build writes and the newest it can read.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// - 1: name and parameters.
+/// - 2: sketches. A version 1 file reads as a version 2 file without any.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -245,6 +248,12 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     let document: Document = serde_json::from_slice(&document_bytes)
         .map_err(|error| FormatError::Corrupt(format!("{DOCUMENT}: {error}")))?;
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Migrations. Version 1 knew nothing of sketches.
+    if manifest.schema_version < 2 && !document.sketches().is_empty() {
+        return Err(FormatError::Corrupt(String::from(
+            "a version 1 file cannot contain sketches",
+        )));
+    }
 
     let mut project = Project::new(document);
     for (name, data) in entries {
@@ -389,6 +398,42 @@ mod tests {
             back.extensions().get("future-module/data.bin"),
             Some(&vec![0, 1, 2, 255])
         );
+    }
+
+    #[test]
+    fn sketches_round_trip_and_version_1_files_still_open() {
+        use cndt_model::Plane;
+        use cndt_model::sketch::{Constraint, Point2, SolveOptions};
+        let mut document = Document::new("Test block");
+        let id = document.add_sketch("", Plane::Xy).unwrap();
+        document
+            .edit_sketch(id, |s| {
+                let a = s.add_point(Point2::new(0.0, 0.0))?;
+                let b = s.add_point(Point2::new(96.0, 0.5))?;
+                let line = s.add_line(a, b)?;
+                s.add_constraint(Constraint::Horizontal { line }, &SolveOptions::default())
+            })
+            .unwrap();
+        let project = Project::new(document);
+        let bytes = to_bytes(&project);
+        assert_eq!(read(Cursor::new(bytes)).unwrap(), project);
+
+        let v1 = raw_zip(&[
+            (MANIFEST, &manifest(1)),
+            (DOCUMENT, r#"{"name":"Old","parameters":{}}"#),
+        ]);
+        assert_eq!(read(Cursor::new(v1)).unwrap().document.name(), "Old");
+        let forged = raw_zip(&[
+            (MANIFEST, &manifest(1)),
+            (
+                DOCUMENT,
+                r#"{"name":"Old","sketches":{"0":{"name":"S","plane":"xy","sketch":{"entities":{},"constraints":{},"next_entity":0,"next_constraint":0}}},"next_sketch":1}"#,
+            ),
+        ]);
+        assert!(matches!(
+            read(Cursor::new(forged)),
+            Err(FormatError::Corrupt(_))
+        ));
     }
 
     #[test]

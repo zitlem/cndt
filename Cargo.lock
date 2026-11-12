@@ -421,6 +421,7 @@ dependencies = [
 name = "cndt-model"
 version = "0.0.0"
 dependencies = [
+ "cndt-sketch",
  "serde",
  "serde_json",
 ]

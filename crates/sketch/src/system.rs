@@ -72,6 +72,8 @@ pub(crate) struct Component {
     x0: Vec<f64>,
     equations: Vec<Equation>,
     weights: Vec<f64>,
+    /// Parameters of points held still for this solve.
+    held: Vec<usize>,
     tol: f64,
 }
 
@@ -368,11 +370,24 @@ pub(crate) fn components(
             equations.push(Equation { source, form });
         }
         let tol = 1e-9 * x0.iter().fold(1.0f64, |m, v| m.max(v.abs()));
+        let held = options
+            .hold
+            .iter()
+            .filter(|id| {
+                matches!(
+                    sketch.entity(**id).map(|e| &e.geometry),
+                    Some(Geometry::Point { .. })
+                )
+            })
+            .filter_map(|id| offsets.get(id))
+            .flat_map(|&o| [o, o + 1])
+            .collect();
         out.push(Component {
             offsets,
             x0,
             equations,
             weights,
+            held,
             tol,
         });
     }
@@ -386,6 +401,11 @@ impl Component {
 
     fn locked(&self, skip: Option<usize>) -> Vec<bool> {
         let mut locked = vec![false; self.x0.len()];
+        for &j in &self.held {
+            if let Some(l) = locked.get_mut(j) {
+                *l = true;
+            }
+        }
         for (i, e) in self.equations.iter().enumerate() {
             if Some(i) == skip {
                 continue;

@@ -56,7 +56,7 @@ impl fmt::Display for ConstraintId {
 
 /// The geometry of a sketch entity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Geometry {
     /// A point. The only geometry with coordinates of its own.
     Point {
@@ -115,6 +115,7 @@ impl Geometry {
 
 /// One entity of a sketch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Entity {
     /// Its geometry.
     pub geometry: Geometry,
@@ -138,7 +139,7 @@ pub enum Axis {
 /// A geometric or dimensional constraint. Dimensions are millimetres, angles
 /// degrees.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Constraint {
     /// Two points in the same place.
     Coincident {
@@ -436,6 +437,8 @@ pub enum SketchError {
     },
     /// The constraint system is too large to solve interactively.
     TooLarge,
+    /// A loaded sketch breaks the rules the editing methods keep.
+    Corrupt(String),
 }
 
 fn ids_text(ids: &[ConstraintId]) -> String {
@@ -495,6 +498,7 @@ impl fmt::Display for SketchError {
                 "this constraint is already implied by {}; it would over-constrain the sketch",
                 ids_text(constraints)
             ),
+            SketchError::Corrupt(reason) => write!(f, "the sketch data is damaged: {reason}"),
             SketchError::TooLarge => {
                 write!(f, "the sketch has too many connected constraints to solve")
             }
@@ -510,6 +514,9 @@ pub struct SolveOptions {
     /// Points that should move as little as possible, such as the ones the
     /// user just placed. Other geometry takes up the change.
     pub keep: BTreeSet<EntityId>,
+    /// Points that must not move at all in this solve, as if fixed: the
+    /// points the user just placed while drawing.
+    pub hold: BTreeSet<EntityId>,
 }
 
 /// How constrained a sketch or an entity is.
@@ -553,6 +560,7 @@ pub struct Freedom {
 
 /// A 2D sketch: entities and the constraints between them.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sketch {
     entities: BTreeMap<EntityId, Entity>,
     constraints: BTreeMap<ConstraintId, Constraint>,
@@ -725,6 +733,46 @@ impl Sketch {
         Ok(id)
     }
 
+    /// Marks an entity as construction geometry or not, returning the
+    /// previous setting.
+    pub fn set_construction(
+        &mut self,
+        id: EntityId,
+        construction: bool,
+    ) -> Result<bool, SketchError> {
+        let entity = self
+            .entities
+            .get_mut(&id)
+            .ok_or(SketchError::UnknownEntity(id))?;
+        Ok(std::mem::replace(&mut entity.construction, construction))
+    }
+
+    /// Checks every rule the editing methods keep. Used after loading a
+    /// file, which bypasses them. Redundant constraints are allowed here;
+    /// [`Sketch::freedom`] reports them.
+    pub fn validate(&self) -> Result<(), SketchError> {
+        for (&id, entity) in &self.entities {
+            if id.0 >= self.next_entity {
+                return Err(SketchError::Corrupt(format!(
+                    "{id} is beyond the next free id"
+                )));
+            }
+            let mut copy = self.clone();
+            copy.entities.remove(&id);
+            copy.next_entity = 0;
+            copy.add(entity.geometry.clone(), entity.construction)?;
+        }
+        for (&id, constraint) in &self.constraints {
+            if id.0 >= self.next_constraint {
+                return Err(SketchError::Corrupt(format!(
+                    "{id} is beyond the next free id"
+                )));
+            }
+            self.check(constraint)?;
+        }
+        Ok(())
+    }
+
     /// Removes a constraint. The geometry stays where it is.
     pub fn remove_constraint(&mut self, id: ConstraintId) -> Result<Constraint, SketchError> {
         self.constraints
@@ -783,6 +831,7 @@ impl Sketch {
         }
         let options = SolveOptions {
             keep: BTreeSet::from([id]),
+            ..SolveOptions::default()
         };
         system::solve(&mut trial, &options)?;
         *self = trial;
