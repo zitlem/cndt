@@ -43,6 +43,8 @@ Nothing below L6 depends on a windowing system, a browser, or the frontend frame
 
 The frontend talks to the core through the `api` crate's interface. The same interface is served over desktop IPC and over direct WASM calls. No frontend code calls a transport directly.
 
+In code: `cndt_api::Api::handle_json` takes one JSON request (`{"method": "execute", "command": ..., "args": ...}`) and returns one JSON response (`{"ok": true, "result": ...}` or `{"ok": false, "error": {"kind": ..., "message": ...}}`). Error kinds are stable identifiers front ends can branch on. Unknown fields are refused. `cndt api` serves the same protocol over standard input and output, one request per line.
+
 ### 6. The CAM core is process-agnostic
 
 `cam-core` defines setups, stock, machines, consumables, technology tables, operations and the toolpath format. It contains nothing specific to milling, turning or wire EDM.
