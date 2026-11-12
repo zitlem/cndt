@@ -45,6 +45,38 @@ struct RawSummary {
     has_bounds: u8,
 }
 
+/// The shim's mesh object. Only ever handled through a pointer.
+#[repr(C)]
+struct MeshHandle {
+    _private: [u8; 0],
+}
+
+/// Layout must match `cndt_mesh_view` in `cpp/occt_shim.cpp`.
+#[repr(C)]
+struct RawMeshView {
+    positions: *const f32,
+    positions_len: usize,
+    indices: *const u32,
+    indices_len: usize,
+    triangle_faces: *const u32,
+    triangle_faces_len: usize,
+    face_count: u32,
+}
+
+impl Default for RawMeshView {
+    fn default() -> Self {
+        Self {
+            positions: std::ptr::null(),
+            positions_len: 0,
+            indices: std::ptr::null(),
+            indices_len: 0,
+            triangle_faces: std::ptr::null(),
+            triangle_faces_len: 0,
+            face_count: 0,
+        }
+    }
+}
+
 unsafe extern "C" {
     fn cndt_occt_version() -> *const c_char;
     fn cndt_occt_read_step(
@@ -53,6 +85,15 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_mesh_step(
+        path: *const c_char,
+        deflection: f64,
+        handle: *mut *mut MeshHandle,
+        view: *mut RawMeshView,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn cndt_occt_free_mesh(handle: *mut MeshHandle);
 }
 
 /// Status codes returned by the shim. Keep in step with `cpp/occt_shim.cpp`.
@@ -60,6 +101,35 @@ mod status {
     pub const OK: i32 = 0;
     pub const READ_FAILED: i32 = 1;
     pub const NO_SHAPES: i32 = 2;
+    pub const MESH_FAILED: i32 = 5;
+}
+
+/// A triangle mesh for display. Lengths are millimetres.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Mesh {
+    /// Vertex positions, three values (x, y, z) per vertex.
+    pub positions: Vec<f32>,
+    /// Vertex indices, three per triangle, wound counter-clockwise seen from
+    /// outside the solid.
+    pub indices: Vec<u32>,
+    /// For each triangle, the index of the face it belongs to.
+    pub triangle_faces: Vec<u32>,
+    /// How many faces the shape has.
+    pub face_count: u32,
+}
+
+/// Copies `len` items starting at `ptr` into a vector.
+///
+/// # Safety
+///
+/// `ptr` must point to `len` initialised items that stay valid for the call,
+/// or `len` must be zero.
+unsafe fn copy_array<T: Copy>(ptr: *const T, len: usize) -> Vec<T> {
+    if len == 0 || ptr.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
 }
 
 /// Size of the buffer the shim writes error messages into.
@@ -93,6 +163,8 @@ pub enum OcctError {
     NoShapes,
     /// OpenCascade raised an error while working on the shape.
     Kernel(String),
+    /// The shape could not be triangulated.
+    MeshFailed(String),
 }
 
 impl fmt::Display for OcctError {
@@ -102,8 +174,22 @@ impl fmt::Display for OcctError {
             Self::ReadFailed(reason) => write!(f, "read failed: {reason}"),
             Self::NoShapes => write!(f, "the file contains no shapes"),
             Self::Kernel(reason) => write!(f, "geometry kernel error: {reason}"),
+            Self::MeshFailed(reason) => write!(f, "triangulation failed: {reason}"),
         }
     }
+}
+
+fn c_path(path: &Path) -> Result<CString, OcctError> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| OcctError::InvalidPath(path.display().to_string()))?;
+    CString::new(text).map_err(|_| OcctError::InvalidPath(text.to_owned()))
+}
+
+fn error_text(err: &[u8]) -> String {
+    CStr::from_bytes_until_nul(err)
+        .map(|text| text.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 impl std::error::Error for OcctError {}
@@ -175,6 +261,65 @@ pub fn read_step(path: &Path) -> Result<ShapeSummary, OcctError> {
     }
 }
 
+/// Reads a STEP file and triangulates it for display.
+///
+/// `deflection` is the largest allowed distance, in millimetres, between the
+/// triangles and the true surface. Every face has its own vertices, so
+/// normals stay sharp across face edges. The result is the same on every run.
+///
+/// # Errors
+///
+/// Returns an error if the path is invalid, the file is not readable STEP,
+/// it holds no shapes, triangulation fails, or `deflection` is not positive.
+pub fn mesh_step(path: &Path, deflection: f64) -> Result<Mesh, OcctError> {
+    let c_path = c_path(path)?;
+    let mut handle: *mut MeshHandle = std::ptr::null_mut();
+    let mut view = RawMeshView::default();
+    let mut err = [0_u8; ERROR_BUFFER];
+
+    let guard = lock();
+    // SAFETY: `c_path` is a valid NUL-terminated string that outlives the
+    // call. `handle` and `view` are valid, exclusively borrowed out-pointers
+    // whose layouts match the C declarations. `err` is a writable buffer of
+    // exactly `err.len()` bytes. The shim catches all C++ exceptions.
+    let code = unsafe {
+        cndt_occt_mesh_step(
+            c_path.as_ptr(),
+            deflection,
+            &mut handle,
+            &mut view,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    let result = if code == status::OK && !handle.is_null() {
+        // SAFETY: on success the shim filled `view` with pointers into the
+        // arrays owned by `handle`, with their exact lengths. `handle` is not
+        // freed until after these copies.
+        let mesh = unsafe {
+            Mesh {
+                positions: copy_array(view.positions, view.positions_len),
+                indices: copy_array(view.indices, view.indices_len),
+                triangle_faces: copy_array(view.triangle_faces, view.triangle_faces_len),
+                face_count: view.face_count,
+            }
+        };
+        // SAFETY: `handle` came from a successful `cndt_occt_mesh_step` and is
+        // freed exactly once; nothing points into it after this.
+        unsafe { cndt_occt_free_mesh(handle) };
+        Ok(mesh)
+    } else {
+        Err(match code {
+            status::READ_FAILED => OcctError::ReadFailed(error_text(&err)),
+            status::NO_SHAPES => OcctError::NoShapes,
+            status::MESH_FAILED => OcctError::MeshFailed(error_text(&err)),
+            _ => OcctError::Kernel(error_text(&err)),
+        })
+    };
+    drop(guard);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +389,55 @@ mod tests {
         for thread in threads {
             thread.join().unwrap();
         }
+    }
+
+    #[test]
+    fn meshes_the_box_with_outward_triangles() {
+        let mesh = mesh_step(&fixture("box-10x20x30.step"), 0.05).unwrap();
+        assert_eq!(mesh.face_count, 6);
+        assert_eq!(mesh.indices.len(), 12 * 3, "a box is 12 triangles");
+        assert_eq!(mesh.triangle_faces.len(), 12);
+        assert_eq!(mesh.positions.len() % 3, 0);
+
+        let point = |index: u32| {
+            let i = index as usize * 3;
+            [
+                f64::from(mesh.positions[i]),
+                f64::from(mesh.positions[i + 1]),
+                f64::from(mesh.positions[i + 2]),
+            ]
+        };
+        let centre = [5.0, 10.0, 15.0];
+        for triangle in mesh.indices.chunks(3) {
+            let [a, b, c] = [point(triangle[0]), point(triangle[1]), point(triangle[2])];
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let normal = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let outward = [a[0] - centre[0], a[1] - centre[1], a[2] - centre[2]];
+            let dot = normal[0] * outward[0] + normal[1] * outward[1] + normal[2] * outward[2];
+            assert!(dot > 0.0, "triangle {triangle:?} faces inwards");
+        }
+        for value in &mesh.positions {
+            assert!((-1e-4..=30.0001).contains(value), "{value} outside the box");
+        }
+    }
+
+    #[test]
+    fn meshing_is_deterministic_and_rejects_bad_input() {
+        let path = fixture("box-10x20x30.step");
+        assert_eq!(
+            mesh_step(&path, 0.05).unwrap(),
+            mesh_step(&path, 0.05).unwrap()
+        );
+        assert!(mesh_step(&path, 0.0).is_err());
+        assert!(matches!(
+            mesh_step(&fixture("missing.step"), 0.05),
+            Err(OcctError::ReadFailed(_))
+        ));
     }
 
     #[test]

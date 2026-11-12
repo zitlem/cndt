@@ -46,6 +46,33 @@ impl BoundingBox {
     }
 }
 
+/// A triangle mesh for display. Lengths are millimetres.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriangleMesh {
+    /// Vertex positions, three values (x, y, z) per vertex.
+    pub positions: Vec<f32>,
+    /// Vertex indices, three per triangle, counter-clockwise seen from outside.
+    pub indices: Vec<u32>,
+    /// For each triangle, the index of the model face it belongs to.
+    pub triangle_faces: Vec<u32>,
+    /// How many model faces there are.
+    pub face_count: u32,
+}
+
+impl TriangleMesh {
+    /// Number of vertices.
+    #[must_use]
+    pub fn vertex_count(&self) -> usize {
+        self.positions.len() / 3
+    }
+
+    /// Number of triangles.
+    #[must_use]
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

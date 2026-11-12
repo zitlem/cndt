@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 cndt-geom.workspace = true
 cndt-occt-sys.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

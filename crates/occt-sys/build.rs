@@ -20,6 +20,7 @@ const CORE_LIBS: &[&str] = &[
     "TKGeomBase",
     "TKBRep",
     "TKTopAlgo",
+    "TKMesh",
     "TKXSBase",
 ];
 

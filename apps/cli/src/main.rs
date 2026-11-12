@@ -2,16 +2,13 @@
 //! `cndt`: the headless command-line runner.
 //!
 //! Everything the app can do must be possible from here (architecture rule 4).
-//! Project commands go through the same JSON API as every other front end.
-//! `info` still calls the kernel directly until geometry import becomes a
-//! document command.
+//! Every command goes through the same JSON API as the other front ends.
 
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
 use cndt_api::Api;
-use cndt_kernel::{Kernel, OpenCascade};
 use serde_json::{Value, json};
 
 const USAGE: &str = "\
@@ -42,11 +39,11 @@ fn main() -> ExitCode {
         ["exec", path, command] => exec(Path::new(path), command, "{}"),
         ["exec", path, command, arguments] => exec(Path::new(path), command, arguments),
         ["commands"] => commands(),
-        ["info", path] => info(&OpenCascade, Path::new(path)),
+        ["info", path] => info(Path::new(path)),
         ["api"] => serve_stdin(),
         ["version" | "--version" | "-V"] => {
             println!("cndt {}", env!("CARGO_PKG_VERSION"));
-            println!("{}", OpenCascade.description());
+            println!("{}", Api::new().kernel_description());
             Ok(())
         }
         _ => {
@@ -188,21 +185,30 @@ fn serve_stdin() -> Result<(), String> {
     Ok(())
 }
 
-fn info(kernel: &dyn Kernel, path: &Path) -> Result<(), String> {
-    let summary = kernel
-        .import_step(path)
-        .map_err(|error| error.to_string())?;
+fn info(path: &Path) -> Result<(), String> {
+    let mut api = Api::new();
+    let summary = call(&mut api, &json!({"method": "step_info", "path": path}))?;
     println!("{}", path.display());
-    println!("  solids    {}", summary.solids);
-    println!("  shells    {}", summary.shells);
-    println!("  faces     {}", summary.faces);
-    println!("  edges     {}", summary.edges);
-    println!("  vertices  {}", summary.vertices);
-    if let Some(bounds) = summary.bounds {
-        let [x, y, z] = bounds.size();
-        let min = bounds.min;
-        println!("  size      {x:.3} x {y:.3} x {z:.3} mm");
-        println!("  min       {:.3}, {:.3}, {:.3} mm", min.x, min.y, min.z);
+    for key in ["solids", "shells", "faces", "edges", "vertices"] {
+        println!("  {key:<9} {}", summary[key]);
+    }
+    let bounds = &summary["bounds"];
+    if bounds.is_object() {
+        let coordinate =
+            |corner: &str, axis: &str| bounds[corner][axis].as_f64().unwrap_or_default();
+        let size = |axis: &str| coordinate("max", axis) - coordinate("min", axis);
+        println!(
+            "  size      {:.3} x {:.3} x {:.3} mm",
+            size("x"),
+            size("y"),
+            size("z")
+        );
+        println!(
+            "  min       {:.3}, {:.3}, {:.3} mm",
+            coordinate("min", "x"),
+            coordinate("min", "y"),
+            coordinate("min", "z")
+        );
     }
     Ok(())
 }

@@ -42,6 +42,8 @@ version = "0.0.0"
 dependencies = [
  "cndt-engine",
  "cndt-format",
+ "cndt-geom",
+ "cndt-kernel",
  "cndt-model",
  "serde",
  "serde_json",
@@ -60,7 +62,6 @@ name = "cndt-cli"
 version = "0.0.0"
 dependencies = [
  "cndt-api",
- "cndt-kernel",
  "serde_json",
 ]
 
@@ -96,6 +97,7 @@ version = "0.0.0"
 dependencies = [
  "cndt-geom",
  "cndt-occt-sys",
+ "serde",
 ]
 
 [[package]]
