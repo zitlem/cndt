@@ -443,6 +443,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cndt-sketch"
+version = "0.0.0"
+dependencies = [
+ "cndt-geom",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

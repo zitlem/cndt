@@ -47,3 +47,12 @@ Adapt CADCraft's solver core into our `cndt-sketch` crate:
 - Adapted files carry two notices: our AGPL SPDX line and CADCraft's MIT/Apache notice. The combined work is AGPL-3.0-or-later.
 - We own the adapted code's maintenance.
 - Before adoption, the solver gets its own tests for every sketch in the test block (decision 0010).
+
+## Implementation notes
+
+Built in `crates/sketch` on 2026-11-12:
+
+- Points are the only entities with coordinates. Lines, circles and arcs refer to points, so connected outlines share their corner points. Circles add a radius parameter; an arc's radius is its centre-to-start distance, with one implicit equation keeping the end on the circle.
+- A line or arc tangent to an arc it shares an end point with uses the form "perpendicular to the radius at that point". The distance form is degenerate there (its error is quadratic near the solution), which left points about 3 µm off and confused the redundancy check.
+- Dimensions are plain numbers at this layer. Expressions and parameters are evaluated in the model layer and passed down.
+- Tests cover the test block's outside profile (96 × 56, R5 corners), closed slot and hole positions, all fully constrained.

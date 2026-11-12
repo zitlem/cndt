@@ -17,8 +17,8 @@ CNDT is an open-source CAD/CAM application for designing parts and machining the
 
 | Phase | Scope | State |
 | --- | --- | --- |
-| 0 | Foundations: workspace, CI, geometry kernel build, command engine | In progress |
-| 1 | CAD core: sketcher, solid features, timeline | Not started |
+| 0 | Foundations: workspace, CI, geometry kernel build, command engine, desktop shell | Done |
+| 1 | CAD core: sketcher, solid features, timeline | In progress: constraint solver done |
 | 2 | 2.5D milling and first posts | Not started |
 | 3 | Simulation and verification (v1.0) | Not started |
 

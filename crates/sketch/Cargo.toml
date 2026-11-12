@@ -1,0 +1,17 @@
+[package]
+name = "cndt-sketch"
+description = "Layer 1: 2D sketch geometry and the constraint solver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cndt-geom.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
