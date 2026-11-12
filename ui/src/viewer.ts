@@ -4,7 +4,63 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { Mesh } from "./api";
+import type { Mesh, Plane, SketchRecord, XY } from "./api";
+
+/** Sketch coordinates to model coordinates for each origin plane. */
+function onPlane(plane: Plane, p: XY): THREE.Vector3 {
+  switch (plane) {
+    case "xy":
+      return new THREE.Vector3(p.x, p.y, 0);
+    case "xz":
+      return new THREE.Vector3(p.x, 0, p.y);
+    case "yz":
+      return new THREE.Vector3(0, p.x, p.y);
+  }
+}
+
+/** Line segments (pairs of sketch points) tracing a sketch's curves. */
+function sketchSegments(record: SketchRecord): { segments: XY[]; construction: XY[] } {
+  const segments: XY[] = [];
+  const construction: XY[] = [];
+  const { entities } = record.sketch;
+  const at = (id: number): XY | null => {
+    const g = entities[String(id)]?.geometry;
+    return g?.type === "point" ? g.at : null;
+  };
+  const ring = (out: XY[], c: XY, r: number, from: number, sweep: number) => {
+    const steps = Math.max(8, Math.ceil((sweep / (Math.PI * 2)) * 72));
+    for (let i = 0; i < steps; i++) {
+      const a0 = from + (sweep * i) / steps;
+      const a1 = from + (sweep * (i + 1)) / steps;
+      out.push(
+        { x: c.x + r * Math.cos(a0), y: c.y + r * Math.sin(a0) },
+        { x: c.x + r * Math.cos(a1), y: c.y + r * Math.sin(a1) },
+      );
+    }
+  };
+  for (const entity of Object.values(entities)) {
+    const out = entity.construction ? construction : segments;
+    const g = entity.geometry;
+    if (g.type === "line") {
+      const a = at(g.start);
+      const b = at(g.end);
+      if (a && b) out.push(a, b);
+    } else if (g.type === "circle") {
+      const c = at(g.center);
+      if (c) ring(out, c, g.radius, 0, Math.PI * 2);
+    } else if (g.type === "arc") {
+      const c = at(g.center);
+      const s = at(g.start);
+      const e = at(g.end);
+      if (!c || !s || !e) continue;
+      const from = Math.atan2(s.y - c.y, s.x - c.x);
+      const to = Math.atan2(e.y - c.y, e.x - c.x);
+      const sweep = (((to - from) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      ring(out, c, Math.hypot(s.x - c.x, s.y - c.y), from, sweep);
+    }
+  }
+  return { segments, construction };
+}
 
 export class Viewer {
   private readonly renderer: THREE.WebGLRenderer;
@@ -13,6 +69,7 @@ export class Viewer {
   private readonly controls: OrbitControls;
   private readonly grid: THREE.GridHelper;
   private model: THREE.Group | null = null;
+  private sketches = new THREE.Group();
 
   constructor(private readonly host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -33,6 +90,7 @@ export class Viewer {
     this.grid.rotation.x = Math.PI / 2;
     this.scene.add(this.grid);
     this.scene.add(new THREE.AxesHelper(20));
+    this.scene.add(this.sketches);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -75,6 +133,32 @@ export class Viewer {
     this.fit();
   }
 
+  /** Draws the document's sketches on their planes. */
+  setSketches(records: SketchRecord[]): void {
+    for (const child of [...this.sketches.children]) {
+      this.sketches.remove(child);
+      if (child instanceof THREE.LineSegments) {
+        child.geometry.dispose();
+        (child.material as THREE.Material).dispose();
+      }
+    }
+    for (const record of records) {
+      const { segments, construction } = sketchSegments(record);
+      const add = (points: XY[], material: THREE.LineBasicMaterial | THREE.LineDashedMaterial) => {
+        if (points.length === 0) return;
+        const geometry = new THREE.BufferGeometry().setFromPoints(
+          points.map((p) => onPlane(record.plane, p)),
+        );
+        const lines = new THREE.LineSegments(geometry, material);
+        lines.computeLineDistances();
+        this.sketches.add(lines);
+      };
+      add(segments, new THREE.LineBasicMaterial({ color: 0x8fc1ff }));
+      add(construction, new THREE.LineDashedMaterial({ color: 0xc98a4b, dashSize: 2, gapSize: 1.5 }));
+    }
+    this.render();
+  }
+
   /** Removes the model. */
   clear(): void {
     if (!this.model) return;
@@ -91,9 +175,10 @@ export class Viewer {
 
   /** Points the camera at the whole model from an isometric-style view. */
   fit(): void {
-    const box = this.model
-      ? new THREE.Box3().setFromObject(this.model)
-      : new THREE.Box3(new THREE.Vector3(-50, -50, 0), new THREE.Vector3(50, 50, 50));
+    const box = new THREE.Box3();
+    if (this.model) box.expandByObject(this.model);
+    if (this.sketches.children.length > 0) box.expandByObject(this.sketches);
+    if (box.isEmpty()) box.set(new THREE.Vector3(-50, -50, 0), new THREE.Vector3(50, 50, 50));
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const radius = Math.max(sphere.radius, 1);
     const distance = radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2));
