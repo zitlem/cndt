@@ -144,6 +144,14 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// for the faces around it.
     fn blend(&self, body: &Body, edges: &[u32], blend: Blend) -> Result<Made, KernelError>;
 
+    /// A copy of a body moved by `offset` millimetres. Its faces are
+    /// numbered as the original's.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if the copy cannot be made.
+    fn translate(&self, body: &Body, offset: [f64; 3]) -> Result<Body, KernelError>;
+
     /// Fuses or cuts two bodies.
     ///
     /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -348,6 +356,12 @@ impl Kernel for OpenCascade {
         let points: Vec<[f64; 3]> = points.iter().copied().map(xyz).collect();
         cndt_occt_sys::revolve(&points, xyz(axis_origin), axis_dir)
             .map(made)
+            .map_err(modelling)
+    }
+
+    fn translate(&self, body: &Body, offset: [f64; 3]) -> Result<Body, KernelError> {
+        cndt_occt_sys::translate(&body.0, offset)
+            .map(|s| Body(Arc::new(s)))
             .map_err(modelling)
     }
 

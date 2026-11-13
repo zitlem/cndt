@@ -508,6 +508,136 @@ impl Command for EditBlend {
     }
 }
 
+/// A pattern's grid: copies and spacing along sketch X and Y.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grid {
+    /// Copies along X, counting the original.
+    pub count_x: u32,
+    /// Millimetres between them.
+    pub spacing_x: f64,
+    /// Copies along Y, counting the original.
+    pub count_y: u32,
+    /// Millimetres between them.
+    pub spacing_y: f64,
+}
+
+/// Adds a pattern of an earlier feature, or with `id`, changes one's grid.
+#[derive(Debug, Clone)]
+pub struct SetPattern {
+    id: Option<FeatureId>,
+    source: FeatureId,
+    grid: Grid,
+    name: Option<String>,
+    before: Option<Box<Document>>,
+}
+
+impl SetPattern {
+    /// A new pattern repeating `source`.
+    #[must_use]
+    pub const fn add(source: FeatureId, grid: Grid, name: Option<String>) -> Self {
+        Self {
+            id: None,
+            source,
+            grid,
+            name,
+            before: None,
+        }
+    }
+
+    /// A new grid for pattern `id`.
+    #[must_use]
+    pub const fn edit(id: FeatureId, grid: Grid) -> Self {
+        Self {
+            id: Some(id),
+            source: FeatureId(0),
+            grid,
+            name: None,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetPattern {
+    fn name(&self) -> &'static str {
+        if self.id.is_some() {
+            "feature.edit_pattern"
+        } else {
+            "feature.pattern"
+        }
+    }
+
+    fn label(&self) -> String {
+        String::from(if self.id.is_some() {
+            "Edit pattern"
+        } else {
+            "Pattern"
+        })
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = document.clone();
+        let Grid {
+            count_x,
+            spacing_x,
+            count_y,
+            spacing_y,
+        } = self.grid;
+        match self.id {
+            Some(id) => {
+                let Some(Feature::Pattern { name, feature, .. }) = document.feature(id).cloned()
+                else {
+                    return Err(ModelError::InvalidFeature(String::from(
+                        "that feature is not a pattern",
+                    ))
+                    .into());
+                };
+                let pattern = Feature::Pattern {
+                    name,
+                    feature,
+                    count_x,
+                    spacing_x,
+                    count_y,
+                    spacing_y,
+                };
+                document.replace_feature(id, pattern)?;
+            }
+            None => {
+                match document.feature(self.source) {
+                    Some(Feature::Extrude { .. } | Feature::Hole { .. }) => {}
+                    Some(_) => {
+                        return Err(ModelError::InvalidFeature(String::from(
+                            "only extrudes and holes can be patterned for now",
+                        ))
+                        .into());
+                    }
+                    None => return Err(ModelError::UnknownFeature(self.source).into()),
+                }
+                let name = self
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| document.next_feature_name("Pattern"));
+                let pattern = Feature::Pattern {
+                    name,
+                    feature: self.source,
+                    count_x,
+                    spacing_x,
+                    count_y,
+                    spacing_y,
+                };
+                document.add_feature(pattern)?;
+            }
+        }
+        self.before = Some(Box::new(before));
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = self.before.take().ok_or(CommandError::NotApplied)?;
+        *document = *before;
+        Ok(())
+    }
+}
+
 /// Deletes a feature from the timeline.
 #[derive(Debug, Clone)]
 pub struct DeleteFeature {

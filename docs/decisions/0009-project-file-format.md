@@ -67,3 +67,7 @@ Chamfer and fillet features: `{"type": "chamfer", "name", "edges": [...], "dista
 ## Version 7 (2026-11-13)
 
 Expressions: a sketch may hold `expressions`, a map from dimension constraint id to an expression of the document's parameters (such as `"width / 2"`), and an extrude may hold `distance_expression`. The stored values are the evaluated ones, so the geometry reads the same without re-evaluating. Older builds refuse these files with the update message.
+
+## Version 8 (2026-11-13)
+
+Pattern features: `{"type": "pattern", "name", "feature": <id of an extrude or hole>, "count_x", "spacing_x", "count_y", "spacing_y"}`, along the original's sketch axes. Older builds refuse these files with the update message.

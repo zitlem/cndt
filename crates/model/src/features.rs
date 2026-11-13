@@ -79,6 +79,22 @@ pub enum Feature {
         /// Millimetres back from the edge on each face.
         distance: f64,
     },
+    /// Repeats an earlier extrude or hole in a grid along its sketch's X
+    /// and Y axes. Each copy joins or cuts as the original does.
+    Pattern {
+        /// Shown in the timeline, such as `Pattern1`.
+        name: String,
+        /// The feature it repeats.
+        feature: FeatureId,
+        /// Copies along sketch X, counting the original.
+        count_x: u32,
+        /// Millimetres between them; negative goes the other way.
+        spacing_x: f64,
+        /// Copies along sketch Y, counting the original.
+        count_y: u32,
+        /// Millimetres between them.
+        spacing_y: f64,
+    },
     /// Rounds edges.
     Fillet {
         /// Shown in the timeline, such as `Fillet1`.
@@ -230,6 +246,7 @@ impl Feature {
             Self::Extrude { name, .. }
             | Self::Hole { name, .. }
             | Self::Chamfer { name, .. }
+            | Self::Pattern { name, .. }
             | Self::Fillet { name, .. } => name,
         }
     }
@@ -239,7 +256,7 @@ impl Feature {
     pub const fn sketch(&self) -> Option<SketchId> {
         match self {
             Self::Extrude { sketch, .. } | Self::Hole { sketch, .. } => Some(*sketch),
-            Self::Chamfer { .. } | Self::Fillet { .. } => None,
+            Self::Chamfer { .. } | Self::Fillet { .. } | Self::Pattern { .. } => None,
         }
     }
 
@@ -264,6 +281,35 @@ impl Feature {
                     return Err(String::from("pick at least one point to put a hole at"));
                 }
                 spec.check()
+            }
+            Self::Pattern {
+                count_x,
+                spacing_x,
+                count_y,
+                spacing_y,
+                ..
+            } => {
+                if *count_x == 0 || *count_y == 0 {
+                    return Err(String::from(
+                        "a pattern needs at least one copy in each direction",
+                    ));
+                }
+                let total = u64::from(*count_x) * u64::from(*count_y);
+                if total < 2 {
+                    return Err(String::from("a pattern needs more than one copy"));
+                }
+                if total > 500 {
+                    return Err(format!("{total} copies is too many; the most is 500"));
+                }
+                for (count, spacing, axis) in [(count_x, spacing_x, "X"), (count_y, spacing_y, "Y")]
+                {
+                    if *count > 1 && !(spacing.is_finite() && spacing.abs() > 1e-9) {
+                        return Err(format!(
+                            "the {axis} spacing must be a non-zero number, not {spacing}"
+                        ));
+                    }
+                }
+                Ok(())
             }
             Self::Chamfer {
                 edges,
@@ -335,6 +381,14 @@ pub enum FaceOrigin {
         /// The two faces' names, in order.
         between: (String, String),
     },
+    /// A face of a pattern's copy: the original face's name, and the copy's
+    /// place in the grid.
+    Copy {
+        /// Column and row; the original is (0, 0).
+        at: (u32, u32),
+        /// The original face's name.
+        original: String,
+    },
     /// A surface of a hole.
     Hole {
         /// The sketch point at its centre.
@@ -399,6 +453,9 @@ impl fmt::Display for FaceName {
                 write!(f, "f{}/start/{}", self.feature.0, key(profile))
             }
             FaceOrigin::End { profile } => write!(f, "f{}/end/{}", self.feature.0, key(profile)),
+            FaceOrigin::Copy { at, original } => {
+                write!(f, "f{}/at{},{}/{original}", self.feature.0, at.0, at.1)
+            }
             FaceOrigin::Blend { between } => {
                 write!(f, "f{}/blend/{}+{}", self.feature.0, between.0, between.1)
             }
@@ -966,15 +1023,117 @@ fn blend_feature(
     Ok((made.body, carried))
 }
 
+/// What an extrude or hole added or removed, kept for patterns.
+struct Tool {
+    body: Body,
+    names: Names,
+    operation: Operation,
+    frame: Frame,
+}
+
+/// Builds a pattern's copies of an earlier feature's tool, fused into one
+/// body with every face named by its original and its place in the grid.
+fn pattern_tool(
+    kernel: &dyn Kernel,
+    id: FeatureId,
+    feature: &Feature,
+    tools: &BTreeMap<FeatureId, Tool>,
+) -> Result<(Body, Names, Operation), String> {
+    let Feature::Pattern {
+        feature: source,
+        count_x,
+        spacing_x,
+        count_y,
+        spacing_y,
+        ..
+    } = feature
+    else {
+        return Err(String::from("not a pattern"));
+    };
+    let original = tools.get(source).ok_or_else(|| {
+        format!("the feature it repeats ({source}) did not build, comes later, or is not an extrude or hole")
+    })?;
+    let mut tool: Option<(Body, Names)> = None;
+    for j in 0..*count_y {
+        for i in 0..*count_x {
+            if i == 0 && j == 0 {
+                continue;
+            }
+            let (di, dj) = (f64::from(i) * spacing_x, f64::from(j) * spacing_y);
+            let x = original.frame.x;
+            let y = original.frame.y;
+            let offset = [
+                di * x[0] + dj * y[0],
+                di * x[1] + dj * y[1],
+                di * x[2] + dj * y[2],
+            ];
+            let body = kernel
+                .translate(&original.body, offset)
+                .map_err(|e| e.to_string())?;
+            let names: Names = original
+                .names
+                .iter()
+                .map(|set| {
+                    set.iter()
+                        .map(|n| FaceName {
+                            feature: id,
+                            origin: FaceOrigin::Copy {
+                                at: (i, j),
+                                original: n.to_string(),
+                            },
+                        })
+                        .collect()
+                })
+                .collect();
+            tool = Some(match tool {
+                None => (body, names),
+                Some((acc, before)) => {
+                    combine(kernel, &acc, &before, &body, &names, BooleanOp::Fuse)?
+                }
+            });
+        }
+    }
+    let (body, names) = tool.ok_or_else(|| String::from("a pattern needs more than one copy"))?;
+    Ok((body, names, original.operation))
+}
+
+/// Joins a tool to the part or cuts it away, carrying names.
+fn apply_tool(
+    kernel: &dyn Kernel,
+    part: Option<&(Body, Names)>,
+    tool: &Body,
+    names: &Names,
+    operation: Operation,
+) -> Result<(Body, Names), String> {
+    match (part, operation) {
+        (None, Operation::Join) => Ok((tool.clone(), names.clone())),
+        (None, Operation::Cut) => Err(String::from(
+            "there is no body to cut yet; add a joining extrude first",
+        )),
+        (Some((body, before)), Operation::Join) => {
+            combine(kernel, body, before, tool, names, BooleanOp::Fuse)
+        }
+        (Some((body, before)), Operation::Cut) => {
+            combine(kernel, body, before, tool, names, BooleanOp::Cut)
+        }
+    }
+}
+
 /// Rebuilds the part from the timeline.
 #[must_use]
 pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
     let mut part: Option<(Body, Names)> = None;
     let mut status = BTreeMap::new();
     let mut frames = BTreeMap::new();
+    let mut tools: BTreeMap<FeatureId, Tool> = BTreeMap::new();
     for entry in document.features() {
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
             let Some(sketch) = entry.feature.sketch() else {
+                if let Feature::Pattern { .. } = &entry.feature {
+                    let (tool, names, operation) =
+                        pattern_tool(kernel, entry.id, &entry.feature, &tools)?;
+                    return apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some);
+                }
                 // Chamfers and fillets work on the part itself.
                 let (body, names) = part.as_ref().ok_or_else(|| {
                     String::from("there is no body to blend yet; add an extrude first")
@@ -1007,24 +1166,20 @@ pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
                         hole_tool(document, kernel, entry.id, &entry.feature, &frame, body)?;
                     (tool, names, Operation::Cut)
                 }
-                Feature::Chamfer { .. } | Feature::Fillet { .. } => {
-                    return Err(String::from("a blend has no sketch"));
+                Feature::Chamfer { .. } | Feature::Fillet { .. } | Feature::Pattern { .. } => {
+                    return Err(String::from("this feature has no sketch"));
                 }
             };
-            Ok(Some(match (&part, operation) {
-                (None, Operation::Join) => (tool, names),
-                (None, Operation::Cut) => {
-                    return Err(String::from(
-                        "there is no body to cut yet; add a joining extrude first",
-                    ));
-                }
-                (Some((body, before)), Operation::Join) => {
-                    combine(kernel, body, before, &tool, &names, BooleanOp::Fuse)?
-                }
-                (Some((body, before)), Operation::Cut) => {
-                    combine(kernel, body, before, &tool, &names, BooleanOp::Cut)?
-                }
-            }))
+            tools.insert(
+                entry.id,
+                Tool {
+                    body: tool.clone(),
+                    names: names.clone(),
+                    operation,
+                    frame,
+                },
+            );
+            apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some)
         })();
         match outcome {
             Ok(next) => {
@@ -1430,6 +1585,74 @@ mod tests {
             panic!("{:?}", r.status)
         };
         assert!(reason.contains("no longer meet"), "{reason}");
+    }
+
+    /// A row of holes made by patterning one, and a grid of bosses.
+    #[test]
+    fn patterns_repeat_holes_and_bosses() {
+        let pi = std::f64::consts::PI;
+        let (mut d, _, _) = block();
+        let (s, p) = top_points(&mut d, &[(10.0, 10.0)]);
+        d.add_feature(hole("Hole", s, p.clone(), simple(5.0, HoleDepth::Through)))
+            .unwrap();
+        d.add_feature(Feature::Pattern {
+            name: "Row".into(),
+            feature: FeatureId(1),
+            count_x: 4,
+            spacing_x: 20.0,
+            count_y: 2,
+            spacing_y: 30.0,
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert!(
+            r.status.values().all(|s| *s == FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let v = r.properties.unwrap().volume;
+        let expected = 96.0 * 56.0 * 20.0 - 8.0 * pi * 2.5 * 2.5 * 20.0;
+        assert!((v - expected).abs() < 1e-3, "{v} vs {expected}");
+        let tokens: Vec<String> = r.faces.iter().flatten().map(ToString::to_string).collect();
+        let wall = format!("f1/hole/e{}/wall", p[0].0);
+        assert!(tokens.contains(&wall));
+        assert!(tokens.contains(&format!("f2/at3,1/{wall}")), "{tokens:?}");
+        assert_eq!(
+            tokens.iter().filter(|t| t.starts_with("f2/at")).count(),
+            7,
+            "7 copies, one wall each"
+        );
+
+        // A pattern of something that failed is flagged too.
+        d.add_feature(Feature::Pattern {
+            name: "Of nothing".into(),
+            feature: FeatureId(9),
+            count_x: 2,
+            spacing_x: 5.0,
+            count_y: 1,
+            spacing_y: 0.0,
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert!(matches!(
+            r.status.get(&FeatureId(3)),
+            Some(FeatureStatus::Failed { .. })
+        ));
+        // Bad grids are refused.
+        let bad = Feature::Pattern {
+            name: "Bad".into(),
+            feature: FeatureId(1),
+            count_x: 3,
+            spacing_x: 0.0,
+            count_y: 1,
+            spacing_y: 0.0,
+        };
+        assert!(
+            d.add_feature(bad)
+                .unwrap_err()
+                .to_string()
+                .contains("spacing")
+        );
     }
 
     #[test]

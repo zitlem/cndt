@@ -109,6 +109,15 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_translate(
+        shape: *const ShapeHandle,
+        dx: f64,
+        dy: f64,
+        dz: f64,
+        out: *mut *mut ShapeHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_face_plane(
         shape: *const ShapeHandle,
         face: u32,
@@ -458,6 +467,37 @@ pub fn blend(shape: &Shape, edges: &[u32], blend: Blend) -> Result<Made, OcctErr
     unsafe { take(out, history) }
 }
 
+/// A copy of a shape moved by `offset`. Its faces are numbered as the
+/// original's.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] if the copy cannot be made.
+pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Shape, OcctError> {
+    let mut out: *mut ShapeHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `out` is a valid out-pointer; `err` is
+    // writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_translate(
+            shape.ptr.as_ptr(),
+            offset[0],
+            offset[1],
+            offset[2],
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    NonNull::new(out)
+        .map(|ptr| Shape { ptr })
+        .ok_or_else(|| OcctError::Kernel(String::from("the kernel returned no shape")))
+}
+
 /// Fuses or cuts two shapes.
 ///
 /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -765,6 +805,20 @@ mod tests {
         assert_eq!(properties(&filleted.shape).unwrap().faces, 10);
         let error = blend(&block.shape, &around_top, Blend::Fillet(8.0)).unwrap_err();
         assert!(error.to_string().contains("fillet"), "{error}");
+    }
+
+    #[test]
+    fn a_moved_copy_keeps_its_faces_in_order() {
+        let block = extrude(&[rectangle(10.0, 10.0)], Z, 5.0).unwrap();
+        let moved = translate(&block.shape, [20.0, 0.0, 0.0]).unwrap();
+        let p = properties(&moved).unwrap();
+        assert!((p.min[0] - 20.0).abs() < 1e-9 && (p.volume - 500.0).abs() < 1e-9);
+        let (_, top) = *block.history.iter().find(|s| s.0 == 5).unwrap();
+        let (point, normal) = face_plane(&moved, top).unwrap();
+        assert!(
+            (point[2] - 5.0).abs() < 1e-9 && (normal[2] - 1.0).abs() < 1e-12,
+            "the same face, moved"
+        );
     }
 
     #[test]
