@@ -24,7 +24,10 @@
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Vertex.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <gp_Ax1.hxx>
@@ -836,6 +839,161 @@ int cndt_occt_revolve(
         auto shape = std::make_unique<cndt_shape>();
         shape->shape = solid;
         *out = shape.release();
+        *history = record.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (const std::exception& exception) {
+        set_error(err, err_len, exception.what());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// For every edge of `shape`, in edge-map order: the two faces it joins (face
+// numbers as in the history). An edge on one face only (a seam) lists that
+// face twice. Returned as history pairs (face_a, face_b), one per edge.
+int cndt_occt_edges(const cndt_shape* shape, cndt_history** out, char* err, std::size_t err_len) {
+    if (shape == nullptr || out == nullptr) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(shape->shape, TopAbs_FACE, faces);
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(shape->shape, TopAbs_EDGE, edges);
+        TopTools_IndexedDataMapOfShapeListOfShape owners;
+        TopExp::MapShapesAndAncestors(shape->shape, TopAbs_EDGE, TopAbs_FACE, owners);
+        auto record = std::make_unique<cndt_history>();
+        for (int e = 1; e <= edges.Extent(); ++e) {
+            std::vector<std::uint32_t> found;
+            const int k = owners.FindIndex(edges(e));
+            if (k > 0) {
+                for (const TopoDS_Shape& face : owners(k)) {
+                    const int f = faces.FindIndex(face);
+                    if (f > 0 && found.size() < 2) {
+                        const auto index = static_cast<std::uint32_t>(f - 1);
+                        if (found.empty() || found[0] != index) {
+                            found.push_back(index);
+                        }
+                    }
+                }
+            }
+            if (found.empty()) {
+                found.push_back(UINT32_MAX);
+            }
+            record->pairs.push_back(found[0]);
+            record->pairs.push_back(found.size() > 1 ? found[1] : found[0]);
+        }
+        *out = record.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// Chamfers (`kind` 0, equal distance `size`) or fillets (`kind` 1, radius
+// `size`) the listed edges (edge-map numbers).
+//
+// History sources: face `i` of the input is `i`; the face made from listed
+// edge `k` (its position in `edge_list`) is `faces + k`.
+int cndt_occt_blend(
+    const cndt_shape* shape,
+    const std::uint32_t* edge_list,
+    std::size_t edge_count,
+    std::int32_t kind,
+    double size,
+    cndt_shape** out,
+    cndt_history** history,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || edge_list == nullptr || edge_count == 0 || out == nullptr ||
+        history == nullptr || !(size > 0.0) || kind < 0 || kind > 1) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    *history = nullptr;
+    try {
+        silence_console_output();
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(shape->shape, TopAbs_EDGE, edges);
+        std::vector<TopoDS_Edge> picked;
+        for (std::size_t k = 0; k < edge_count; ++k) {
+            const int e = static_cast<int>(edge_list[k]) + 1;
+            if (e < 1 || e > edges.Extent()) {
+                set_error(err, err_len, "no such edge");
+                return kBadArgument;
+            }
+            picked.push_back(TopoDS::Edge(edges(e)));
+        }
+        std::unique_ptr<BRepBuilderAPI_MakeShape> algo;
+        if (kind == 0) {
+            auto chamfer = std::make_unique<BRepFilletAPI_MakeChamfer>(shape->shape);
+            for (const TopoDS_Edge& edge : picked) {
+                chamfer->Add(size, edge);
+            }
+            chamfer->Build();
+            algo = std::move(chamfer);
+        } else {
+            auto fillet = std::make_unique<BRepFilletAPI_MakeFillet>(shape->shape);
+            for (const TopoDS_Edge& edge : picked) {
+                fillet->Add(size, edge);
+            }
+            fillet->Build();
+            algo = std::move(fillet);
+        }
+        if (!algo->IsDone()) {
+            set_error(err, err_len,
+                      kind == 0 ? "the chamfer could not be made; it may be larger than the faces it cuts into"
+                                : "the fillet could not be made; it may be larger than the faces it rounds into");
+            return kModelFailed;
+        }
+        const TopoDS_Shape result = algo->Shape();
+        if (!is_valid_solid(result, err, err_len)) {
+            set_error(err, err_len,
+                      kind == 0 ? "the chamfer gave an invalid solid; try a smaller distance, or move it after other blends on these edges"
+                                : "the fillet gave an invalid solid; try a smaller radius, or move it before chamfers on neighbouring edges");
+            return kModelFailed;
+        }
+        TopTools_IndexedMapOfShape map;
+        TopExp::MapShapes(result, TopAbs_FACE, map);
+        TopTools_IndexedMapOfShape inputs;
+        TopExp::MapShapes(shape->shape, TopAbs_FACE, inputs);
+        auto record = std::make_unique<cndt_history>();
+        for (int i = 1; i <= inputs.Extent(); ++i) {
+            const TopoDS_Shape& face = inputs(i);
+            std::vector<std::uint32_t> targets;
+            const int same = map.FindIndex(face);
+            if (same > 0) {
+                targets.push_back(static_cast<std::uint32_t>(same - 1));
+            } else if (!algo->IsDeleted(face)) {
+                targets = faces_of(algo->Modified(face), map);
+            }
+            for (const std::uint32_t f : targets) {
+                record->pairs.push_back(static_cast<std::uint32_t>(i - 1));
+                record->pairs.push_back(f);
+            }
+        }
+        const auto base = static_cast<std::uint32_t>(inputs.Extent());
+        for (std::size_t k = 0; k < picked.size(); ++k) {
+            for (const std::uint32_t f : faces_of(algo->Generated(picked[k]), map)) {
+                record->pairs.push_back(base + static_cast<std::uint32_t>(k));
+                record->pairs.push_back(f);
+            }
+        }
+        auto made = std::make_unique<cndt_shape>();
+        made->shape = result;
+        *out = made.release();
         *history = record.release();
         return kOk;
     } catch (const Standard_Failure& failure) {

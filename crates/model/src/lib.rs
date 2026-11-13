@@ -17,9 +17,9 @@ pub mod threads;
 
 pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 pub use features::{
-    Counterbore, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus, Frame,
-    FrameStatus, HoleDepth, HoleSpec, HoleSurface, Operation, Rebuilt, Thread, default_profiles,
-    rebuild,
+    Counterbore, EdgeTarget, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus,
+    Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, Operation, Rebuilt, Thread,
+    default_profiles, rebuild,
 };
 use serde::{Deserialize, Serialize};
 
@@ -380,7 +380,7 @@ impl Document {
         let by: Vec<String> = self
             .features
             .iter()
-            .filter(|e| e.feature.sketch() == id)
+            .filter(|e| e.feature.sketch() == Some(id))
             .map(|e| e.feature.name().to_owned())
             .collect();
         if !by.is_empty() {
@@ -476,10 +476,11 @@ impl Document {
     fn check_feature(&self, feature: &Feature) -> Result<(), ModelError> {
         feature.check().map_err(ModelError::InvalidFeature)?;
         check_document_name(feature.name())?;
-        if self.sketches.contains_key(&feature.sketch()) {
-            Ok(())
-        } else {
-            Err(ModelError::UnknownSketch(feature.sketch()))
+        match feature.sketch() {
+            Some(sketch) if !self.sketches.contains_key(&sketch) => {
+                Err(ModelError::UnknownSketch(sketch))
+            }
+            _ => Ok(()),
         }
     }
 

@@ -59,3 +59,7 @@ A sketch's `plane` may be `{"face": "<face name>"}` instead of `xy`, `xz` or `yz
 ## Version 5 (2026-11-12)
 
 Hole features: `{"type": "hole", "name", "sketch", "points": [point ids], "spec": {...}}`. The spec holds the drill `diameter`, `depth` (`{"blind": mm}` or `"through"`), `tip_angle` in degrees, and optionally `counterbore` (`diameter`, `depth`), `thread` (`size` such as `M6x1.0`, `depth`) and `fit` (such as `H7`). Older builds refuse these files with the update message; a version 4 or older file containing a hole is refused as damaged.
+
+## Version 6 (2026-11-12)
+
+Chamfer and fillet features: `{"type": "chamfer", "name", "edges": [...], "distance"}` and `{"type": "fillet", "name", "edges": [...], "radius"}`. Each edge target is `{"face": "<face name>"}` (every edge around that face) or `{"between": ["<face name>", "<face name>"]}` (the one edge where two faces meet). Older builds refuse these files with the update message.

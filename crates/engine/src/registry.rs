@@ -10,12 +10,12 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    AddExtrude, AddHole, Command, CommandError, CreateSketch, DeleteFeature, DeleteSketch,
-    EditExtrude, EditHole, EditSketch, PointRef, RemoveParameter, RenameDocument, SetParameter,
-    SketchEdit,
+    AddBlend, AddExtrude, AddHole, BlendKind, Command, CommandError, CreateSketch, DeleteFeature,
+    DeleteSketch, EditBlend, EditExtrude, EditHole, EditSketch, PointRef, RemoveParameter,
+    RenameDocument, SetParameter, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
-use cndt_model::{Counterbore, HoleDepth, HoleSpec, Thread};
+use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, Thread};
 use cndt_model::{FeatureId, Operation};
 
 /// The type of a command argument.
@@ -49,6 +49,11 @@ pub enum ArgKind {
     Ids,
     /// A depth in millimetres, or `"through"`.
     Depth,
+    /// A list of face names, such as `["f0/end/4-5-6-7"]`.
+    Faces,
+    /// A list of edges, each the names of its two faces, such as
+    /// `[["f0/side/e4", "f0/side/e5"]]`.
+    Edges,
 }
 
 /// One argument a command accepts.
@@ -293,6 +298,67 @@ impl Registry {
                     Ok(Box::new(EditHole::new(
                         FeatureId(id(args, "feature")?),
                         hole_spec(args)?,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.chamfer",
+                description: "Bevel edges at 45°: every edge of the given faces, and single edges.",
+                args: &[
+                    BLEND_TARGETS[0],
+                    BLEND_TARGETS[1],
+                    ArgSpec {
+                        name: "distance",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres back from the edge on each face.",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next ChamferN.",
+                    },
+                ],
+                build: |args| blend(args, BlendKind::Chamfer, "distance"),
+            },
+            CommandSpec {
+                name: "feature.fillet",
+                description: "Round edges: every edge of the given faces, and single edges.",
+                args: &[
+                    BLEND_TARGETS[0],
+                    BLEND_TARGETS[1],
+                    ArgSpec {
+                        name: "radius",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres.",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next FilletN.",
+                    },
+                ],
+                build: |args| blend(args, BlendKind::Fillet, "radius"),
+            },
+            CommandSpec {
+                name: "feature.edit_blend",
+                description: "Change a chamfer's distance or a fillet's radius.",
+                args: &[
+                    FEATURE,
+                    ArgSpec {
+                        name: "size",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres.",
+                    },
+                ],
+                build: |args| {
+                    Ok(Box::new(EditBlend::new(
+                        FeatureId(id(args, "feature")?),
+                        number(args, "size")?,
                     )))
                 },
             },
@@ -859,6 +925,60 @@ fn ids(args: &Map<String, Value>, key: &str) -> Result<Vec<EntityId>, String> {
         .map_err(|_| format!("{key:?} must be a list of ids, like [3, 8]"))
 }
 
+const BLEND_TARGETS: [ArgSpec; 2] = [
+    ArgSpec {
+        name: "faces",
+        kind: ArgKind::Faces,
+        required: false,
+        description: "Faces whose every edge is blended.",
+    },
+    ArgSpec {
+        name: "edges",
+        kind: ArgKind::Edges,
+        required: false,
+        description: "Single edges, each named by its two faces.",
+    },
+];
+
+/// Reads the edges a chamfer or fillet blends.
+fn edge_targets(args: &Map<String, Value>) -> Result<Vec<EdgeTarget>, String> {
+    let mut targets = Vec::new();
+    if args.contains_key("faces") {
+        let faces: Vec<String> =
+            serde_json::from_value(args.get("faces").cloned().unwrap_or_default())
+                .map_err(|_| String::from("\"faces\" must be a list of face names"))?;
+        targets.extend(faces.into_iter().map(EdgeTarget::Face));
+    }
+    if args.contains_key("edges") {
+        let edges: Vec<(String, String)> =
+            serde_json::from_value(args.get("edges").cloned().unwrap_or_default())
+                .map_err(|_| String::from("\"edges\" must be a list of face-name pairs"))?;
+        targets.extend(edges.into_iter().map(|(a, b)| EdgeTarget::Between(a, b)));
+    }
+    if targets.is_empty() {
+        return Err(String::from("give \"faces\" or \"edges\" to blend"));
+    }
+    Ok(targets)
+}
+
+fn blend(
+    args: &Map<String, Value>,
+    kind: BlendKind,
+    size: &str,
+) -> Result<Box<dyn Command>, String> {
+    let name = if args.contains_key("name") {
+        Some(text(args, "name")?)
+    } else {
+        None
+    };
+    Ok(Box::new(AddBlend::new(
+        kind,
+        edge_targets(args)?,
+        number(args, size)?,
+        name,
+    )))
+}
+
 /// The `feature` argument of the timeline commands.
 const FEATURE: ArgSpec = ArgSpec {
     name: "feature",
@@ -987,6 +1107,16 @@ mod tests {
             ("sketch.create", json!({"plane": "top"}), "unknown plane"),
             ("sketch.create", json!({}), "either"),
             (
+                "feature.chamfer",
+                json!({"distance": 1}),
+                "give \"faces\" or \"edges\"",
+            ),
+            (
+                "feature.fillet",
+                json!({"edges": [["a"]], "radius": 1}),
+                "face-name pairs",
+            ),
+            (
                 "feature.hole",
                 json!({"sketch": 0, "depth": 5}),
                 "give \"diameter\"",
@@ -1080,6 +1210,15 @@ mod tests {
                 json!({"feature": 0, "distance": 25, "operation": "cut", "profiles": [[4, 5, 6, 7]]}),
             ),
             ("feature.delete", json!({"feature": 0})),
+            (
+                "feature.chamfer",
+                json!({"faces": ["f0/end/4-5-6-7"], "distance": 0.5}),
+            ),
+            (
+                "feature.fillet",
+                json!({"edges": [["f0/side/e4", "f0/side/e5"]], "radius": 3}),
+            ),
+            ("feature.edit_blend", json!({"feature": 3, "size": 1})),
             (
                 "feature.hole",
                 json!({"sketch": 0, "thread": "M6", "depth": 15}),

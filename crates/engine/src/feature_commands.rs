@@ -3,8 +3,8 @@
 
 use cndt_model::sketch::{EntityId, Geometry, ProfileKey};
 use cndt_model::{
-    Document, Feature, FeatureEntry, FeatureId, HoleSpec, ModelError, Operation, SketchId,
-    default_profiles,
+    Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ModelError, Operation,
+    SketchId, default_profiles,
 };
 
 use crate::{Command, CommandError};
@@ -318,6 +318,151 @@ impl Command for EditHole {
             );
         };
         *spec = self.spec.clone();
+        self.previous = Some(document.replace_feature(self.id, feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let previous = self.previous.take().ok_or(CommandError::NotApplied)?;
+        document.replace_feature(self.id, previous)?;
+        Ok(())
+    }
+}
+
+/// Chamfer or fillet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendKind {
+    /// A 45° bevel.
+    Chamfer,
+    /// A round.
+    Fillet,
+}
+
+/// Adds a chamfer or fillet at the end of the timeline.
+#[derive(Debug, Clone)]
+pub struct AddBlend {
+    kind: BlendKind,
+    edges: Vec<EdgeTarget>,
+    size: f64,
+    name: Option<String>,
+    created: Option<FeatureId>,
+    undone: Option<(usize, FeatureEntry)>,
+}
+
+impl AddBlend {
+    /// Blends `edges` by `size` millimetres (chamfer distance or radius).
+    #[must_use]
+    pub const fn new(
+        kind: BlendKind,
+        edges: Vec<EdgeTarget>,
+        size: f64,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            kind,
+            edges,
+            size,
+            name,
+            created: None,
+            undone: None,
+        }
+    }
+}
+
+impl Command for AddBlend {
+    fn name(&self) -> &'static str {
+        match self.kind {
+            BlendKind::Chamfer => "feature.chamfer",
+            BlendKind::Fillet => "feature.fillet",
+        }
+    }
+
+    fn label(&self) -> String {
+        String::from(match self.kind {
+            BlendKind::Chamfer => "Chamfer",
+            BlendKind::Fillet => "Fillet",
+        })
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        if let Some((index, entry)) = self.undone.take() {
+            document.restore_feature(index, entry);
+            return Ok(());
+        }
+        let prefix = self.label();
+        let name = self
+            .name
+            .clone()
+            .unwrap_or_else(|| document.next_feature_name(&prefix));
+        let edges = self.edges.clone();
+        let feature = match self.kind {
+            BlendKind::Chamfer => Feature::Chamfer {
+                name,
+                edges,
+                distance: self.size,
+            },
+            BlendKind::Fillet => Feature::Fillet {
+                name,
+                edges,
+                radius: self.size,
+            },
+        };
+        self.created = Some(document.add_feature(feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let id = self.created.ok_or(CommandError::NotApplied)?;
+        self.undone = Some(document.remove_feature(id)?);
+        Ok(())
+    }
+}
+
+/// Changes a chamfer's distance or a fillet's radius.
+#[derive(Debug, Clone)]
+pub struct EditBlend {
+    id: FeatureId,
+    size: f64,
+    previous: Option<Feature>,
+}
+
+impl EditBlend {
+    /// Gives blend feature `id` a new size.
+    #[must_use]
+    pub const fn new(id: FeatureId, size: f64) -> Self {
+        Self {
+            id,
+            size,
+            previous: None,
+        }
+    }
+}
+
+impl Command for EditBlend {
+    fn name(&self) -> &'static str {
+        "feature.edit_blend"
+    }
+
+    fn label(&self) -> String {
+        String::from("Edit blend")
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let mut feature = document
+            .feature(self.id)
+            .cloned()
+            .ok_or(ModelError::UnknownFeature(self.id))?;
+        match &mut feature {
+            Feature::Chamfer { distance: size, .. } | Feature::Fillet { radius: size, .. } => {
+                *size = self.size
+            }
+            _ => {
+                return Err(ModelError::InvalidFeature(String::from(
+                    "that feature is not a chamfer or fillet",
+                ))
+                .into());
+            }
+        }
         self.previous = Some(document.replace_feature(self.id, feature)?);
         Ok(())
     }

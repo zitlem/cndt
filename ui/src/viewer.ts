@@ -69,7 +69,7 @@ export class Viewer {
   private model: THREE.Group | null = null;
   private surface: THREE.Mesh | null = null;
   private triangleFaces: Uint32Array | null = null;
-  private highlight: THREE.Mesh | null = null;
+  private highlight: THREE.Group | null = null;
   private readonly raycaster = new THREE.Raycaster();
   private sketches = new THREE.Group();
 
@@ -155,36 +155,52 @@ export class Viewer {
 
   /** Tints one face, or none. */
   highlightFace(face: number | null): void {
+    this.highlightFaces(face === null ? [] : [face]);
+  }
+
+  /** Tints picked faces, and more strongly the one under the pointer. */
+  highlightFaces(faces: number[], hover: number | null = null): void {
     if (this.highlight) {
       this.scene.remove(this.highlight);
-      this.highlight.geometry.dispose();
-      (this.highlight.material as THREE.Material).dispose();
+      this.highlight.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.geometry.dispose();
+          (object.material as THREE.Material).dispose();
+        }
+      });
       this.highlight = null;
     }
-    if (face !== null && this.surface && this.triangleFaces) {
-      const source = this.surface.geometry;
-      const index = source.getIndex();
-      if (index) {
+    const source = this.surface?.geometry;
+    const index = source?.getIndex();
+    if (source && index && this.triangleFaces) {
+      const group = new THREE.Group();
+      const tint = (wanted: Set<number>, color: number, opacity: number) => {
         const picked: number[] = [];
-        this.triangleFaces.forEach((f, t) => {
-          if (f === face) picked.push(index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2));
+        this.triangleFaces?.forEach((f, t) => {
+          if (wanted.has(f)) picked.push(index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2));
         });
+        if (picked.length === 0) return;
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", source.getAttribute("position"));
         geometry.setIndex(picked);
-        this.highlight = new THREE.Mesh(
-          geometry,
-          new THREE.MeshBasicMaterial({
-            color: 0xffb454,
-            transparent: true,
-            opacity: 0.45,
-            polygonOffset: true,
-            polygonOffsetFactor: -1,
-            polygonOffsetUnits: -1,
-          }),
+        group.add(
+          new THREE.Mesh(
+            geometry,
+            new THREE.MeshBasicMaterial({
+              color,
+              transparent: true,
+              opacity,
+              polygonOffset: true,
+              polygonOffsetFactor: -1,
+              polygonOffsetUnits: -1,
+            }),
+          ),
         );
-        this.scene.add(this.highlight);
-      }
+      };
+      tint(new Set(faces), 0xffb454, 0.55);
+      if (hover !== null && !faces.includes(hover)) tint(new Set([hover]), 0xffb454, 0.3);
+      this.highlight = group;
+      this.scene.add(group);
     }
     this.render();
   }

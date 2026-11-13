@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cndt_geom::Point3;
-use cndt_kernel::{Body, BodyProperties, BooleanOp, Curve, Kernel, Made};
+use cndt_kernel::{Blend, Body, BodyProperties, BooleanOp, Curve, Kernel, Made};
 use cndt_sketch::{EntityId, Geometry, Loop, ProfileKey, Sketch};
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +67,35 @@ pub enum Feature {
         /// Size and type.
         spec: HoleSpec,
     },
+    /// Bevels edges at 45°.
+    Chamfer {
+        /// Shown in the timeline, such as `Chamfer1`.
+        name: String,
+        /// Which edges.
+        edges: Vec<EdgeTarget>,
+        /// Millimetres back from the edge on each face.
+        distance: f64,
+    },
+    /// Rounds edges.
+    Fillet {
+        /// Shown in the timeline, such as `Fillet1`.
+        name: String,
+        /// Which edges.
+        edges: Vec<EdgeTarget>,
+        /// Millimetres.
+        radius: f64,
+    },
+}
+
+/// Edges to chamfer or fillet, by the names of the faces around them
+/// (decision 0012).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeTarget {
+    /// Every edge around a face, as picking a face does in Fusion 360.
+    Face(String),
+    /// The one edge where two faces meet.
+    Between(String, String),
 }
 
 /// How deep a hole goes.
@@ -195,15 +224,19 @@ impl Feature {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Extrude { name, .. } | Self::Hole { name, .. } => name,
+            Self::Extrude { name, .. }
+            | Self::Hole { name, .. }
+            | Self::Chamfer { name, .. }
+            | Self::Fillet { name, .. } => name,
         }
     }
 
-    /// The sketch it uses.
+    /// The sketch it uses, if any.
     #[must_use]
-    pub const fn sketch(&self) -> SketchId {
+    pub const fn sketch(&self) -> Option<SketchId> {
         match self {
-            Self::Extrude { sketch, .. } | Self::Hole { sketch, .. } => *sketch,
+            Self::Extrude { sketch, .. } | Self::Hole { sketch, .. } => Some(*sketch),
+            Self::Chamfer { .. } | Self::Fillet { .. } => None,
         }
     }
 
@@ -228,6 +261,37 @@ impl Feature {
                     return Err(String::from("pick at least one point to put a hole at"));
                 }
                 spec.check()
+            }
+            Self::Chamfer {
+                edges,
+                distance: size,
+                ..
+            }
+            | Self::Fillet {
+                edges,
+                radius: size,
+                ..
+            } => {
+                let what = if matches!(self, Self::Chamfer { .. }) {
+                    "chamfer distance"
+                } else {
+                    "fillet radius"
+                };
+                if !(size.is_finite() && *size > 0.0) {
+                    return Err(format!("the {what} must be more than zero, not {size}"));
+                }
+                if edges.is_empty() {
+                    return Err(String::from("pick at least one edge or face"));
+                }
+                let bad =
+                    |t: &String| t.is_empty() || t.len() > 200 || t.chars().any(char::is_control);
+                if edges.iter().any(|e| match e {
+                    EdgeTarget::Face(f) => bad(f),
+                    EdgeTarget::Between(a, b) => bad(a) || bad(b),
+                }) {
+                    return Err(String::from("an edge is named by a damaged face name"));
+                }
+                Ok(())
             }
         }
     }
@@ -261,6 +325,12 @@ pub enum FaceOrigin {
     End {
         /// The profile it closes.
         profile: ProfileKey,
+    },
+    /// The face a chamfer or fillet made along an edge, named by the faces
+    /// the edge joined.
+    Blend {
+        /// The two faces' names, in order.
+        between: (String, String),
     },
     /// A surface of a hole.
     Hole {
@@ -326,6 +396,9 @@ impl fmt::Display for FaceName {
                 write!(f, "f{}/start/{}", self.feature.0, key(profile))
             }
             FaceOrigin::End { profile } => write!(f, "f{}/end/{}", self.feature.0, key(profile)),
+            FaceOrigin::Blend { between } => {
+                write!(f, "f{}/blend/{}+{}", self.feature.0, between.0, between.1)
+            }
             FaceOrigin::Hole { point, surface } => {
                 write!(
                     f,
@@ -781,6 +854,115 @@ fn hole_tool(
     tool.ok_or_else(|| String::from("pick at least one point to put a hole at"))
 }
 
+/// The one face named `token`, or why not.
+fn unique_face(names: &Names, token: &str) -> Result<u32, String> {
+    let found: Vec<usize> = names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.iter().any(|name| name.to_string() == token))
+        .map(|(i, _)| i)
+        .collect();
+    match found.as_slice() {
+        [one] => u32::try_from(*one).map_err(|_| String::from("too many faces")),
+        [] => Err(format!(
+            "the face {token} no longer exists; edit the feature and pick again"
+        )),
+        _ => Err(format!(
+            "the face {token} is now split into {} faces; edit the feature and pick again",
+            found.len()
+        )),
+    }
+}
+
+/// Chamfers or fillets the part, naming each new face by the faces its edge
+/// joined.
+fn blend_feature(
+    kernel: &dyn Kernel,
+    id: FeatureId,
+    feature: &Feature,
+    body: &Body,
+    names: &Names,
+) -> Result<(Body, Names), String> {
+    let (targets, blend) = match feature {
+        Feature::Chamfer {
+            edges, distance, ..
+        } => (edges, Blend::Chamfer(*distance)),
+        Feature::Fillet { edges, radius, .. } => (edges, Blend::Fillet(*radius)),
+        _ => return Err(String::from("not a chamfer or fillet")),
+    };
+    let joins = kernel.edges(body).map_err(|e| e.to_string())?;
+    let mut picked: BTreeSet<u32> = BTreeSet::new();
+    for target in targets {
+        match target {
+            EdgeTarget::Face(token) => {
+                let face = unique_face(names, token)?;
+                for (e, (a, b)) in joins.iter().enumerate() {
+                    if *a == face || *b == face {
+                        picked
+                            .insert(u32::try_from(e).map_err(|_| String::from("too many edges"))?);
+                    }
+                }
+            }
+            EdgeTarget::Between(first, second) => {
+                let (fa, fb) = (unique_face(names, first)?, unique_face(names, second)?);
+                let found: Vec<usize> = joins
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (a, b))| (*a == fa && *b == fb) || (*a == fb && *b == fa))
+                    .map(|(e, _)| e)
+                    .collect();
+                match found.as_slice() {
+                    [one] => {
+                        picked.insert(
+                            u32::try_from(*one).map_err(|_| String::from("too many edges"))?,
+                        );
+                    }
+                    [] => {
+                        return Err(format!(
+                            "{first} and {second} no longer meet at an edge; edit the feature and pick again"
+                        ));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{first} and {second} now meet at {} edges; edit the feature and pick one",
+                            found.len()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let edges: Vec<u32> = picked.into_iter().collect();
+    let made = kernel
+        .blend(body, &edges, blend)
+        .map_err(|e| e.to_string())?;
+    let split = u32::try_from(names.len()).unwrap_or(u32::MAX);
+    // A face's first name stands for it in the new face's name.
+    let label = |face: u32| {
+        names
+            .get(face as usize)
+            .and_then(|n| n.iter().next())
+            .map(ToString::to_string)
+    };
+    let carried = carry(&made, &|source| {
+        if source < split {
+            names.get(source as usize).cloned()
+        } else {
+            let edge = *edges.get((source - split) as usize)?;
+            let (a, b) = *joins.get(edge as usize)?;
+            let (mut x, mut y) = (label(a)?, label(b)?);
+            if y < x {
+                std::mem::swap(&mut x, &mut y);
+            }
+            Some(BTreeSet::from([FaceName {
+                feature: id,
+                origin: FaceOrigin::Blend { between: (x, y) },
+            }]))
+        }
+    });
+    Ok((made.body, carried))
+}
+
 /// Rebuilds the part from the timeline.
 #[must_use]
 pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
@@ -789,7 +971,13 @@ pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
     let mut frames = BTreeMap::new();
     for entry in document.features() {
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
-            let sketch = entry.feature.sketch();
+            let Some(sketch) = entry.feature.sketch() else {
+                // Chamfers and fillets work on the part itself.
+                let (body, names) = part.as_ref().ok_or_else(|| {
+                    String::from("there is no body to blend yet; add an extrude first")
+                })?;
+                return blend_feature(kernel, entry.id, &entry.feature, body, names).map(Some);
+            };
             let record = document
                 .sketch(sketch)
                 .ok_or_else(|| format!("its sketch ({sketch}) has been deleted"))?;
@@ -815,6 +1003,9 @@ pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
                     let (tool, names) =
                         hole_tool(document, kernel, entry.id, &entry.feature, &frame, body)?;
                     (tool, names, Operation::Cut)
+                }
+                Feature::Chamfer { .. } | Feature::Fillet { .. } => {
+                    return Err(String::from("a blend has no sketch"));
                 }
             };
             Ok(Some(match (&part, operation) {
@@ -1175,6 +1366,66 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), tokens.len(), "no name on two faces");
+    }
+
+    /// 0.5 mm chamfers on the top outside edges and every hole (decision
+    /// 0010, feature 11), and a filleted corner.
+    #[test]
+    fn chamfer_the_top_face_and_fillet_a_corner() {
+        let (mut d, _, outline) = block();
+        let (s, p) = top_points(&mut d, &[(20.0, 20.0), (70.0, 30.0)]);
+        d.add_feature(hole("Holes", s, p.clone(), simple(6.6, HoleDepth::Through)))
+            .unwrap();
+        // Round the corner first, then chamfer, as a machinist would order them.
+        let side = |e: EntityId| format!("f0/side/e{}", e.0);
+        d.add_feature(Feature::Fillet {
+            name: "Fillet1".into(),
+            edges: vec![EdgeTarget::Between(side(outline[0]), side(outline[1]))],
+            radius: 3.0,
+        })
+        .unwrap();
+        let top = top_face(&d);
+        d.add_feature(Feature::Chamfer {
+            name: "Chamfer1".into(),
+            edges: vec![EdgeTarget::Face(top.clone())],
+            distance: 0.5,
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert!(
+            r.status.values().all(|s| *s == FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let tokens: Vec<String> = r.faces.iter().flatten().map(ToString::to_string).collect();
+        assert!(
+            tokens.iter().any(|t| t.starts_with("f2/blend/")),
+            "the fillet face"
+        );
+        let chamfers = tokens.iter().filter(|t| t.starts_with("f3/blend/")).count();
+        assert_eq!(
+            chamfers, 7,
+            "4 outside edges, the rounded corner and 2 hole rims: {tokens:?}"
+        );
+        // 6 block + 2 hole walls + 1 fillet + 7 chamfers.
+        assert_eq!(r.faces.len(), 16);
+        let mut sorted = tokens.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), tokens.len(), "no name on two faces");
+
+        // An edge that no longer exists is flagged, not guessed.
+        d.add_feature(Feature::Fillet {
+            name: "Ghost".into(),
+            edges: vec![EdgeTarget::Between(side(outline[0]), side(outline[2]))],
+            radius: 1.0,
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        let Some(FeatureStatus::Failed { reason }) = r.status.get(&FeatureId(4)) else {
+            panic!("{:?}", r.status)
+        };
+        assert!(reason.contains("no longer meet"), "{reason}");
     }
 
     #[test]

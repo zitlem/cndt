@@ -124,6 +124,26 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         axis_dir: [f64; 3],
     ) -> Result<Made, KernelError>;
 
+    /// For every edge of a body: the two faces it joins (face numbers as in
+    /// the history; a seam lists its one face twice). Edge numbers are the
+    /// positions in this list.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Internal`] if the kernel fails.
+    fn edges(&self, body: &Body) -> Result<Vec<(u32, u32)>, KernelError>;
+
+    /// Chamfers or fillets edges of a body.
+    ///
+    /// History sources: input face `i` is `i`; the face made from the `k`-th
+    /// listed edge is `faces + k`.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] with a reason, such as a blend too large
+    /// for the faces around it.
+    fn blend(&self, body: &Body, edges: &[u32], blend: Blend) -> Result<Made, KernelError>;
+
     /// Fuses or cuts two bodies.
     ///
     /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -183,6 +203,15 @@ pub enum Curve {
         /// Radius.
         radius: f64,
     },
+}
+
+/// What a blend does to an edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Blend {
+    /// Bevels it, the same distance back on both faces (a 45° chamfer).
+    Chamfer(f64),
+    /// Rounds it to a radius.
+    Fillet(f64),
 }
 
 /// How a boolean combines two bodies.
@@ -318,6 +347,20 @@ impl Kernel for OpenCascade {
     ) -> Result<Made, KernelError> {
         let points: Vec<[f64; 3]> = points.iter().copied().map(xyz).collect();
         cndt_occt_sys::revolve(&points, xyz(axis_origin), axis_dir)
+            .map(made)
+            .map_err(modelling)
+    }
+
+    fn edges(&self, body: &Body) -> Result<Vec<(u32, u32)>, KernelError> {
+        cndt_occt_sys::edges(&body.0).map_err(modelling)
+    }
+
+    fn blend(&self, body: &Body, edges: &[u32], blend: Blend) -> Result<Made, KernelError> {
+        let blend = match blend {
+            Blend::Chamfer(d) => cndt_occt_sys::Blend::Chamfer(d),
+            Blend::Fillet(r) => cndt_occt_sys::Blend::Fillet(r),
+        };
+        cndt_occt_sys::blend(&body.0, edges, blend)
             .map(made)
             .map_err(modelling)
     }

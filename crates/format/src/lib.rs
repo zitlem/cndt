@@ -39,7 +39,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 3: the feature timeline. Older files read as having none.
 /// - 4: sketches on faces of the part.
 /// - 5: hole features.
-pub const SCHEMA_VERSION: u32 = 5;
+/// - 6: chamfer and fillet features.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -255,6 +256,20 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 5 knew nothing of chamfers and fillets.
+    if manifest.schema_version < 6
+        && document.features().iter().any(|entry| {
+            matches!(
+                entry.feature,
+                cndt_model::Feature::Chamfer { .. } | cndt_model::Feature::Fillet { .. }
+            )
+        })
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain chamfers or fillets",
+            manifest.schema_version
         )));
     }
     // Version 4 knew nothing of holes.
