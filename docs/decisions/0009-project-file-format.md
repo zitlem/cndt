@@ -87,3 +87,7 @@ Contour operations in a setup: `{"type": "contour", "face": "<face name>"}`, opt
 ## Version 12 (2026-11-13)
 
 Pocket operations in a setup: `{"type": "pocket", "floor": "<face name>"}`, optionally with `"tool"`. Older builds refuse these files with the update message.
+
+## Version 13 (2026-11-13)
+
+Chamfer milling operations in a setup: `{"type": "chamfer", "face": "<face name>", "width": <mm>}`, optionally with `"tool"`. Older builds refuse these files with the update message.

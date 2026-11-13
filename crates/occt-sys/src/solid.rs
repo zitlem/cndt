@@ -32,6 +32,7 @@ struct RawSegment {
     end: [f64; 3],
     center: [f64; 3],
     ccw: i32,
+    wire: i32,
 }
 
 #[repr(C)]
@@ -154,6 +155,14 @@ unsafe extern "C" {
     );
     fn cndt_occt_free_polylines(lines: *mut PolylinesHandle);
     fn cndt_occt_face_outline(
+        shape: *const ShapeHandle,
+        face: u32,
+        distance: f64,
+        out: *mut *mut SegmentsHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn cndt_occt_face_loops(
         shape: *const ShapeHandle,
         face: u32,
         distance: f64,
@@ -678,6 +687,66 @@ pub fn face_outline(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Segme
         .collect())
 }
 
+/// Every boundary loop of a flat face parallel to XY, offset with the face
+/// by `distance`: positive grows the face (the outer loop outwards, holes
+/// inwards). Each loop's segments are in running order.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] if the offset fails.
+pub fn face_loops(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Vec<Segment>>, OcctError> {
+    let mut out: *mut SegmentsHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `out` is a valid out-pointer; `err` is
+    // writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_face_loops(
+            shape.ptr.as_ptr(),
+            face,
+            distance,
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK || out.is_null() {
+        return Err(status_error(code, &err));
+    }
+    let mut items: *const RawSegment = std::ptr::null();
+    let mut len = 0_usize;
+    // SAFETY: `out` is a live handle; the out-pointers are valid locals.
+    unsafe { cndt_occt_segments_view(out, &mut items, &mut len) };
+    // SAFETY: the view points into `out`'s vector of `len` segments, which is
+    // freed only after this copy.
+    let raw = unsafe { copy_array(items, len) };
+    // SAFETY: `out` is owned here and freed exactly once.
+    unsafe { cndt_occt_free_segments(out) };
+    let mut loops: Vec<Vec<Segment>> = Vec::new();
+    for s in raw {
+        let index = usize::try_from(s.wire).unwrap_or(0);
+        while loops.len() <= index {
+            loops.push(Vec::new());
+        }
+        let segment = match s.kind {
+            1 => Segment::Arc {
+                start: s.start,
+                end: s.end,
+                center: s.center,
+                ccw: s.ccw != 0,
+            },
+            _ => Segment::Line {
+                start: s.start,
+                end: s.end,
+            },
+        };
+        if let Some(l) = loops.get_mut(index) {
+            l.push(segment);
+        }
+    }
+    Ok(loops)
+}
+
 /// Fuses or cuts two shapes.
 ///
 /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -1055,6 +1124,29 @@ mod tests {
             face_outline(&block.shape, top, -5.0),
             Err(OcctError::ModelFailed(_))
         ));
+    }
+
+    #[test]
+    fn a_face_with_a_hole_offsets_both_loops() {
+        let plate = extrude(&[rectangle(40.0, 30.0), circle(20.0, 15.0, 5.0)], Z, 10.0).unwrap();
+        let (_, top) = *plate.history.iter().find(|p| p.0 == 6).unwrap();
+        let loops = face_loops(&plate.shape, top, 1.0).unwrap();
+        assert_eq!(loops.len(), 2, "{loops:?}");
+        let radii: Vec<f64> = loops
+            .iter()
+            .flatten()
+            .filter_map(|s| match s {
+                Segment::Arc { start, center, .. } => {
+                    Some((start[0] - center[0]).hypot(start[1] - center[1]))
+                }
+                Segment::Line { .. } => None,
+            })
+            .collect();
+        // The hole shrinks to R4 and nothing grows past R5; the outer
+        // corners grow R1 arcs.
+        assert!(radii.iter().any(|r| (r - 4.0).abs() < 1e-7), "{radii:?}");
+        assert!(radii.iter().all(|r| *r < 5.0), "a hole grew: {radii:?}");
+        assert!(radii.iter().any(|r| (r - 1.0).abs() < 1e-7), "{radii:?}");
     }
 
     #[test]

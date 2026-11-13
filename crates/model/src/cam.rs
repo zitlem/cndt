@@ -185,6 +185,17 @@ pub enum OperationDef {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<u32>,
     },
+    /// Mills the 45° chamfers round every edge of a flat face (its outline
+    /// and every hole and opening in it) with a 90° chamfer mill.
+    Chamfer {
+        /// The face whose edges are chamfered, by its persistent name.
+        face: String,
+        /// The chamfer's width in millimetres, as modelled.
+        width: f64,
+        /// The tool; by default the library's first chamfer mill.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<u32>,
+    },
     /// Faces the stock down to the part's face on the side machined.
     Face {
         /// The tool; by default the library's first face mill.

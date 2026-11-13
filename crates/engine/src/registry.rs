@@ -517,7 +517,13 @@ impl Registry {
                         name: "type",
                         kind: ArgKind::Text,
                         required: true,
-                        description: "face, contour, pocket or holes",
+                        description: "face, contour, pocket, holes or chamfer",
+                    },
+                    ArgSpec {
+                        name: "width",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "For chamfer: the chamfer's width in mm, as modelled.",
                     },
                     ArgSpec {
                         name: "floor",
@@ -535,7 +541,7 @@ impl Registry {
                         name: "face",
                         kind: ArgKind::Text,
                         required: false,
-                        description: "For contour: the flat face whose outline is followed.",
+                        description: "For contour: the flat face whose outline is followed; for chamfer: the face whose edges are chamfered.",
                     },
                     ArgSpec {
                         name: "depth",
@@ -547,6 +553,15 @@ impl Registry {
                 build: |args| {
                     let operation = match text(args, "type")?.as_str() {
                         "holes" => cndt_model::cam::OperationDef::Holes,
+                        "chamfer" => cndt_model::cam::OperationDef::Chamfer {
+                            face: text(args, "face")?,
+                            width: number(args, "width")?,
+                            tool: if args.contains_key("tool") {
+                                Some(id(args, "tool")?)
+                            } else {
+                                None
+                            },
+                        },
                         "pocket" => cndt_model::cam::OperationDef::Pocket {
                             floor: text(args, "floor")?,
                             tool: if args.contains_key("tool") {

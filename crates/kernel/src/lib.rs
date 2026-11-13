@@ -156,6 +156,20 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         distance: f64,
     ) -> Result<Vec<OutlineSegment>, KernelError>;
 
+    /// Every boundary loop of flat face `face` (parallel to XY), offset with
+    /// the face by `distance`: positive grows the face, so the outer loop
+    /// moves outwards and holes shrink.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if the offset fails.
+    fn face_loops(
+        &self,
+        body: &Body,
+        face: u32,
+        distance: f64,
+    ) -> Result<Vec<Vec<OutlineSegment>>, KernelError>;
+
     /// Chamfers or fillets edges of a body.
     ///
     /// History sources: input face `i` is `i`; the face made from the `k`-th
@@ -441,6 +455,40 @@ impl Kernel for OpenCascade {
                     center: p(center),
                     ccw,
                 },
+            })
+            .collect())
+    }
+
+    fn face_loops(
+        &self,
+        body: &Body,
+        face: u32,
+        distance: f64,
+    ) -> Result<Vec<Vec<OutlineSegment>>, KernelError> {
+        let p = |a: [f64; 3]| Point3::new(a[0], a[1], a[2]);
+        Ok(cndt_occt_sys::face_loops(&body.0, face, distance)
+            .map_err(modelling)?
+            .into_iter()
+            .map(|l| {
+                l.into_iter()
+                    .map(|s| match s {
+                        cndt_occt_sys::Segment::Line { start, end } => OutlineSegment::Line {
+                            start: p(start),
+                            end: p(end),
+                        },
+                        cndt_occt_sys::Segment::Arc {
+                            start,
+                            end,
+                            center,
+                            ccw,
+                        } => OutlineSegment::Arc {
+                            start: p(start),
+                            end: p(end),
+                            center: p(center),
+                            ccw,
+                        },
+                    })
+                    .collect()
             })
             .collect())
     }
