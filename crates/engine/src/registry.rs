@@ -505,7 +505,7 @@ impl Registry {
             },
             CommandSpec {
                 name: "cam.add_operation",
-                description: "Add an operation at the end of a setup. Kinds: holes (spot, drill, tap and ream every hole facing the spindle).",
+                description: "Add an operation at the end of a setup. Kinds: face (face the stock down to the part), holes (spot, drill, tap and ream every hole facing the spindle).",
                 args: &[
                     ArgSpec {
                         name: "setup",
@@ -523,7 +523,16 @@ impl Registry {
                 build: |args| {
                     let operation = match text(args, "type")?.as_str() {
                         "holes" => cndt_model::cam::OperationDef::Holes,
-                        other => return Err(format!("unknown operation {other:?}; use holes")),
+                        "face" => cndt_model::cam::OperationDef::Face {
+                            tool: if args.contains_key("tool") {
+                                Some(id(args, "tool")?)
+                            } else {
+                                None
+                            },
+                        },
+                        other => {
+                            return Err(format!("unknown operation {other:?}; use face or holes"));
+                        }
                     };
                     cam(
                         "cam.add_operation",

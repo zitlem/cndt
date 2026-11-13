@@ -164,6 +164,12 @@ pub enum Side {
 pub enum OperationDef {
     /// Every hole facing the spindle: spot, drill, tap and ream as needed.
     Holes,
+    /// Faces the stock down to the part's face on the side machined.
+    Face {
+        /// The tool; by default the library's first face mill.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<u32>,
+    },
 }
 
 /// An operation with its id.

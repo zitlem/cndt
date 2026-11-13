@@ -391,17 +391,17 @@ fn the_cndt_test_block() {
         state["document"]["cam"]["setups"][0]["setup"]["name"],
         "Setup 1 (top)"
     );
+    s.exec("cam.add_operation", json!({"setup": 0, "type": "face"}));
     s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
-    // The bottom setup: the part flipped about X. No holes face it yet.
+    // The bottom setup: the part flipped about X. Face it to thickness; no
+    // holes face it yet, so the holes operation adds nothing.
     s.exec("cam.add_setup", json!({"side": "bottom", "work_offset": 2}));
-    s.exec("cam.add_operation", json!({"setup": 1, "type": "holes"}));
+    s.exec("cam.add_operation", json!({"setup": 1, "type": "face"}));
     let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 1}));
-    assert!(
-        reply["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("no holes"),
-        "{reply}"
+    assert_eq!(reply["ok"], true, "{reply}");
+    check_golden(
+        "test-block-setup-2-fanuc-mill",
+        reply["result"]["gcode"].as_str().unwrap(),
     );
     let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 0}));
     assert_eq!(reply["ok"], true, "{reply}");
@@ -411,7 +411,7 @@ fn the_cndt_test_block() {
         notes.contains("Counterbored M5") && notes.contains("milling"),
         "{notes}"
     );
-    check_golden("test-block-holes-fanuc-mill", gcode);
+    check_golden("test-block-setup-1-fanuc-mill", gcode);
     // GRBL cannot rigid-tap, and says so.
     let reply = s.call(json!({"method": "post", "post": "grbl"}));
     assert!(
