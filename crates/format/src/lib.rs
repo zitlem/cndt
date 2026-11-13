@@ -43,7 +43,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 7: expressions driving dimensions and extrude distances.
 /// - 8: pattern features.
 /// - 9: CAM definitions: stock, tools, setups, operations (decision 0014).
-pub const SCHEMA_VERSION: u32 = 9;
+/// - 10: facing operations.
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -259,6 +260,20 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 9 knew nothing of facing.
+    if manifest.schema_version < 10
+        && document
+            .cam()
+            .setups
+            .iter()
+            .flat_map(|s| &s.setup.operations)
+            .any(|o| matches!(o.operation, cndt_model::cam::OperationDef::Face { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain facing operations",
+            manifest.schema_version
         )));
     }
     // Version 8 knew nothing of CAM definitions.

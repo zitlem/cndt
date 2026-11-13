@@ -75,3 +75,7 @@ Pattern features: `{"type": "pattern", "name", "feature": <id of an extrude or h
 ## Version 9 (2026-11-13)
 
 CAM definitions (decision 0014) under `cam`: `stock` (`side`, `top`, `bottom` allowances in mm), `tools` (by number: `kind`, `diameter`, `rpm`, `feed`, `description`), and `setups` (each `{id, setup: {name, side: "top"|"bottom", work_offset, operations: [{id, operation: {"type": "holes"}}]}}`), with `next_setup` and `next_operation`. Older builds refuse these files with the update message.
+
+## Version 10 (2026-11-13)
+
+Facing operations in a setup: `{"type": "face"}`, optionally with `"tool": <number>`. Older builds refuse these files with the update message.

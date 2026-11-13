@@ -134,6 +134,8 @@ pub enum CamError {
     UnknownSetup(u32),
     /// The document has no setups yet.
     NoSetups,
+    /// Facing needs the stock to be set.
+    NoStock,
 }
 
 impl fmt::Display for CamError {
@@ -143,6 +145,7 @@ impl fmt::Display for CamError {
             Self::NoTool(what) => write!(f, "the tool library has no {what}; add one"),
             Self::Nothing => write!(f, "the part has no holes this setup can make"),
             Self::UnknownSetup(id) => write!(f, "there is no setup {id}"),
+            Self::NoStock => write!(f, "facing needs the stock; set it first (cam.set_stock)"),
             Self::NoSetups => write!(
                 f,
                 "the document has no setups yet; add one (cam.add_setup) and give it operations"
@@ -437,6 +440,129 @@ pub fn hole_program(
     Ok(Planned { program, notes })
 }
 
+/// Most material a face mill takes in one pass, in millimetres.
+const FACE_DEPTH_PER_PASS: f64 = 1.0;
+/// Sideways step between passes, as a fraction of the cutter diameter.
+const FACE_STEPOVER: f64 = 0.7;
+/// How far past the stock every plunge and step-over happens.
+const FACE_CLEAR: f64 = 2.0;
+
+/// Faces the stock down to Z0 with zig-zag passes along X: each level is
+/// plunged outside the stock, every row runs fully past it, and rows are
+/// joined outside it, so the cutter never plunges into material.
+fn face(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    setup: &Setup,
+    library: &ToolLibrary,
+    tool: Option<u32>,
+) -> Result<Operation, CamError> {
+    let stock = document.cam().stock.ok_or(CamError::NoStock)?;
+    let bounds = rebuilt.properties.ok_or(CamError::NoPart)?.bounds;
+    let (number, cutter) = match tool {
+        Some(n) => library
+            .tools
+            .get(&n)
+            .map(|t| (n, t))
+            .ok_or_else(|| CamError::NoTool(format!("tool {n}")))?,
+        None => library
+            .find(|t| t.kind == ToolKind::FaceMill)
+            .ok_or_else(|| CamError::NoTool(String::from("face mill")))?,
+    };
+    let allowance = match setup.side {
+        Side::Top => stock.top,
+        Side::Bottom => stock.bottom,
+    };
+    let [length, width, _] = bounds.size();
+    // The stock outline in program coordinates (the same for both sides:
+    // flipping about X maps the box onto itself).
+    let (x_min, x_max) = (-stock.side, length + stock.side);
+    let (y_min, y_max) = (-stock.side, width + stock.side);
+    let r = cutter.diameter / 2.0;
+    let step = cutter.diameter * FACE_STEPOVER;
+    // Rows: the first overhangs the near edge by a tenth of the cutter, and
+    // they continue until the far edge is covered.
+    let mut rows = Vec::new();
+    let mut y = y_min + r - 0.1 * cutter.diameter;
+    loop {
+        rows.push(round3(y));
+        if y + r >= y_max + 0.1 * cutter.diameter || rows.len() > 1000 {
+            break;
+        }
+        y += step;
+    }
+    let (left, right) = (
+        round3(x_min - r - FACE_CLEAR),
+        round3(x_max + r + FACE_CLEAR),
+    );
+    // Levels from the stock top down to Z0, equal and at most 1 mm each.
+    let passes = ((allowance / FACE_DEPTH_PER_PASS).ceil() as usize).max(1);
+    let levels: Vec<f64> = (1..=passes)
+        .map(|k| round3(allowance - allowance * k as f64 / passes as f64))
+        .collect();
+    let top = round3(allowance);
+    let safe = round3(setup.safe_z.max(top + setup.clearance));
+    let mut steps = vec![
+        Step::Event(Event::ToolChange {
+            number,
+            description: if cutter.description.is_empty() {
+                format!("tool {number}")
+            } else {
+                cutter.description.clone()
+            },
+        }),
+        Step::Event(Event::SpindleOn {
+            rpm: cutter.rpm,
+            direction: SpindleDirection::Clockwise,
+        }),
+        Step::Event(Event::Coolant {
+            mode: Coolant::Flood,
+        }),
+    ];
+    let plunge = cutter.feed / 3.0;
+    for z in levels {
+        let first = rows.first().copied().unwrap_or(0.0);
+        steps.push(Step::Move(Move::Rapid {
+            to: Point3::new(left, first, safe),
+        }));
+        steps.push(Step::Move(Move::Rapid {
+            to: Point3::new(left, first, top + setup.clearance),
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: Point3::new(left, first, z),
+            feed: plunge,
+        }));
+        for (i, &row) in rows.iter().enumerate() {
+            let (from, to) = if i % 2 == 0 {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            if i > 0 {
+                // Step over outside the stock.
+                steps.push(Step::Move(Move::Linear {
+                    to: Point3::new(from, row, z),
+                    feed: cutter.feed,
+                }));
+            }
+            steps.push(Step::Move(Move::Linear {
+                to: Point3::new(to, row, z),
+                feed: cutter.feed,
+            }));
+        }
+        let end_x = if rows.len() % 2 == 1 { right } else { left };
+        let last = rows.last().copied().unwrap_or(0.0);
+        steps.push(Step::Move(Move::Rapid {
+            to: Point3::new(end_x, last, safe),
+        }));
+    }
+    steps.push(Step::Event(Event::Coolant { mode: Coolant::Off }));
+    Ok(Operation {
+        name: format!("Face {} mm", round3(allowance)),
+        steps,
+    })
+}
+
 /// Plans every operation of a stored setup (decision 0014).
 ///
 /// # Errors
@@ -471,6 +597,11 @@ pub fn plan_setup(
     let mut notes = Vec::new();
     for op in &entry.setup.operations {
         match op.operation {
+            OperationDef::Face { tool } => {
+                program
+                    .operations
+                    .push(face(document, rebuilt, &setup, &library, tool)?);
+            }
             OperationDef::Holes => {
                 let planned = hole_program(document, rebuilt, &setup, &library, &program.name)?;
                 program.operations.extend(planned.program.operations);
@@ -649,6 +780,84 @@ mod tests {
         let spot = first_cycle(&planned);
         assert_eq!(spot.holes, vec![Point3::new(10.0, 46.0, 0.0)]);
         assert_eq!(plan_setup(&d, &r, Some(9)), Err(CamError::UnknownSetup(9)));
+    }
+
+    #[test]
+    fn facing_covers_the_stock_and_never_plunges_into_it() {
+        let mut d = block_with_bottom_hole();
+        let top = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+            })
+            .unwrap()
+            .unwrap();
+        d.edit_cam(CamEdit::AddOperation {
+            setup: top,
+            operation: OperationDef::Face { tool: None },
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(plan_setup(&d, &r, Some(top)), Err(CamError::NoStock));
+        d.edit_cam(CamEdit::SetStock(cndt_model::cam::Stock {
+            side: 2.0,
+            top: 2.0,
+            bottom: 3.0,
+        }))
+        .unwrap();
+        let planned = plan_setup(&d, &r, Some(top)).unwrap();
+        planned.program.validate().unwrap();
+        let moves: Vec<(Point3, bool)> = planned.program.operations[0]
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Move(Move::Rapid { to }) => Some((*to, false)),
+                Step::Move(Move::Linear { to, .. }) => Some((*to, true)),
+                _ => None,
+            })
+            .collect();
+        // Two 1 mm levels, ending at Z0.
+        let levels: std::collections::BTreeSet<i64> = moves
+            .iter()
+            .filter(|(_, cut)| *cut)
+            .map(|(p, _)| (p.z * 1000.0) as i64)
+            .collect();
+        assert_eq!(levels.into_iter().collect::<Vec<_>>(), [0, 1000]);
+        // The stock is x −2..98, y −2..58. A 50 mm cutter covers it in rows
+        // 35 apart, and every plunge (a feed move down) is outside it.
+        let rows: std::collections::BTreeSet<i64> = moves
+            .iter()
+            .filter(|(_, cut)| *cut)
+            .map(|(p, _)| (p.y * 1000.0) as i64)
+            .collect();
+        let rows: Vec<f64> = rows.into_iter().map(|y| y as f64 / 1000.0).collect();
+        assert!(
+            rows.first().unwrap() - 25.0 <= -2.0 && rows.last().unwrap() + 25.0 >= 58.0,
+            "{rows:?}"
+        );
+        for pair in moves.windows(2) {
+            let ((a, _), (b, cut)) = (pair[0], pair[1]);
+            if cut && b.z < a.z - 1e-9 {
+                assert!(b.x < -2.0 - 25.0 || b.x > 98.0 + 25.0, "plunge at {b:?}");
+            }
+        }
+        // From below there is 3 mm to take off: three passes.
+        let under = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Bottom,
+                work_offset: 2,
+            })
+            .unwrap()
+            .unwrap();
+        d.edit_cam(CamEdit::AddOperation {
+            setup: under,
+            operation: OperationDef::Face { tool: None },
+        })
+        .unwrap();
+        let planned = plan_setup(&d, &r, Some(under)).unwrap();
+        assert_eq!(planned.program.operations[0].name, "Face 3 mm");
     }
 
     #[test]
