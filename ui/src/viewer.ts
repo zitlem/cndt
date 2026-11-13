@@ -86,6 +86,10 @@ export class Viewer {
     const key = new THREE.DirectionalLight(0xffffff, 1.6);
     key.position.set(1, -2, 3);
     this.scene.add(key);
+    // A soft light from below, so undersides (a part's second setup) read.
+    const fill = new THREE.DirectionalLight(0xffffff, 0.7);
+    fill.position.set(-1, 1.5, -2.5);
+    this.scene.add(fill);
 
     // GridHelper lies in XZ; turn it into the XY plane.
     this.grid = new THREE.GridHelper(200, 20, 0x3a4149, 0x262b31);
