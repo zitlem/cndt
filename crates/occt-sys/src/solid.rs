@@ -20,6 +20,11 @@ struct HistoryHandle {
 }
 
 #[repr(C)]
+struct PolylinesHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 struct RawCurve {
     kind: i32,
     p0: [f64; 3],
@@ -118,6 +123,21 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_edge_polylines(
+        shape: *const ShapeHandle,
+        deflection: f64,
+        out: *mut *mut PolylinesHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn cndt_occt_polylines_view(
+        lines: *const PolylinesHandle,
+        counts: *mut *const u32,
+        counts_len: *mut usize,
+        points: *mut *const f32,
+        points_len: *mut usize,
+    );
+    fn cndt_occt_free_polylines(lines: *mut PolylinesHandle);
     fn cndt_occt_face_plane(
         shape: *const ShapeHandle,
         face: u32,
@@ -498,6 +518,62 @@ pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Shape, OcctError> {
         .ok_or_else(|| OcctError::Kernel(String::from("the kernel returned no shape")))
 }
 
+/// Every edge as a polyline (x, y, z per point) within `deflection` of the
+/// true curve, in the order [`edges`] uses. A degenerate edge is empty.
+///
+/// # Errors
+///
+/// [`OcctError::Kernel`] if OpenCascade fails.
+pub fn edge_polylines(shape: &Shape, deflection: f64) -> Result<Vec<Vec<f32>>, OcctError> {
+    let mut out: *mut PolylinesHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `out` is a valid out-pointer; `err` is
+    // writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_edge_polylines(
+            shape.ptr.as_ptr(),
+            deflection,
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK || out.is_null() {
+        return Err(status_error(code, &err));
+    }
+    let (mut counts, mut counts_len, mut points, mut points_len) =
+        (std::ptr::null(), 0_usize, std::ptr::null(), 0_usize);
+    // SAFETY: `out` is a live handle; the out-pointers are valid locals.
+    unsafe {
+        cndt_occt_polylines_view(
+            out,
+            &mut counts,
+            &mut counts_len,
+            &mut points,
+            &mut points_len,
+        )
+    };
+    // SAFETY: the views point into `out`'s vectors with these lengths, and
+    // `out` is freed only after the copies.
+    let (counts, points) = unsafe {
+        (
+            copy_array(counts, counts_len),
+            copy_array(points, points_len),
+        )
+    };
+    // SAFETY: `out` is owned here and freed exactly once.
+    unsafe { cndt_occt_free_polylines(out) };
+    let mut lines = Vec::with_capacity(counts.len());
+    let mut at = 0_usize;
+    for count in counts {
+        let end = at + 3 * count as usize;
+        lines.push(points.get(at..end).map(<[f32]>::to_vec).unwrap_or_default());
+        at = end;
+    }
+    Ok(lines)
+}
+
 /// Fuses or cuts two shapes.
 ///
 /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -819,6 +895,19 @@ mod tests {
             (point[2] - 5.0).abs() < 1e-9 && (normal[2] - 1.0).abs() < 1e-12,
             "the same face, moved"
         );
+    }
+
+    #[test]
+    fn edges_as_polylines() {
+        let disc = extrude(&[circle(0.0, 0.0, 5.0)], Z, 2.0).unwrap();
+        let lines = edge_polylines(&disc.shape, 0.01).unwrap();
+        assert_eq!(lines.len(), edges(&disc.shape).unwrap().len());
+        // The two circles are finely sampled; every point lies on radius 5.
+        let circles: Vec<&Vec<f32>> = lines.iter().filter(|l| l.len() > 30).collect();
+        assert_eq!(circles.len(), 2);
+        for p in circles[0].chunks(3) {
+            assert!((f64::from(p[0]).hypot(f64::from(p[1])) - 5.0).abs() < 0.02);
+        }
     }
 
     #[test]

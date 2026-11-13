@@ -118,6 +118,8 @@ export interface BodyView {
   volume: number;
   bounds: { min: Point3; max: Point3 };
   faces: string[][];
+  /** The two faces each edge joins, by edge number. */
+  edges: [number, number][];
 }
 
 export interface DocumentState {
@@ -241,4 +243,30 @@ export async function bodyMesh(): Promise<Mesh> {
     if (error instanceof ApiFailure) throw error;
     throw new ApiFailure("kernel", String(error));
   }
+}
+
+/** The rebuilt part's edges as polylines (x, y, z per point), by edge number. */
+export async function bodyEdges(): Promise<Float32Array[]> {
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await invoke<ArrayBuffer>("body_edges");
+  } catch (error) {
+    throw new ApiFailure("kernel", String(error));
+  }
+  const view = new DataView(buffer);
+  const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
+  if (buffer.byteLength < 12 || magic !== "CNDTEDG1") {
+    throw new ApiFailure("internal", "the edge data is not in the expected format");
+  }
+  const count = view.getUint32(8, true);
+  let offset = 12 + 4 * count;
+  if (buffer.byteLength < offset) throw new ApiFailure("internal", "the edge data is too short");
+  const lines: Float32Array[] = [];
+  for (let i = 0; i < count; i++) {
+    const points = view.getUint32(12 + 4 * i, true);
+    if (offset + points * 12 > buffer.byteLength) throw new ApiFailure("internal", "the edge data is too short");
+    lines.push(new Float32Array(buffer.slice(offset, offset + points * 12)));
+    offset += points * 12;
+  }
+  return lines;
 }

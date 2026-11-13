@@ -207,6 +207,9 @@ struct BodyView {
     /// The persistent names of each face, by the face numbers `body_mesh`
     /// uses (decision 0012).
     faces: Vec<Vec<String>>,
+    /// The two faces each edge joins, by the edge numbers `body_edges`
+    /// uses. An edge is referred to by its two faces' names.
+    edges: Vec<(u32, u32)>,
 }
 
 /// One open document and everything needed to work on it.
@@ -230,6 +233,11 @@ impl Default for Api {
 
 /// Identifies the binary mesh layout returned by [`Api::step_preview`].
 pub const MESH_MAGIC: &[u8; 8] = b"CNDTMSH1";
+
+/// The first bytes of a `body_edges` buffer. Layout, little-endian: magic;
+/// u32 edge count `n`; `n` u32 point counts; then every edge's points as
+/// f32 x, y, z, edge after edge, in the order of `body.edges`.
+pub const EDGES_MAGIC: &[u8; 8] = b"CNDTEDG1";
 
 impl Api {
     /// Starts with an empty, unsaved document and the OpenCascade kernel.
@@ -258,6 +266,50 @@ impl Api {
         self.revision += 1;
     }
 
+    /// The rebuilt part's edges as polylines, in the layout documented on
+    /// [`EDGES_MAGIC`]. Edge numbers match `body.edges` in the state.
+    ///
+    /// # Errors
+    ///
+    /// `no_body` when nothing has been built yet; a kernel error.
+    pub fn body_edges(&self) -> Result<Vec<u8>, ApiError> {
+        let body = self
+            .rebuilt
+            .body
+            .as_ref()
+            .ok_or_else(|| ApiError::new("no_body", "there is no solid yet"))?;
+        let deflection = self.deflection();
+        let lines = self.kernel.edge_polylines(body, deflection)?;
+        let too_big = || ApiError::new("internal", "too many edges to send");
+        let mut out = Vec::new();
+        out.extend_from_slice(EDGES_MAGIC);
+        out.extend_from_slice(
+            &u32::try_from(lines.len())
+                .map_err(|_| too_big())?
+                .to_le_bytes(),
+        );
+        for line in &lines {
+            out.extend_from_slice(
+                &u32::try_from(line.len() / 3)
+                    .map_err(|_| too_big())?
+                    .to_le_bytes(),
+            );
+        }
+        for line in &lines {
+            for value in line {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        Ok(out)
+    }
+
+    fn deflection(&self) -> f64 {
+        self.rebuilt.properties.map_or(0.05, |p| {
+            let [x, y, z] = p.bounds.size();
+            (x.hypot(y).hypot(z) * 0.0005).clamp(0.005, 1.0)
+        })
+    }
+
     /// The rebuilt part's display mesh, in the layout documented on
     /// [`Api::step_preview`]. Face numbers match `body.faces` in the state.
     ///
@@ -271,11 +323,7 @@ impl Api {
             .body
             .as_ref()
             .ok_or_else(|| ApiError::new("no_body", "there is no solid yet"))?;
-        let deflection = self.rebuilt.properties.map_or(0.05, |p| {
-            let [x, y, z] = p.bounds.size();
-            (x.hypot(y).hypot(z) * 0.0005).clamp(0.005, 1.0)
-        });
-        let mesh = self.kernel.mesh(body, deflection)?;
+        let mesh = self.kernel.mesh(body, self.deflection())?;
         encode_mesh(&mesh)
     }
 
@@ -423,6 +471,12 @@ impl Api {
                     .iter()
                     .map(|names| names.iter().map(ToString::to_string).collect())
                     .collect(),
+                edges: self
+                    .rebuilt
+                    .body
+                    .as_ref()
+                    .and_then(|body| self.kernel.edges(body).ok())
+                    .unwrap_or_default(),
             }),
             body_revision: self.revision,
         };
@@ -702,6 +756,10 @@ mod tests {
         assert_eq!(again["result"]["body_revision"].as_u64(), Some(revision));
         let mesh = api.body_mesh().unwrap();
         assert_eq!(&mesh[..8], MESH_MAGIC);
+        let edges = api.body_edges().unwrap();
+        assert_eq!(&edges[..8], EDGES_MAGIC);
+        assert_eq!(u32::from_le_bytes(edges[8..12].try_into().unwrap()), 12);
+        assert_eq!(state["body"]["edges"].as_array().unwrap().len(), 12);
 
         // A pocket cut from a second sketch.
         exec(&mut api, "sketch.create", json!({"plane": "xy"}));

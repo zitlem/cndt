@@ -8,6 +8,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import {
   ApiFailure,
+  bodyEdges,
   bodyMesh,
   type DocumentState,
   planeLabel,
@@ -325,8 +326,9 @@ async function showBody(state: DocumentState): Promise<void> {
     return;
   }
   try {
-    const mesh = await bodyMesh();
+    const [mesh, edges] = await Promise.all([bodyMesh(), bodyEdges()]);
     bodyTriangles = { mesh };
+    viewer.setEdges(edges);
     // Keep the camera where it is once a part is on screen.
     viewer.show(mesh, bodyShown);
     bodyShown = true;
@@ -489,18 +491,27 @@ function closePattern(): void {
 
 /** The chamfer or fillet being set up: which kind, the picked faces, and
  * the feature being edited (then no picking). */
-let blending: { kind: "chamfer" | "fillet"; faces: number[]; editing: number | null } | null = null;
+let blending: { kind: "chamfer" | "fillet"; faces: number[]; edges: number[]; editing: number | null } | null =
+  null;
 
 function syncBlend(): void {
   if (!blending) return;
-  const n = blending.faces.length;
+  const faces = blending.faces.length;
+  const edges = blending.edges.length;
+  const picked = [
+    faces ? `${faces} face${faces === 1 ? "" : "s"}` : "",
+    edges ? `${edges} edge${edges === 1 ? "" : "s"}` : "",
+  ]
+    .filter(Boolean)
+    .join(" and ");
   ui.blendPicked.textContent =
     blending.editing !== null
       ? "The edges stay as picked."
-      : n === 0
-        ? "Click faces on the part; every edge around them is blended. Click again to unpick."
-        : `${n} face${n === 1 ? "" : "s"} picked. Click more, or OK.`;
+      : picked === ""
+        ? "Click edges, or faces to take all their edges. Click again to unpick."
+        : `${picked} picked. Click more, or OK.`;
   viewer.highlightFaces(blending.faces);
+  viewer.highlightEdges(blending.edges);
 }
 
 function openBlend(kind: "chamfer" | "fillet", feature: number | null): void {
@@ -508,7 +519,7 @@ function openBlend(kind: "chamfer" | "fillet", feature: number | null): void {
   closeExtrude();
   closeHole();
   const existing = current.document.features?.find((f) => f.id === feature)?.feature;
-  blending = { kind, faces: [], editing: feature };
+  blending = { kind, faces: [], edges: [], editing: feature };
   const label = kind === "chamfer" ? "Chamfer" : "Fillet";
   ui.blendTitle.textContent = existing ? `Edit ${existing.name}` : label;
   ui.blendSizeLabel.textContent = kind === "chamfer" ? "Distance (mm)" : "Radius (mm)";
@@ -525,6 +536,7 @@ function closeBlend(): void {
   ui.blendDialog.hidden = true;
   viewer.canvas.style.cursor = "";
   viewer.highlightFaces([]);
+  viewer.highlightEdges([]);
 }
 
 function syncHoleFields(): void {
@@ -926,17 +938,27 @@ element("sketch-on-face").addEventListener("click", () => {
 viewer.canvas.addEventListener("pointermove", (event) => {
   if (pickingFace) viewer.highlightFace(viewer.faceAt(event.clientX, event.clientY));
   else if (blending && blending.editing === null) {
-    viewer.highlightFaces(blending.faces, viewer.faceAt(event.clientX, event.clientY));
+    const edge = viewer.edgeAt(event.clientX, event.clientY);
+    viewer.highlightEdges(blending.edges, edge);
+    viewer.highlightFaces(blending.faces, edge === null ? viewer.faceAt(event.clientX, event.clientY) : null);
   }
 });
 
 viewer.canvas.addEventListener("click", (event) => {
   if (!blending || blending.editing !== null) return;
-  const face = viewer.faceAt(event.clientX, event.clientY);
-  if (face === null) return;
-  blending.faces = blending.faces.includes(face)
-    ? blending.faces.filter((f) => f !== face)
-    : [...blending.faces, face];
+  // An edge near the pointer wins over the face under it.
+  const edge = viewer.edgeAt(event.clientX, event.clientY);
+  if (edge !== null) {
+    blending.edges = blending.edges.includes(edge)
+      ? blending.edges.filter((e) => e !== edge)
+      : [...blending.edges, edge];
+  } else {
+    const face = viewer.faceAt(event.clientX, event.clientY);
+    if (face === null) return;
+    blending.faces = blending.faces.includes(face)
+      ? blending.faces.filter((f) => f !== face)
+      : [...blending.faces, face];
+  }
   syncBlend();
 });
 
@@ -977,14 +999,31 @@ ui.blendDialog.addEventListener("submit", (event) => {
     if (blending.editing !== null) {
       next = await execute("feature.edit_blend", { feature: blending.editing, size });
     } else {
-      if (blending.faces.length === 0) throw new Error("Pick at least one face on the part first.");
+      if (blending.faces.length === 0 && blending.edges.length === 0) {
+        throw new Error("Pick at least one edge or face on the part first.");
+      }
       const faces = blending.faces.map((f) => {
         const name = uniqueFaceName(f);
         if (!name) throw new Error("One of the picked faces has no name of its own yet.");
         return name;
       });
+      // An edge is named by its two faces; that pair must meet only there.
+      const joins = current?.body?.edges ?? [];
+      const edges = blending.edges.map((e) => {
+        const [a, b] = joins[e] ?? [-1, -1];
+        const na = uniqueFaceName(a);
+        const nb = uniqueFaceName(b);
+        const same = joins.filter(([x, y]) => (x === a && y === b) || (x === b && y === a)).length;
+        if (!na || !nb || a === b || same !== 1) {
+          throw new Error("One of the picked edges can't be named on its own yet (its faces meet at more than one edge). Pick its face instead.");
+        }
+        return [na, nb];
+      });
       const key = blending.kind === "chamfer" ? "distance" : "radius";
-      next = await execute(`feature.${blending.kind}`, { faces, [key]: size });
+      const args: Record<string, unknown> = { [key]: size };
+      if (faces.length > 0) args["faces"] = faces;
+      if (edges.length > 0) args["edges"] = edges;
+      next = await execute(`feature.${blending.kind}`, args);
     }
     closeBlend();
     render(next);

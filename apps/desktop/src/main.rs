@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The CNDT desktop app: a Tauri window around the CNDT API.
 //!
-//! The frontend (in `ui/`) reaches the core through exactly three commands,
+//! The frontend (in `ui/`) reaches the core through exactly four commands,
 //! and nothing else (architecture rules 5 and 12):
 //!
 //! - `api`: one JSON request in, one JSON response out, exactly as
@@ -9,6 +9,8 @@
 //! - `step_preview`: a STEP file's display mesh as raw bytes, in the layout
 //!   documented on `cndt_api::Api::step_preview`.
 //! - `body_mesh`: the rebuilt part's display mesh, in the same layout.
+//! - `body_edges`: the rebuilt part's edges as polylines, in the layout
+//!   documented on `cndt_api::EDGES_MAGIC`.
 //!
 //! Both run off the main thread, so a slow import never freezes the window.
 
@@ -64,6 +66,15 @@ fn body_mesh(state: State<'_, AppState>) -> Result<Response, String> {
         .map_err(|error| error.message)
 }
 
+#[tauri::command(async)]
+fn body_edges(state: State<'_, AppState>) -> Result<Response, String> {
+    state
+        .api()
+        .body_edges()
+        .map(Response::new)
+        .map_err(|error| error.message)
+}
+
 /// Tauri's generated startup context uses `HashMap` internally. It is
 /// configuration loading, not anything that reaches a toolpath or a file, so
 /// the determinism rule (architecture rule 11) does not apply to it.
@@ -76,7 +87,12 @@ fn main() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState(Mutex::new(Api::new())))
-        .invoke_handler(tauri::generate_handler![api, step_preview, body_mesh])
+        .invoke_handler(tauri::generate_handler![
+            api,
+            step_preview,
+            body_mesh,
+            body_edges
+        ])
         .run(context());
     if let Err(error) = result {
         eprintln!("CNDT could not start: {error}");
