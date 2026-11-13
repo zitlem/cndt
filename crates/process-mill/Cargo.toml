@@ -1,0 +1,19 @@
+[package]
+name = "cndt-process-mill"
+description = "Layer 3: milling operations (drilling first)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cndt-cam-core.workspace = true
+cndt-geom.workspace = true
+cndt-model.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+cndt-kernel.workspace = true
+
+[lints]
+workspace = true

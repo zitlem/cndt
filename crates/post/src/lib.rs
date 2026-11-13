@@ -19,7 +19,8 @@
 use std::fmt;
 
 use cndt_cam_core::{
-    ArcDirection, Coolant, Event, Move, Program, SpindleDirection, Step, ToolpathError,
+    ArcDirection, Coolant, Cycle, CycleKind, Event, Move, Program, SpindleDirection, Step,
+    ToolpathError,
 };
 use cndt_geom::Point3;
 use serde::Deserialize;
@@ -36,6 +37,36 @@ pub struct PostDefinition {
     pub program: ProgramLines,
     /// The codes for each kind of step.
     pub codes: Codes,
+    /// Canned drilling cycles. A post without them gets cycles expanded
+    /// into rapid and feed moves, and cannot tap.
+    #[serde(default)]
+    pub cycles: Option<Cycles>,
+}
+
+/// Canned-cycle templates. Placeholders: `{x}`, `{y}`, `{z}` (bottom),
+/// `{r}` (clearance plane), `{feed}`, `{peck}` (peck only), `{rpm}`
+/// (`tap_prefix` only).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cycles {
+    /// The return mode written before a cycle's first hole, such as `G98`
+    /// (back to the starting height between holes).
+    pub retract: String,
+    /// Straight drilling, such as `G81 X{x} Y{y} Z{z} R{r} F{feed}`.
+    pub drill: String,
+    /// Peck drilling, such as `G83 X{x} Y{y} Z{z} R{r} Q{peck} F{feed}`.
+    pub peck: String,
+    /// Rigid tapping, such as `G84 X{x} Y{y} Z{z} R{r} F{feed}`.
+    pub tap: String,
+    /// A line before a tapping cycle, such as Fanuc's `M29 S{rpm}`.
+    #[serde(default)]
+    pub tap_prefix: Option<String>,
+    /// Feed in, feed out, such as `G85 X{x} Y{y} Z{z} R{r} F{feed}`.
+    pub ream: String,
+    /// Each further hole, such as `X{x} Y{y}`.
+    pub repeat: String,
+    /// Ends the cycle, such as `G80`.
+    pub cancel: String,
 }
 
 /// Identity and verification status.
@@ -372,6 +403,23 @@ fn check_definition(def: &PostDefinition) -> Result<(), PostError> {
             ),
         ])
         .collect();
+    let mut checks = checks;
+    let hole = &["x", "y", "z", "r", "feed"][..];
+    let peck = &["x", "y", "z", "r", "feed", "peck"][..];
+    if let Some(cycles) = &def.cycles {
+        checks.extend([
+            ("cycles.retract", cycles.retract.as_str(), &[][..]),
+            ("cycles.drill", cycles.drill.as_str(), hole),
+            ("cycles.peck", cycles.peck.as_str(), peck),
+            ("cycles.tap", cycles.tap.as_str(), hole),
+            ("cycles.ream", cycles.ream.as_str(), hole),
+            ("cycles.repeat", cycles.repeat.as_str(), &["x", "y"][..]),
+            ("cycles.cancel", cycles.cancel.as_str(), &[][..]),
+        ]);
+        if let Some(prefix) = &cycles.tap_prefix {
+            checks.push(("cycles.tap_prefix", prefix.as_str(), &["rpm"][..]));
+        }
+    }
     for (field, template, allowed) in checks {
         for key in placeholders(template).map_err(|reason| invalid(format!("{field}: {reason}")))? {
             if !allowed.contains(&key.as_str()) {
@@ -447,6 +495,8 @@ struct Output<'a> {
     /// Set by a tool change when the post uses tool length compensation:
     /// the tool number still waiting for its compensation code.
     pending_length_compensation: Option<u32>,
+    /// The spindle speed last set, for rigid tapping.
+    rpm: f64,
 }
 
 impl<'a> Output<'a> {
@@ -460,6 +510,7 @@ impl<'a> Output<'a> {
             axes: [None, None, None],
             feed: None,
             pending_length_compensation: None,
+            rpm: 0.0,
         }
     }
 
@@ -533,7 +584,7 @@ impl<'a> Output<'a> {
                     return Ok(());
                 }
                 Move::Dwell { .. } => {}
-                Move::Linear { .. } | Move::Arc { .. } => {
+                Move::Linear { .. } | Move::Arc { .. } | Move::Cycle(_) => {
                     return Err(String::from(
                         "the first move after a tool change must be a rapid, so tool length \
                          compensation is applied before cutting",
@@ -564,6 +615,7 @@ impl<'a> Output<'a> {
                 self.block(&words.join(" "));
                 self.position = Some(*to);
             }
+            Move::Cycle(cycle) => self.cycle(cycle)?,
             Move::Dwell { seconds } => {
                 let line = fill(
                     &codes.dwell,
@@ -665,6 +717,106 @@ impl<'a> Output<'a> {
         }
     }
 
+    /// A drilling cycle: the post's canned cycle, or expanded into moves.
+    fn cycle(&mut self, cycle: &Cycle) -> Result<(), String> {
+        // Validation guarantees a known start at or above the clearance.
+        let start = self
+            .position
+            .unwrap_or(Point3::new(0.0, 0.0, cycle.clearance));
+        let Some(cycles) = self.def.cycles.clone() else {
+            return self.expanded_cycle(cycle, start);
+        };
+        let (template, peck) = match cycle.kind {
+            CycleKind::Drill => (&cycles.drill, None),
+            CycleKind::Peck { step } => (&cycles.peck, Some(step)),
+            CycleKind::Tap { .. } => (&cycles.tap, None),
+            CycleKind::Ream => (&cycles.ream, None),
+        };
+        if let (CycleKind::Tap { .. }, Some(prefix)) = (cycle.kind, &cycles.tap_prefix) {
+            self.block(&fill(prefix, &[("rpm", &number(self.rpm, 0, true, false))]));
+        }
+        let format = &self.def.format;
+        let feed = number(
+            cycle.feed,
+            format.feed_decimals,
+            format.trim_zeros,
+            format.keep_decimal_point,
+        );
+        for (index, hole) in cycle.holes.iter().enumerate() {
+            let (x, y) = (self.coordinate(hole.x), self.coordinate(hole.y));
+            if index == 0 {
+                let z = self.coordinate(cycle.bottom);
+                let r = self.coordinate(cycle.clearance);
+                let peck = peck.map(|p| self.coordinate(p)).unwrap_or_default();
+                let line = fill(
+                    template,
+                    &[
+                        ("x", &x),
+                        ("y", &y),
+                        ("z", &z),
+                        ("r", &r),
+                        ("feed", &feed),
+                        ("peck", &peck),
+                    ],
+                );
+                self.block(format!("{} {line}", cycles.retract).trim());
+            } else {
+                self.block(&fill(&cycles.repeat, &[("x", &x), ("y", &y)]));
+            }
+        }
+        self.block(&cycles.cancel);
+        // The cycle leaves modal codes behind; start afresh.
+        self.reset_modal();
+        let end = cycle
+            .holes
+            .last()
+            .map_or(start, |h| Point3::new(h.x, h.y, start.z));
+        self.position = Some(end);
+        Ok(())
+    }
+
+    /// A cycle written as plain moves, for posts without canned cycles.
+    fn expanded_cycle(&mut self, cycle: &Cycle, start: Point3) -> Result<(), String> {
+        let rapid = self.def.codes.rapid.clone();
+        let linear = self.def.codes.linear.clone();
+        let (r, bottom, feed) = (cycle.clearance, cycle.bottom, cycle.feed);
+        if let CycleKind::Tap { .. } = cycle.kind {
+            return Err(String::from(
+                "this post has no rigid tapping cycle; tap these holes by hand or use a post that has one",
+            ));
+        }
+        for hole in &cycle.holes {
+            let at = |z: f64| Point3::new(hole.x, hole.y, z);
+            self.linear_block(&rapid, at(start.z), None);
+            self.linear_block(&rapid, at(r), None);
+            match cycle.kind {
+                CycleKind::Drill => self.linear_block(&linear, at(bottom), Some(feed)),
+                CycleKind::Ream => {
+                    self.linear_block(&linear, at(bottom), Some(feed));
+                    self.linear_block(&linear, at(r), Some(feed));
+                }
+                CycleKind::Peck { step } => {
+                    // Peck down, rapid out to clear chips, rapid back to just
+                    // above the last depth, and carry on.
+                    let mut depth = r;
+                    loop {
+                        let next = (depth - step).max(bottom);
+                        self.linear_block(&linear, at(next), Some(feed));
+                        depth = next;
+                        if depth <= bottom + 1e-9 {
+                            break;
+                        }
+                        self.linear_block(&rapid, at(r), None);
+                        self.linear_block(&rapid, at((depth + 0.5).min(r)), None);
+                    }
+                }
+                CycleKind::Tap { .. } => {}
+            }
+            self.linear_block(&rapid, at(start.z), None);
+        }
+        Ok(())
+    }
+
     fn event(&mut self, event: &Event) {
         let codes = self.def.codes.clone();
         match event {
@@ -687,6 +839,7 @@ impl<'a> Output<'a> {
                     SpindleDirection::CounterClockwise => &codes.spindle_ccw,
                 };
                 self.block(&fill(template, &[("rpm", &number(*rpm, 0, true, false))]));
+                self.rpm = *rpm;
             }
             Event::SpindleOff => self.block(&codes.spindle_off),
             Event::Coolant { mode } => self.block(match mode {

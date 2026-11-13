@@ -45,3 +45,9 @@ CNDT_UPDATE_GOLDEN=1 cargo test -p cndt-post
 ```
 
 Then review every changed line in the diff before committing.
+
+## Canned cycles
+
+A post may have a `[cycles]` section with templates for drilling (`drill`, G81), peck drilling (`peck`, G83), rigid tapping (`tap`, G84, with an optional `tap_prefix` such as Fanuc's `M29 S{rpm}`), reaming (`ream`, G85), further holes (`repeat`), the return mode (`retract`, such as G98) and the cancel code (`cancel`, G80). Placeholders: `{x} {y} {z} {r} {feed}`, `{peck}` for pecking and `{rpm}` in `tap_prefix`.
+
+A post without `[cycles]` gets every cycle written out as G0 and G1 moves, and refuses to tap, since tapping needs a synchronised spindle.

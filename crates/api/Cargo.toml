@@ -12,6 +12,8 @@ cndt-format.workspace = true
 cndt-geom.workspace = true
 cndt-kernel.workspace = true
 cndt-model.workspace = true
+cndt-post.workspace = true
+cndt-process-mill.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

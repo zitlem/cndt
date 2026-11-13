@@ -131,6 +131,24 @@ impl Session {
     }
 }
 
+/// Compares G-code with a reviewed golden file. Regenerate with
+/// `CNDT_UPDATE_GOLDEN=1 cargo test -p cndt-api --test test_block`, then
+/// review every changed line (docs/safety.md, gate 3).
+fn check_golden(name: &str, output: &str) {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/golden/{name}.nc"));
+    if std::env::var_os("CNDT_UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, output).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        output == expected,
+        "{name}: output differs from {}; if intended, regenerate and review.\n--- got ---\n{output}",
+        path.display()
+    );
+}
+
 #[test]
 fn the_cndt_test_block() {
     let mut s = Session { api: Api::new() };
@@ -356,6 +374,26 @@ fn the_cndt_test_block() {
     assert_eq!(state["feature_status"][&pattern]["state"], "ok");
     s.call(json!({"method": "undo"}));
     s.call(json!({"method": "undo"}));
+
+    // Phase 2, first slice: the holes, as G-code (decision 0013).
+    let reply = s.call(json!({"method": "post", "post": "fanuc-mill"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let gcode = reply["result"]["gcode"].as_str().unwrap();
+    let notes = reply["result"]["notes"].to_string();
+    assert!(
+        notes.contains("Counterbored M5") && notes.contains("milling"),
+        "{notes}"
+    );
+    check_golden("test-block-holes-fanuc-mill", gcode);
+    // GRBL cannot rigid-tap, and says so.
+    let reply = s.call(json!({"method": "post", "post": "grbl"}));
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rigid tapping"),
+        "{reply}"
+    );
 
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
