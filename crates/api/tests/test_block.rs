@@ -431,6 +431,12 @@ fn the_cndt_test_block() {
         json!({"setup": 0, "type": "pocket", "floor": open_floor}),
     );
     s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
+    // The 0.5 mm chamfers round the top: outline, pocket, slot, every hole.
+    let top = s.top();
+    s.exec(
+        "cam.add_operation",
+        json!({"setup": 0, "type": "chamfer", "face": top, "width": 0.5}),
+    );
     // The bottom setup: the part flipped about X. Face it to thickness; no
     // holes face it yet, so the holes operation adds nothing.
     s.exec("cam.add_setup", json!({"side": "bottom", "work_offset": 2}));

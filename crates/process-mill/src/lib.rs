@@ -1168,6 +1168,202 @@ fn pocket(
     })
 }
 
+/// How far below a chamfer the 90° tool's tip goes, so it never rubs.
+const CHAMFER_TIP_CLEARANCE: f64 = 1.0;
+
+/// Mills 45° chamfers of `width` round every edge of a flat face with a 90°
+/// chamfer mill. The face, as modelled, already has the chamfers, so its
+/// loops are inset by `width`; with the tip `t` below the face, the
+/// cutter's centre runs on those loops offset by `t` into the air. Outer
+/// loops run clockwise and holes anticlockwise (climb). Each loop is
+/// entered from the air: outside the part, or the middle of the opening.
+fn chamfer_mill(
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    setup: &Setup,
+    library: &ToolLibrary,
+    face: &str,
+    width: f64,
+    tool: Option<u32>,
+) -> Result<Operation, CamError> {
+    let bad = |reason: String| CamError::Contour(reason);
+    let body = rebuilt.body.as_ref().ok_or(CamError::NoPart)?;
+    let (number, cutter) = match tool {
+        Some(n) => library
+            .tools
+            .get(&n)
+            .map(|t| (n, t))
+            .ok_or_else(|| CamError::NoTool(format!("tool {n}")))?,
+        None => library
+            .find(|t| t.kind == ToolKind::ChamferMill)
+            .ok_or_else(|| CamError::NoTool(String::from("chamfer mill")))?,
+    };
+    if !(width.is_finite() && width > 0.0) {
+        return Err(bad(format!(
+            "the chamfer width must be more than zero, not {width}"
+        )));
+    }
+    let t = width + CHAMFER_TIP_CLEARANCE;
+    if t > cutter.diameter / 2.0 {
+        return Err(bad(format!(
+            "a {width} mm chamfer is too wide for the {} mm chamfer mill",
+            cutter.diameter
+        )));
+    }
+    let index = unique_face(rebuilt, face)?;
+    let (point, normal) = kernel
+        .face_plane(body, index)
+        .map_err(|e| bad(e.to_string()))?;
+    if (normal[2] - setup.facing()).abs() > 1e-9 {
+        return Err(bad(String::from(
+            "the chamfered face does not face the spindle in this setup",
+        )));
+    }
+    let face_z = setup.program_point(point).z;
+    let z = round3(face_z - t);
+    let flip = setup.side == Side::Bottom;
+    let loops = kernel
+        .face_loops(body, index, t)
+        .map_err(|e| bad(e.to_string()))?;
+    let mut paths: Vec<(f64, Vec<Piece>)> = loops
+        .into_iter()
+        .map(|l| {
+            let path: Vec<Piece> = l
+                .into_iter()
+                .map(|s| match s {
+                    cndt_kernel::OutlineSegment::Line { start, end } => Piece::Line {
+                        start: setup.program_point(start),
+                        end: setup.program_point(end),
+                    },
+                    cndt_kernel::OutlineSegment::Arc {
+                        start,
+                        end,
+                        center,
+                        ccw,
+                    } => Piece::Arc {
+                        start: setup.program_point(start),
+                        end: setup.program_point(end),
+                        center: setup.program_point(center),
+                        ccw: ccw != flip,
+                    },
+                })
+                .collect();
+            let samples: Vec<Point3> = path.iter().flat_map(Piece::samples).collect();
+            let n = samples.len();
+            let area: f64 = (0..n)
+                .filter_map(|i| Some((samples.get(i)?, samples.get((i + 1) % n)?)))
+                .map(|(a, b)| a.x * b.y - b.x * a.y)
+                .sum::<f64>()
+                / 2.0;
+            (area, path)
+        })
+        .collect();
+    // The outer loop encloses the most.
+    let outer = paths
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.0.abs().total_cmp(&b.1.0.abs()))
+        .map(|(i, _)| i)
+        .ok_or_else(|| bad(String::from("the face has no boundary")))?;
+    let safe = round3(setup.safe_z);
+    let mut steps = vec![
+        Step::Event(Event::ToolChange {
+            number,
+            description: if cutter.description.is_empty() {
+                format!("tool {number}")
+            } else {
+                cutter.description.clone()
+            },
+        }),
+        Step::Event(Event::SpindleOn {
+            rpm: cutter.rpm,
+            direction: SpindleDirection::Clockwise,
+        }),
+        Step::Event(Event::Coolant {
+            mode: Coolant::Flood,
+        }),
+    ];
+    // Outer loop first, then the openings in a fixed order.
+    let order: Vec<usize> = std::iter::once(outer)
+        .chain((0..paths.len()).filter(|i| *i != outer))
+        .collect();
+    for i in order {
+        let Some((area, path)) = paths.get_mut(i) else {
+            continue;
+        };
+        let is_outer = i == outer;
+        // Clockwise outside, anticlockwise inside.
+        if (is_outer && *area > 0.0) || (!is_outer && *area < 0.0) {
+            *path = std::mem::take(path)
+                .into_iter()
+                .rev()
+                .map(Piece::reversed)
+                .collect();
+        }
+        // Start mid-way along the longest line, or at the first piece.
+        if let Some((k, length)) = path
+            .iter()
+            .enumerate()
+            .filter_map(|(k, p)| match *p {
+                Piece::Line { start, end } => Some((k, (end.x - start.x).hypot(end.y - start.y))),
+                Piece::Arc { .. } => None,
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            && length > 1e-6
+        {
+            path.rotate_left(k);
+            if let Some(Piece::Line { start, end }) = path.first().copied() {
+                let mid = Point3::new((start.x + end.x) / 2.0, (start.y + end.y) / 2.0, start.z);
+                path.remove(0);
+                path.insert(0, Piece::Line { start: mid, end });
+                path.push(Piece::Line { start, end: mid });
+            }
+        }
+        let Some(first) = path.first().copied() else {
+            continue;
+        };
+        // Travel direction at the start, and the lead into the air to its left.
+        let (start, lead) = match first {
+            Piece::Line { start, end } => {
+                let length = (end.x - start.x).hypot(end.y - start.y).max(1e-12);
+                let (dx, dy) = ((end.x - start.x) / length, (end.y - start.y) / length);
+                (
+                    start,
+                    Point3::new(start.x - dy * 2.0, start.y + dx * 2.0, 0.0),
+                )
+            }
+            // A round opening: lead from its centre.
+            Piece::Arc { start, center, .. } => (start, center),
+        };
+        let at = |p: Point3, h: f64| Point3::new(round3(p.x), round3(p.y), h);
+        steps.push(Step::Move(Move::Rapid { to: at(lead, safe) }));
+        steps.push(Step::Move(Move::Rapid {
+            to: at(lead, round3(face_z + setup.clearance)),
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: at(lead, z),
+            feed: cutter.feed / 3.0,
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: at(start, z),
+            feed: cutter.feed,
+        }));
+        for piece in path.iter() {
+            steps.push(Step::Move(piece_move(piece, z, cutter.feed)));
+        }
+        steps.push(Step::Move(Move::Linear {
+            to: at(lead, z),
+            feed: cutter.feed,
+        }));
+        steps.push(Step::Move(Move::Rapid { to: at(lead, safe) }));
+    }
+    steps.push(Step::Event(Event::Coolant { mode: Coolant::Off }));
+    Ok(Operation {
+        name: format!("Chamfer {width} mm"),
+        steps,
+    })
+}
+
 /// Plans every operation of a stored setup (decision 0014).
 ///
 /// # Errors
@@ -1203,6 +1399,15 @@ pub fn plan_setup(
     let mut notes = Vec::new();
     for op in &entry.setup.operations {
         match op.operation {
+            OperationDef::Chamfer {
+                ref face,
+                width,
+                tool,
+            } => {
+                program.operations.push(chamfer_mill(
+                    rebuilt, kernel, &setup, &library, face, width, tool,
+                )?);
+            }
             OperationDef::Pocket { ref floor, tool } => {
                 program
                     .operations

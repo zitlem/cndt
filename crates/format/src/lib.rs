@@ -46,7 +46,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 10: facing operations.
 /// - 11: contour operations.
 /// - 12: pocket operations.
-pub const SCHEMA_VERSION: u32 = 12;
+/// - 13: chamfer milling operations.
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -262,6 +263,20 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 12 knew nothing of chamfer milling.
+    if manifest.schema_version < 13
+        && document
+            .cam()
+            .setups
+            .iter()
+            .flat_map(|s| &s.setup.operations)
+            .any(|o| matches!(o.operation, cndt_model::cam::OperationDef::Chamfer { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain chamfer milling operations",
+            manifest.schema_version
         )));
     }
     // Version 11 knew nothing of pockets.

@@ -1138,6 +1138,7 @@ struct cndt_segment {
     double end[3];
     double center[3];
     std::int32_t ccw;
+    std::int32_t wire;  // which loop it belongs to, counting from 0
 };
 
 // Owned segments. Opaque to Rust; free with `cndt_occt_free_segments`.
@@ -1177,6 +1178,58 @@ void put(double out[3], const gp_Pnt& p) {
     out[2] = p.Z();
 }
 
+
+// Appends a wire's edges, in running order, as segments of loop `index`.
+bool append_wire(const TopoDS_Wire& wire, std::int32_t index, cndt_segments& out) {
+        for (BRepTools_WireExplorer it(wire); it.More(); it.Next()) {
+            const TopoDS_Edge& edge = it.Current();
+            const bool reversed = edge.Orientation() == TopAbs_REVERSED;
+            const BRepAdaptor_Curve curve(edge);
+            const double first = curve.FirstParameter();
+            const double last = curve.LastParameter();
+            const gp_Pnt a = curve.Value(reversed ? last : first);
+            const gp_Pnt b = curve.Value(reversed ? first : last);
+            if (curve.GetType() == GeomAbs_Line) {
+                cndt_segment s{};
+                s.wire = index;
+                s.kind = 0;
+                put(s.start, a);
+                put(s.end, b);
+                out.items.push_back(s);
+            } else if (curve.GetType() == GeomAbs_Circle) {
+                const gp_Circ circle = curve.Circle();
+                // The circle's parameter runs counter-clockwise about its
+                // axis; traversal reverses it on a reversed edge.
+                const bool axis_up = circle.Axis().Direction().Z() > 0.0;
+                cndt_segment s{};
+                s.wire = index;
+                s.kind = 1;
+                put(s.start, a);
+                put(s.end, b);
+                put(s.center, circle.Location());
+                s.ccw = (axis_up != reversed) ? 1 : 0;
+                out.items.push_back(s);
+            } else {
+                // Anything else as short straight lines.
+                GCPnts_QuasiUniformDeflection sample(curve, 0.001);
+                if (!sample.IsDone() || sample.NbPoints() < 2) {
+                    return false;
+                }
+                const int n = sample.NbPoints();
+                for (int k = 1; k < n; ++k) {
+                    const int i = reversed ? n - k + 1 : k;
+                    const int j = reversed ? n - k : k + 1;
+                    cndt_segment s{};
+                s.wire = index;
+                    s.kind = 0;
+                    put(s.start, sample.Value(i));
+                    put(s.end, sample.Value(j));
+                    out.items.push_back(s);
+                }
+            }
+        }
+    return true;
+}
 }  // namespace
 
 extern "C" {
@@ -1244,50 +1297,89 @@ int cndt_occt_face_outline(
             path = best;
         }
         auto segments = std::make_unique<cndt_segments>();
-        for (BRepTools_WireExplorer it(path); it.More(); it.Next()) {
-            const TopoDS_Edge& edge = it.Current();
-            const bool reversed = edge.Orientation() == TopAbs_REVERSED;
-            const BRepAdaptor_Curve curve(edge);
-            const double first = curve.FirstParameter();
-            const double last = curve.LastParameter();
-            const gp_Pnt a = curve.Value(reversed ? last : first);
-            const gp_Pnt b = curve.Value(reversed ? first : last);
-            if (curve.GetType() == GeomAbs_Line) {
-                cndt_segment s{};
-                s.kind = 0;
-                put(s.start, a);
-                put(s.end, b);
-                segments->items.push_back(s);
-            } else if (curve.GetType() == GeomAbs_Circle) {
-                const gp_Circ circle = curve.Circle();
-                // The circle's parameter runs counter-clockwise about its
-                // axis; traversal reverses it on a reversed edge.
-                const bool axis_up = circle.Axis().Direction().Z() > 0.0;
-                cndt_segment s{};
-                s.kind = 1;
-                put(s.start, a);
-                put(s.end, b);
-                put(s.center, circle.Location());
-                s.ccw = (axis_up != reversed) ? 1 : 0;
-                segments->items.push_back(s);
-            } else {
-                // Anything else as short straight lines.
-                GCPnts_QuasiUniformDeflection sample(curve, 0.001);
-                if (!sample.IsDone() || sample.NbPoints() < 2) {
-                    set_error(err, err_len, "an outline edge could not be followed");
+        if (!append_wire(path, 0, *segments)) {
+            set_error(err, err_len, "an outline edge could not be followed");
+            return kModelFailed;
+        }
+        *out = segments.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// Every boundary loop of flat face `face`, offset by `distance` with the
+// face: positive grows the face (the outer loop outwards, holes inwards).
+// One loop per wire, in no particular order; segments in running order.
+int cndt_occt_face_loops(
+    const cndt_shape* shape,
+    std::uint32_t face,
+    double distance,
+    cndt_segments** out,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || out == nullptr || !std::isfinite(distance)) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        silence_console_output();
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(shape->shape, TopAbs_FACE, faces);
+        const int index = static_cast<int>(face) + 1;
+        if (index < 1 || index > faces.Extent()) {
+            set_error(err, err_len, "no such face");
+            return kBadArgument;
+        }
+        const TopoDS_Face& f = TopoDS::Face(faces(index));
+        const TopoDS_Wire outer = BRepTools::OuterWire(f);
+        auto segments = std::make_unique<cndt_segments>();
+        std::int32_t n = 0;
+        for (TopExp_Explorer it(f, TopAbs_WIRE); it.More(); it.Next()) {
+            const TopoDS_Wire wire = TopoDS::Wire(it.Current());
+            const bool is_outer = wire.IsSame(outer);
+            TopoDS_Wire path = wire;
+            if (distance != 0.0) {
+                // Each loop on its own, and the direction checked by area:
+                // the outer loop must grow and openings must shrink, whatever
+                // way OpenCascade orients them.
+                const double original = wire_area(wire);
+                const bool grow = is_outer == (distance > 0.0);
+                TopoDS_Wire best;
+                for (const double signed_distance : {distance, -distance}) {
+                    BRepOffsetAPI_MakeOffset offset(wire, GeomAbs_Arc, Standard_False);
+                    offset.Perform(signed_distance);
+                    if (!offset.IsDone()) {
+                        continue;
+                    }
+                    std::vector<TopoDS_Wire> wires;
+                    for (TopExp_Explorer w(offset.Shape(), TopAbs_WIRE); w.More(); w.Next()) {
+                        wires.push_back(TopoDS::Wire(w.Current()));
+                    }
+                    const double area = wires.size() == 1 ? wire_area(wires[0]) : 0.0;
+                    if (wires.size() == 1 && (grow ? area > original : (area > 1e-9 && area < original))) {
+                        best = wires[0];
+                        break;
+                    }
+                }
+                if (best.IsNull()) {
+                    set_error(err, err_len,
+                              is_outer ? "the face's outline could not be offset that far"
+                                       : "an opening in the face is too small for that offset");
                     return kModelFailed;
                 }
-                const int n = sample.NbPoints();
-                for (int k = 1; k < n; ++k) {
-                    const int i = reversed ? n - k + 1 : k;
-                    const int j = reversed ? n - k : k + 1;
-                    cndt_segment s{};
-                    s.kind = 0;
-                    put(s.start, sample.Value(i));
-                    put(s.end, sample.Value(j));
-                    segments->items.push_back(s);
-                }
+                path = best;
             }
+            if (!append_wire(path, n, *segments)) {
+                set_error(err, err_len, "a boundary edge could not be followed");
+                return kModelFailed;
+            }
+            ++n;
         }
         *out = segments.release();
         return kOk;
