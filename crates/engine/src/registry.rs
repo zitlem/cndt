@@ -11,8 +11,8 @@ use serde_json::{Map, Value};
 
 use crate::{
     AddBlend, AddExtrude, AddHole, BlendKind, Command, CommandError, CreateSketch, DeleteFeature,
-    DeleteSketch, EditBlend, EditExtrude, EditHole, EditSketch, PointRef, RemoveParameter,
-    RenameDocument, SetParameter, SketchEdit,
+    DeleteSketch, EditBlend, EditExtrude, EditHole, EditSketch, Grid, PointRef, RemoveParameter,
+    RenameDocument, SetParameter, SetPattern, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, Thread};
@@ -356,6 +356,57 @@ impl Registry {
                     Ok(Box::new(EditBlend::new(
                         FeatureId(id(args, "feature")?),
                         number(args, "size")?,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.pattern",
+                description: "Repeat an extrude or hole in a grid along its sketch's X and Y.",
+                args: &[
+                    ArgSpec {
+                        name: "feature",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The extrude or hole to repeat.",
+                    },
+                    GRID_ARGS[0],
+                    GRID_ARGS[1],
+                    GRID_ARGS[2],
+                    GRID_ARGS[3],
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next PatternN.",
+                    },
+                ],
+                build: |args| {
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(SetPattern::add(
+                        FeatureId(id(args, "feature")?),
+                        grid(args)?,
+                        name,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.edit_pattern",
+                description: "Change a pattern's grid.",
+                args: &[
+                    FEATURE,
+                    GRID_ARGS[0],
+                    GRID_ARGS[1],
+                    GRID_ARGS[2],
+                    GRID_ARGS[3],
+                ],
+                build: |args| {
+                    Ok(Box::new(SetPattern::edit(
+                        FeatureId(id(args, "feature")?),
+                        grid(args)?,
                     )))
                 },
             },
@@ -991,6 +1042,46 @@ fn blend(
     )))
 }
 
+const GRID_ARGS: [ArgSpec; 4] = [
+    ArgSpec {
+        name: "count_x",
+        kind: ArgKind::Id,
+        required: true,
+        description: "Copies along the sketch's X, counting the original.",
+    },
+    ArgSpec {
+        name: "spacing_x",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Millimetres between them (needed when count_x > 1).",
+    },
+    ArgSpec {
+        name: "count_y",
+        kind: ArgKind::Id,
+        required: false,
+        description: "Copies along the sketch's Y; 1 by default.",
+    },
+    ArgSpec {
+        name: "spacing_y",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Millimetres between them.",
+    },
+];
+
+fn grid(args: &Map<String, Value>) -> Result<Grid, String> {
+    Ok(Grid {
+        count_x: id(args, "count_x")?,
+        spacing_x: optional_number(args, "spacing_x")?.unwrap_or(0.0),
+        count_y: if args.contains_key("count_y") {
+            id(args, "count_y")?
+        } else {
+            1
+        },
+        spacing_y: optional_number(args, "spacing_y")?.unwrap_or(0.0),
+    })
+}
+
 /// The `feature` argument of the timeline commands.
 const FEATURE: ArgSpec = ArgSpec {
     name: "feature",
@@ -1222,6 +1313,14 @@ mod tests {
                 json!({"feature": 0, "distance": 25, "operation": "cut", "profiles": [[4, 5, 6, 7]]}),
             ),
             ("feature.delete", json!({"feature": 0})),
+            (
+                "feature.pattern",
+                json!({"feature": 1, "count_x": 4, "spacing_x": 20}),
+            ),
+            (
+                "feature.edit_pattern",
+                json!({"feature": 2, "count_x": 3, "spacing_x": 20, "count_y": 2, "spacing_y": 10}),
+            ),
             (
                 "feature.chamfer",
                 json!({"faces": ["f0/end/4-5-6-7"], "distance": 0.5}),

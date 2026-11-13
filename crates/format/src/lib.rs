@@ -41,7 +41,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 5: hole features.
 /// - 6: chamfer and fillet features.
 /// - 7: expressions driving dimensions and extrude distances.
-pub const SCHEMA_VERSION: u32 = 7;
+/// - 8: pattern features.
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -257,6 +258,18 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 7 knew nothing of patterns.
+    if manifest.schema_version < 8
+        && document
+            .features()
+            .iter()
+            .any(|e| matches!(e.feature, cndt_model::Feature::Pattern { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain patterns",
+            manifest.schema_version
         )));
     }
     // Version 6 knew nothing of expressions.

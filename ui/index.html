@@ -61,6 +61,9 @@
             <button id="fillet" type="button" class="tool" title="Round the edges of picked faces">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 17V9a6 6 0 0 1 6-6h8v14z" /></svg>Fillet
             </button>
+            <button id="pattern" type="button" class="tool" title="Repeat an extrude or hole in a grid">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="5" cy="5" r="2" /><circle cx="15" cy="5" r="2" /><circle cx="5" cy="15" r="2" /><circle cx="15" cy="15" r="2" /></svg>Pattern
+            </button>
             <button id="fit" type="button" class="tool">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" /></svg>Fit view
             </button>
@@ -194,6 +197,23 @@
             <p id="blend-picked" class="muted small"></p>
             <div class="dialog-buttons">
               <button id="blend-cancel" type="button" class="secondary">Cancel</button>
+              <button type="submit" class="primary">OK</button>
+            </div>
+          </form>
+          <form id="pattern-dialog" class="dialog" hidden>
+            <h3 id="pattern-title">Pattern</h3>
+            <label>Repeat<select id="pattern-source"></select></label>
+            <div class="form-row">
+              <label>Copies along X<input id="pattern-count-x" type="number" min="1" step="1" value="2" /></label>
+              <label>Spacing X (mm)<input id="pattern-spacing-x" type="number" step="any" value="20" /></label>
+            </div>
+            <div class="form-row">
+              <label>Copies along Y<input id="pattern-count-y" type="number" min="1" step="1" value="1" /></label>
+              <label>Spacing Y (mm)<input id="pattern-spacing-y" type="number" step="any" value="20" /></label>
+            </div>
+            <p class="muted small">Along the original's sketch axes. Counts include the original.</p>
+            <div class="dialog-buttons">
+              <button id="pattern-cancel" type="button" class="secondary">Cancel</button>
               <button type="submit" class="primary">OK</button>
             </div>
           </form>

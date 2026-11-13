@@ -19,6 +19,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -1001,6 +1002,46 @@ int cndt_occt_blend(
         return kKernelError;
     } catch (const std::exception& exception) {
         set_error(err, err_len, exception.what());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// A copy of `shape` moved by (dx, dy, dz). The copy's faces are in the same
+// order as the original's, so face `i` of the copy is face `i` of `shape`.
+int cndt_occt_translate(
+    const cndt_shape* shape,
+    double dx,
+    double dy,
+    double dz,
+    cndt_shape** out,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || out == nullptr) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        gp_Trsf move;
+        move.SetTranslation(gp_Vec(dx, dy, dz));
+        BRepBuilderAPI_Transform transform(shape->shape, move, Standard_True);
+        if (!transform.IsDone()) {
+            set_error(err, err_len, "the copy could not be moved");
+            return kModelFailed;
+        }
+        auto made = std::make_unique<cndt_shape>();
+        made->shape = transform.Shape();
+        if (count_unique(made->shape, TopAbs_FACE) != count_unique(shape->shape, TopAbs_FACE)) {
+            set_error(err, err_len, "the moved copy lost faces");
+            return kModelFailed;
+        }
+        *out = made.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
         return kKernelError;
     } catch (...) {
         set_error(err, err_len, "unknown C++ exception");

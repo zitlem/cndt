@@ -99,7 +99,16 @@ export type Feature =
     }
   | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec }
   | { type: "chamfer"; name: string; edges: EdgeTarget[]; distance: number }
-  | { type: "fillet"; name: string; edges: EdgeTarget[]; radius: number };
+  | { type: "fillet"; name: string; edges: EdgeTarget[]; radius: number }
+  | {
+      type: "pattern";
+      name: string;
+      feature: number;
+      count_x: number;
+      spacing_x: number;
+      count_y: number;
+      spacing_y: number;
+    };
 
 export type EdgeTarget = { face: string } | { between: [string, string] };
 

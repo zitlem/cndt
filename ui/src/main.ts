@@ -74,6 +74,14 @@ const ui = {
   holeFit: element<HTMLInputElement>("hole-fit"),
   holePoints: element<HTMLParagraphElement>("hole-points"),
   chamferButton: element<HTMLButtonElement>("chamfer"),
+  patternButton: element<HTMLButtonElement>("pattern"),
+  patternDialog: element<HTMLFormElement>("pattern-dialog"),
+  patternTitle: element<HTMLHeadingElement>("pattern-title"),
+  patternSource: element<HTMLSelectElement>("pattern-source"),
+  patternCountX: element<HTMLInputElement>("pattern-count-x"),
+  patternSpacingX: element<HTMLInputElement>("pattern-spacing-x"),
+  patternCountY: element<HTMLInputElement>("pattern-count-y"),
+  patternSpacingY: element<HTMLInputElement>("pattern-spacing-y"),
   filletButton: element<HTMLButtonElement>("fillet"),
   blendDialog: element<HTMLFormElement>("blend-dialog"),
   blendTitle: element<HTMLHeadingElement>("blend-title"),
@@ -365,6 +373,9 @@ function renderFeatures(state: DocumentState): void {
   ui.extrudeButton.disabled = Object.keys(state.document.sketches ?? {}).length === 0;
   ui.holeButton.disabled = !state.body;
   ui.chamferButton.disabled = !state.body;
+  ui.patternButton.disabled = !(state.document.features ?? []).some(
+    (f) => f.feature.type === "extrude" || f.feature.type === "hole",
+  );
   ui.filletButton.disabled = !state.body;
   for (const { id, feature } of features) {
     const status = state.feature_status[String(id)];
@@ -388,7 +399,8 @@ function renderFeatures(state: DocumentState): void {
       guarded(async () => render(await execute("feature.delete", { feature: id })))();
     });
     item.addEventListener("click", () => {
-      if (feature.type === "hole") openHole(id);
+      if (feature.type === "pattern") openPattern(id);
+      else if (feature.type === "hole") openHole(id);
       else if (feature.type === "extrude") openExtrude(id);
       else openBlend(feature.type, id);
     });
@@ -404,6 +416,10 @@ function featureDetail(feature: import("./api").Feature): string {
     return `${fx}${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
   }
   if (feature.type === "chamfer") return `${formatNumber(feature.distance)} × 45°`;
+  if (feature.type === "pattern") {
+    const source = current?.document.features?.find((f) => f.id === feature.feature)?.feature.name ?? "?";
+    return `${feature.count_x} × ${feature.count_y} of ${source}`;
+  }
   if (feature.type === "fillet") return `R${formatNumber(feature.radius)}`;
   const { spec, points } = feature;
   const size = spec.thread ? spec.thread.size.replace(/x.*/, "") : `Ø${formatNumber(spec.diameter)}`;
@@ -428,6 +444,48 @@ function freePoints(id: string, state: DocumentState): number[] {
 }
 
 let editingHole: number | null = null;
+let editingPattern: number | null = null;
+
+function openPattern(feature: number | null): void {
+  if (!current) return;
+  closeExtrude();
+  closeHole();
+  closeBlend();
+  editingPattern = feature;
+  const features = current.document.features ?? [];
+  ui.patternSource.replaceChildren(
+    ...features
+      .filter((f) => f.feature.type === "extrude" || f.feature.type === "hole")
+      .map((f) => {
+        const option = globalThis.document.createElement("option");
+        option.value = String(f.id);
+        option.textContent = f.feature.name;
+        return option;
+      }),
+  );
+  const existing = features.find((f) => f.id === feature)?.feature;
+  if (existing?.type === "pattern") {
+    ui.patternTitle.textContent = `Edit ${existing.name}`;
+    ui.patternSource.value = String(existing.feature);
+    ui.patternSource.disabled = true;
+    ui.patternCountX.value = String(existing.count_x);
+    ui.patternSpacingX.value = String(existing.spacing_x);
+    ui.patternCountY.value = String(existing.count_y);
+    ui.patternSpacingY.value = String(existing.spacing_y);
+  } else {
+    ui.patternTitle.textContent = "Pattern";
+    ui.patternSource.disabled = false;
+    const last = ui.patternSource.options[ui.patternSource.options.length - 1];
+    if (last) ui.patternSource.value = last.value;
+  }
+  ui.patternDialog.hidden = false;
+  ui.patternSource.focus();
+}
+
+function closePattern(): void {
+  ui.patternDialog.hidden = true;
+  editingPattern = null;
+}
 
 /** The chamfer or fillet being set up: which kind, the picked faces, and
  * the feature being edited (then no picking). */
@@ -488,6 +546,7 @@ function syncHoleFields(): void {
 function openHole(feature: number | null): void {
   if (!current) return;
   closeBlend();
+  closePattern();
   if (editor.editing !== null) {
     editor.close();
     updateSketchUi();
@@ -568,6 +627,7 @@ function openExtrude(feature: number | null): void {
   if (!current) return;
   closeHole();
   closeBlend();
+  closePattern();
   if (editor.editing !== null) {
     editor.close();
     updateSketchUi();
@@ -613,6 +673,7 @@ function updateSketchUi(): void {
     closeExtrude();
     closeHole();
     closeBlend();
+    closePattern();
   }
   ui.sketchTools.hidden = editing === null;
   ui.sketchTools.parentElement?.classList.toggle("sketching", editing !== null);
@@ -880,6 +941,28 @@ viewer.canvas.addEventListener("click", (event) => {
 });
 
 ui.chamferButton.addEventListener("click", () => openBlend("chamfer", null));
+ui.patternButton.addEventListener("click", () => openPattern(null));
+element("pattern-cancel").addEventListener("click", closePattern);
+ui.patternDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closePattern();
+});
+ui.patternDialog.addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    const grid = {
+      count_x: Number(ui.patternCountX.value),
+      spacing_x: Number(ui.patternSpacingX.value),
+      count_y: Number(ui.patternCountY.value),
+      spacing_y: Number(ui.patternSpacingY.value),
+    };
+    const next =
+      editingPattern === null
+        ? await execute("feature.pattern", { feature: Number(ui.patternSource.value), ...grid })
+        : await execute("feature.edit_pattern", { feature: editingPattern, ...grid });
+    closePattern();
+    render(next);
+  })();
+});
 ui.filletButton.addEventListener("click", () => openBlend("fillet", null));
 element("blend-cancel").addEventListener("click", closeBlend);
 ui.blendDialog.addEventListener("keydown", (event) => {

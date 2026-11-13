@@ -333,6 +333,30 @@ fn the_cndt_test_block() {
     );
     assert_eq!(state["feature_status"]["1"]["state"], "ok");
 
+    // Pattern the dowel hole: a second one 10 mm along X. Then undo.
+    let state = s.exec(
+        "feature.pattern",
+        json!({"feature": 6, "count_x": 2, "spacing_x": -10}),
+    );
+    let pattern = state["document"]["features"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["id"]
+        .to_string();
+    assert_eq!(
+        state["feature_status"][&pattern]["state"], "ok",
+        "{}",
+        state["feature_status"]
+    );
+    let state = s.exec(
+        "feature.edit_pattern",
+        json!({"feature": pattern.parse::<u64>().unwrap(), "count_x": 2, "spacing_x": -12}),
+    );
+    assert_eq!(state["feature_status"][&pattern]["state"], "ok");
+    s.call(json!({"method": "undo"}));
+    s.call(json!({"method": "undo"}));
+
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
     s.call(json!({"method": "save_as", "path": path}));
