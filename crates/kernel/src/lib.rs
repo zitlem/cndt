@@ -141,13 +141,14 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// [`KernelError::Internal`] if the kernel fails.
     fn edge_polylines(&self, body: &Body, deflection: f64) -> Result<Vec<Vec<f32>>, KernelError>;
 
-    /// The outer boundary of flat face `face` (parallel to XY), offset
-    /// outwards by `distance` (0 for the boundary itself), as lines and arcs
-    /// in running order. Corners grow as arcs.
+    /// The outer boundary of flat face `face` (parallel to XY), offset by
+    /// `distance`: outwards when positive, inwards when negative, the
+    /// boundary itself at 0. Lines and arcs in running order.
     ///
     /// # Errors
     ///
-    /// [`KernelError::Modelling`] if the offset is not one closed loop.
+    /// [`KernelError::Modelling`] if the offset is not one closed loop
+    /// (inwards: the outline has vanished or split).
     fn face_outline(
         &self,
         body: &Body,

@@ -626,9 +626,9 @@ pub enum Segment {
     },
 }
 
-/// The outer boundary of a flat face parallel to XY, offset outwards by
-/// `distance` (0 for the boundary itself), as lines and arcs in running
-/// order. Corners grow as arcs.
+/// The outer boundary of a flat face parallel to XY, offset by `distance`
+/// (outwards when positive, inwards when negative, the boundary itself at
+/// 0), as lines and arcs in running order. Outward corners grow as arcs.
 ///
 /// # Errors
 ///
@@ -1043,6 +1043,18 @@ mod tests {
         let x: Vec<f64> = grown.iter().map(|s| ends(s).0[0]).collect();
         assert!(x.iter().copied().fold(f64::MAX, f64::min) < -2.999);
         assert!(x.iter().copied().fold(f64::MIN, f64::max) > 22.999);
+        // Inwards: a 20 × 10 face shrinks to 14 × 4 at 3 mm, and vanishes
+        // at 5 mm.
+        let shrunk = face_outline(&block.shape, top, -3.0).unwrap();
+        let xs: Vec<f64> = shrunk.iter().map(|s| ends(s).0[0]).collect();
+        assert!(
+            (xs.iter().copied().fold(f64::MAX, f64::min) - 3.0).abs() < 1e-7,
+            "{shrunk:?}"
+        );
+        assert!(matches!(
+            face_outline(&block.shape, top, -5.0),
+            Err(OcctError::ModelFailed(_))
+        ));
     }
 
     #[test]

@@ -176,6 +176,15 @@ pub enum OperationDef {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         depth: Option<f64>,
     },
+    /// Clears a pocket, slot or keyway down to its floor: a flat face
+    /// facing the spindle whose outer boundary is the pocket's wall.
+    Pocket {
+        /// The floor, by its persistent name.
+        floor: String,
+        /// The tool; by default the largest end mill that fits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<u32>,
+    },
     /// Faces the stock down to the part's face on the side machined.
     Face {
         /// The tool; by default the library's first face mill.

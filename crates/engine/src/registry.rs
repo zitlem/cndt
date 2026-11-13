@@ -505,7 +505,7 @@ impl Registry {
             },
             CommandSpec {
                 name: "cam.add_operation",
-                description: "Add an operation at the end of a setup. Kinds: face (face the stock down to the part), contour (follow a face's outline outside it), holes (spot, drill, tap and ream every hole facing the spindle).",
+                description: "Add an operation at the end of a setup. Kinds: face (face the stock down to the part), contour (follow a face's outline outside it), pocket (clear down to a floor face), holes (spot, drill, tap and ream every hole facing the spindle).",
                 args: &[
                     ArgSpec {
                         name: "setup",
@@ -517,7 +517,13 @@ impl Registry {
                         name: "type",
                         kind: ArgKind::Text,
                         required: true,
-                        description: "face, contour or holes",
+                        description: "face, contour, pocket or holes",
+                    },
+                    ArgSpec {
+                        name: "floor",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "For pocket: the pocket's flat floor face.",
                     },
                     ArgSpec {
                         name: "tool",
@@ -541,6 +547,14 @@ impl Registry {
                 build: |args| {
                     let operation = match text(args, "type")?.as_str() {
                         "holes" => cndt_model::cam::OperationDef::Holes,
+                        "pocket" => cndt_model::cam::OperationDef::Pocket {
+                            floor: text(args, "floor")?,
+                            tool: if args.contains_key("tool") {
+                                Some(id(args, "tool")?)
+                            } else {
+                                None
+                            },
+                        },
                         "contour" => cndt_model::cam::OperationDef::Contour {
                             face: text(args, "face")?,
                             tool: if args.contains_key("tool") {

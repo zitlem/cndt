@@ -855,6 +855,288 @@ fn contour(
     })
 }
 
+/// Sideways step between pocket loops, as a fraction of the cutter.
+const POCKET_STEPOVER: f64 = 0.4;
+/// Depth per pocket level, as a fraction of the cutter.
+const POCKET_DEPTH_PER_PASS: f64 = 0.5;
+/// Ramp angle into a pocket.
+const RAMP_DEGREES: f64 = 3.0;
+
+/// A flat face's outline offset inwards by `distance`, in program
+/// coordinates, anticlockwise (climb milling inside a pocket), starting at
+/// the middle of its longest straight side if it has one.
+fn inner_loop(
+    kernel: &dyn cndt_kernel::Kernel,
+    body: &cndt_kernel::Body,
+    setup: &Setup,
+    face: u32,
+    distance: f64,
+) -> Option<Vec<Piece>> {
+    let outline = kernel.face_outline(body, face, -distance).ok()?;
+    let flip = setup.side == Side::Bottom;
+    let mut path: Vec<Piece> = outline
+        .into_iter()
+        .map(|s| match s {
+            cndt_kernel::OutlineSegment::Line { start, end } => Piece::Line {
+                start: setup.program_point(start),
+                end: setup.program_point(end),
+            },
+            cndt_kernel::OutlineSegment::Arc {
+                start,
+                end,
+                center,
+                ccw,
+            } => Piece::Arc {
+                start: setup.program_point(start),
+                end: setup.program_point(end),
+                center: setup.program_point(center),
+                ccw: ccw != flip,
+            },
+        })
+        .collect();
+    let samples: Vec<Point3> = path.iter().flat_map(Piece::samples).collect();
+    let n = samples.len();
+    let area: f64 = (0..n)
+        .filter_map(|i| Some((samples.get(i)?, samples.get((i + 1) % n)?)))
+        .map(|(a, b)| a.x * b.y - b.x * a.y)
+        .sum::<f64>();
+    if area < 0.0 {
+        path = path.into_iter().rev().map(Piece::reversed).collect();
+    }
+    let longest = path
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| match *p {
+            Piece::Line { start, end } => Some((i, (end.x - start.x).hypot(end.y - start.y))),
+            Piece::Arc { .. } => None,
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((i, length)) = longest
+        && length > 1e-6
+    {
+        path.rotate_left(i);
+        if let Some(Piece::Line { start, end }) = path.first().copied() {
+            let mid = Point3::new(
+                round3((start.x + end.x) / 2.0),
+                round3((start.y + end.y) / 2.0),
+                start.z,
+            );
+            path.remove(0);
+            path.insert(0, Piece::Line { start: mid, end });
+            path.push(Piece::Line { start, end: mid });
+        }
+    }
+    Some(path)
+}
+
+fn piece_length(piece: &Piece) -> f64 {
+    let samples = match piece {
+        Piece::Line { start, end } => vec![*start, *end],
+        Piece::Arc { end, .. } => {
+            let mut s = piece.samples();
+            s.push(*end);
+            s
+        }
+    };
+    samples
+        .windows(2)
+        .map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y))
+        .sum()
+}
+
+/// The move that cuts along a piece, ending at height `z`.
+fn piece_move(piece: &Piece, z: f64, feed: f64) -> Move {
+    let at = |p: Point3| Point3::new(round3(p.x), round3(p.y), round3(z));
+    match *piece {
+        Piece::Line { end, .. } => Move::Linear { to: at(end), feed },
+        Piece::Arc {
+            end, center, ccw, ..
+        } => Move::Arc {
+            to: at(end),
+            center: at(center),
+            direction: if ccw {
+                ArcDirection::CounterClockwise
+            } else {
+                ArcDirection::Clockwise
+            },
+            feed,
+        },
+    }
+}
+
+/// Clears a pocket: offset loops from the middle outwards, the last one a
+/// cutter radius from the wall, in levels of half the cutter. Each level is
+/// entered by a 3° ramp along the innermost loop, never by plunging.
+fn pocket(
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    setup: &Setup,
+    library: &ToolLibrary,
+    floor: &str,
+    tool: Option<u32>,
+) -> Result<Operation, CamError> {
+    let bad = |reason: String| CamError::Contour(reason);
+    let body = rebuilt.body.as_ref().ok_or(CamError::NoPart)?;
+    let index = unique_face(rebuilt, floor)?;
+    let (point, normal) = kernel
+        .face_plane(body, index)
+        .map_err(|e| bad(e.to_string()))?;
+    if (normal[2] - setup.facing()).abs() > 1e-9 {
+        return Err(bad(String::from(
+            "the pocket's floor does not face the spindle in this setup",
+        )));
+    }
+    let depth = -setup.program_point(point).z;
+    if depth.is_nan() || depth <= 1e-6 {
+        return Err(bad(String::from("the pocket's floor is not below Z0")));
+    }
+    // The tightest corner the cutter must fit into.
+    let outline = kernel
+        .face_outline(body, index, 0.0)
+        .map_err(|e| bad(e.to_string()))?;
+    let tightest = outline
+        .iter()
+        .filter_map(|s| match s {
+            cndt_kernel::OutlineSegment::Arc { start, center, .. } => {
+                Some((start.x - center.x).hypot(start.y - center.y))
+            }
+            cndt_kernel::OutlineSegment::Line { .. } => None,
+        })
+        .fold(f64::INFINITY, f64::min);
+    let fits = |t: &Tool| {
+        t.diameter / 2.0 <= tightest + 1e-9
+            && inner_loop(kernel, body, setup, index, t.diameter / 2.0).is_some()
+    };
+    let (number, cutter) = match tool {
+        Some(n) => {
+            let t = library
+                .tools
+                .get(&n)
+                .ok_or_else(|| CamError::NoTool(format!("tool {n}")))?;
+            if !fits(t) {
+                return Err(bad(format!(
+                    "tool {n} ({} mm) does not fit the pocket",
+                    t.diameter
+                )));
+            }
+            (n, t)
+        }
+        None => library
+            .tools
+            .iter()
+            .filter(|(_, t)| t.kind == ToolKind::EndMill && fits(t))
+            .max_by(|a, b| a.1.diameter.total_cmp(&b.1.diameter).then(b.0.cmp(a.0)))
+            .map(|(n, t)| (*n, t))
+            .ok_or_else(|| {
+                CamError::NoTool(String::from("end mill small enough for the pocket"))
+            })?,
+    };
+    let r = cutter.diameter / 2.0;
+    // Loops from the wall inwards, then cut from the middle outwards.
+    let mut loops = Vec::new();
+    let mut offset = r;
+    while let Some(path) = inner_loop(kernel, body, setup, index, offset) {
+        loops.push(path);
+        offset += cutter.diameter * POCKET_STEPOVER;
+        if loops.len() > 500 {
+            break;
+        }
+    }
+    loops.reverse();
+    let passes = ((depth / (cutter.diameter * POCKET_DEPTH_PER_PASS)).ceil() as usize).max(1);
+    let levels: Vec<f64> = (1..=passes)
+        .map(|k| round3(-depth * k as f64 / passes as f64))
+        .collect();
+    let safe = round3(setup.safe_z);
+    let start = |path: &[Piece]| {
+        path.first()
+            .map_or(Point3::new(0.0, 0.0, 0.0), |p| match *p {
+                Piece::Line { start, .. } | Piece::Arc { start, .. } => start,
+            })
+    };
+    let innermost = loops.first().cloned().unwrap_or_default();
+    let entry = start(&innermost);
+    let lap: f64 = innermost.iter().map(piece_length).sum();
+    let mut steps = vec![
+        Step::Event(Event::ToolChange {
+            number,
+            description: if cutter.description.is_empty() {
+                format!("tool {number}")
+            } else {
+                cutter.description.clone()
+            },
+        }),
+        Step::Event(Event::SpindleOn {
+            rpm: cutter.rpm,
+            direction: SpindleDirection::Clockwise,
+        }),
+        Step::Event(Event::Coolant {
+            mode: Coolant::Flood,
+        }),
+        Step::Move(Move::Rapid {
+            to: Point3::new(entry.x, entry.y, safe),
+        }),
+    ];
+    let ramp_feed = cutter.feed / 2.0;
+    let mut above = 0.0;
+    for z in levels {
+        // Down to just above the last level (already cleared), then ramp.
+        steps.push(Step::Move(Move::Rapid {
+            to: Point3::new(entry.x, entry.y, round3(above + 0.5)),
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: Point3::new(entry.x, entry.y, round3(above)),
+            feed: ramp_feed,
+        }));
+        let drop = above - z;
+        let per_lap = lap * RAMP_DEGREES.to_radians().tan();
+        if per_lap > 1e-6 {
+            let laps = (drop / per_lap).ceil().max(1.0) as usize;
+            let total = lap * laps as f64;
+            let mut travelled = 0.0;
+            for _ in 0..laps {
+                for piece in &innermost {
+                    travelled += piece_length(piece);
+                    let h = above - drop * (travelled / total).min(1.0);
+                    steps.push(Step::Move(piece_move(piece, h, ramp_feed)));
+                }
+            }
+        } else {
+            // A loop too short to ramp along: feed straight down slowly.
+            steps.push(Step::Move(Move::Linear {
+                to: Point3::new(entry.x, entry.y, z),
+                feed: ramp_feed / 2.0,
+            }));
+        }
+        // One flat lap to clear the ramp, then each loop outwards.
+        for (k, path) in loops.iter().enumerate() {
+            if k > 0 {
+                let s = start(path);
+                steps.push(Step::Move(Move::Linear {
+                    to: Point3::new(round3(s.x), round3(s.y), z),
+                    feed: cutter.feed,
+                }));
+            }
+            for piece in path {
+                steps.push(Step::Move(piece_move(piece, z, cutter.feed)));
+            }
+        }
+        // Back to the middle for the next level.
+        steps.push(Step::Move(Move::Rapid {
+            to: Point3::new(entry.x, entry.y, round3(z + 0.5)),
+        }));
+        above = z;
+    }
+    steps.push(Step::Move(Move::Rapid {
+        to: Point3::new(entry.x, entry.y, safe),
+    }));
+    steps.push(Step::Event(Event::Coolant { mode: Coolant::Off }));
+    Ok(Operation {
+        name: format!("Pocket {} mm deep", round3(depth)),
+        steps,
+    })
+}
+
 /// Plans every operation of a stored setup (decision 0014).
 ///
 /// # Errors
@@ -890,6 +1172,11 @@ pub fn plan_setup(
     let mut notes = Vec::new();
     for op in &entry.setup.operations {
         match op.operation {
+            OperationDef::Pocket { ref floor, tool } => {
+                program
+                    .operations
+                    .push(pocket(rebuilt, kernel, &setup, &library, floor, tool)?);
+            }
             OperationDef::Contour {
                 ref face,
                 tool,
