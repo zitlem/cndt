@@ -94,7 +94,11 @@ export type Feature =
       distance: number;
       operation: "join" | "cut";
     }
-  | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec };
+  | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec }
+  | { type: "chamfer"; name: string; edges: EdgeTarget[]; distance: number }
+  | { type: "fillet"; name: string; edges: EdgeTarget[]; radius: number };
+
+export type EdgeTarget = { face: string } | { between: [string, string] };
 
 export type FeatureStatus = { state: "ok" } | { state: "failed"; reason: string };
 

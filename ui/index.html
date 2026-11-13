@@ -55,6 +55,12 @@
             <button id="hole" type="button" class="tool" title="Holes at sketch points: simple, counterbored or tapped (H)">
               <svg aria-hidden="true" viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="5" ry="2" /><path d="M5 5v9M15 5v9M5 14l5 4 5-4" /></svg>Hole
             </button>
+            <button id="chamfer" type="button" class="tool" title="Chamfer the edges of picked faces at 45°">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 17V8l5-5h9v14z" /></svg>Chamfer
+            </button>
+            <button id="fillet" type="button" class="tool" title="Round the edges of picked faces">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 17V9a6 6 0 0 1 6-6h8v14z" /></svg>Fillet
+            </button>
             <button id="fit" type="button" class="tool">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" /></svg>Fit view
             </button>
@@ -179,6 +185,15 @@
             <p class="muted small">Negative distances go the other way from the sketch plane.</p>
             <div class="dialog-buttons">
               <button id="extrude-cancel" type="button" class="secondary">Cancel</button>
+              <button type="submit" class="primary">OK</button>
+            </div>
+          </form>
+          <form id="blend-dialog" class="dialog" hidden>
+            <h3 id="blend-title">Chamfer</h3>
+            <label><span id="blend-size-label">Distance (mm)</span><input id="blend-size" type="number" step="any" min="0" value="0.5" /></label>
+            <p id="blend-picked" class="muted small"></p>
+            <div class="dialog-buttons">
+              <button id="blend-cancel" type="button" class="secondary">Cancel</button>
               <button type="submit" class="primary">OK</button>
             </div>
           </form>

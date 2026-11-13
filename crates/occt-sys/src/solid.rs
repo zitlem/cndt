@@ -92,6 +92,23 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_edges(
+        shape: *const ShapeHandle,
+        out: *mut *mut HistoryHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn cndt_occt_blend(
+        shape: *const ShapeHandle,
+        edges: *const u32,
+        edge_count: usize,
+        kind: i32,
+        size: f64,
+        out: *mut *mut ShapeHandle,
+        history: *mut *mut HistoryHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_face_plane(
         shape: *const ShapeHandle,
         face: u32,
@@ -348,6 +365,97 @@ pub fn revolve(
     }
     // SAFETY: the call succeeded, so both handles are ours; the lock is held.
     unsafe { take(shape, history) }
+}
+
+/// For every edge, in edge-map order: the two faces it joins (a seam lists
+/// its one face twice).
+///
+/// # Errors
+///
+/// [`OcctError::Kernel`] if OpenCascade fails.
+pub fn edges(shape: &Shape) -> Result<Vec<(u32, u32)>, OcctError> {
+    let mut history: *mut HistoryHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `history` is a valid out-pointer; `err` is
+    // writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_edges(
+            shape.ptr.as_ptr(),
+            &mut history,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK || history.is_null() {
+        return Err(status_error(code, &err));
+    }
+    let mut pairs: *const u32 = std::ptr::null();
+    let mut len = 0_usize;
+    // SAFETY: `history` is a live handle the call handed over; the
+    // out-pointers are valid locals.
+    unsafe { cndt_occt_history_view(history, &mut pairs, &mut len) };
+    // SAFETY: the view points into `history`'s vector of `len` values, which
+    // is freed only after this copy.
+    let flat = unsafe { copy_array(pairs, len) };
+    // SAFETY: `history` is owned here and freed exactly once.
+    unsafe { cndt_occt_free_history(history) };
+    Ok(flat
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[a, b]| (a, b))
+        .collect())
+}
+
+/// What a blend does to an edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Blend {
+    /// Bevels it, the same distance back on both faces.
+    Chamfer(f64),
+    /// Rounds it to a radius.
+    Fillet(f64),
+}
+
+/// Chamfers or fillets edges (edge-map numbers).
+///
+/// History sources: input face `i` is `i`; the face made from the `k`-th
+/// listed edge is `faces + k`.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] with a reason, such as a blend too big for
+/// its faces.
+pub fn blend(shape: &Shape, edges: &[u32], blend: Blend) -> Result<Made, OcctError> {
+    let (kind, size) = match blend {
+        Blend::Chamfer(d) => (0, d),
+        Blend::Fillet(r) => (1, r),
+    };
+    let mut out: *mut ShapeHandle = std::ptr::null_mut();
+    let mut history: *mut HistoryHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `edges` holds `edges.len()` values; the
+    // out-pointers are valid locals; `err` is writable for `err.len()`
+    // bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_blend(
+            shape.ptr.as_ptr(),
+            edges.as_ptr(),
+            edges.len(),
+            kind,
+            size,
+            &mut out,
+            &mut history,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    // SAFETY: the call succeeded, so both handles are ours; the lock is held.
+    unsafe { take(out, history) }
 }
 
 /// Fuses or cuts two shapes.
@@ -619,6 +727,44 @@ mod tests {
         sources.sort_unstable();
         assert_eq!(sources, [0, 1, 2], "{:?}", made.history);
         assert_eq!(props.faces, 3);
+    }
+
+    #[test]
+    fn chamfer_and_fillet_the_top_edges() {
+        let block = extrude(&[rectangle(20.0, 10.0)], Z, 5.0).unwrap();
+        let (_, top) = *block.history.iter().find(|p| p.0 == 5).unwrap();
+        let joins = edges(&block.shape).unwrap();
+        assert_eq!(joins.len(), 12);
+        let around_top: Vec<u32> = joins
+            .iter()
+            .enumerate()
+            .filter(|(_, (a, b))| *a == top || *b == top)
+            .map(|(i, _)| u32::try_from(i).unwrap())
+            .collect();
+        assert_eq!(around_top.len(), 4);
+        let chamfered = blend(&block.shape, &around_top, Blend::Chamfer(0.5)).unwrap();
+        let p = properties(&chamfered.shape).unwrap();
+        // Each chamfer removes a 0.5 × 0.5 right triangle along its edge;
+        // where two meet at a corner they overlap in a pyramid of d³/3.
+        let removed = 0.125 * (2.0 * 20.0 + 2.0 * 10.0) - 4.0 * 0.5f64.powi(3) / 3.0;
+        assert!((p.volume - (1000.0 - removed)).abs() < 1e-3, "{}", p.volume);
+        assert_eq!(p.faces, 10, "6 faces plus 4 chamfers");
+        let made: Vec<u32> = chamfered
+            .history
+            .iter()
+            .filter(|s| s.0 >= 6)
+            .map(|s| s.0)
+            .collect();
+        assert_eq!(
+            made.len(),
+            4,
+            "each chamfer face traced to its edge: {:?}",
+            chamfered.history
+        );
+        let filleted = blend(&block.shape, &around_top, Blend::Fillet(1.0)).unwrap();
+        assert_eq!(properties(&filleted.shape).unwrap().faces, 10);
+        let error = blend(&block.shape, &around_top, Blend::Fillet(8.0)).unwrap_err();
+        assert!(error.to_string().contains("fillet"), "{error}");
     }
 
     #[test]

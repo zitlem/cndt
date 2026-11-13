@@ -18,7 +18,9 @@ use std::fmt;
 use cndt_model::{Document, ModelError};
 
 pub use commands::{RemoveParameter, RenameDocument, SetParameter};
-pub use feature_commands::{AddExtrude, AddHole, DeleteFeature, EditExtrude, EditHole};
+pub use feature_commands::{
+    AddBlend, AddExtrude, AddHole, BlendKind, DeleteFeature, EditBlend, EditExtrude, EditHole,
+};
 pub use registry::{ArgKind, ArgSpec, CommandSpec, Registry};
 pub use session::Session;
 pub use sketch_commands::{CreateSketch, DeleteSketch, EditSketch, PointRef, SketchEdit};

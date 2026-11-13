@@ -20,8 +20,8 @@
 mod solid;
 
 pub use solid::{
-    BooleanOp, Curve, Made, Properties, Shape, boolean, extrude, face_plane, mesh, properties,
-    revolve,
+    Blend, BooleanOp, Curve, Made, Properties, Shape, blend, boolean, edges, extrude, face_plane,
+    mesh, properties, revolve,
 };
 
 use std::ffi::{CStr, CString, c_char, c_int};

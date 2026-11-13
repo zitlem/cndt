@@ -835,6 +835,28 @@ mod tests {
                 .contains("/hole/e0/counterbore_floor"),
             "{reply}"
         );
+        // Chamfer the top face's edges: the outline and both counterbores.
+        let reply = exec(
+            &mut api,
+            "feature.chamfer",
+            json!({"faces": [top], "distance": 0.5}),
+        );
+        assert_eq!(
+            reply["result"]["feature_status"]["2"]["state"], "ok",
+            "{reply}"
+        );
+        assert_eq!(reply["result"]["undo"], "Chamfer");
+        let reply = exec(
+            &mut api,
+            "feature.edit_blend",
+            json!({"feature": 2, "size": 0.8}),
+        );
+        assert_eq!(
+            reply["result"]["feature_status"]["2"]["state"], "ok",
+            "{reply}"
+        );
+        call(&mut api, json!({"method": "undo"}));
+        call(&mut api, json!({"method": "undo"}));
         // A bad edit is refused and changes nothing.
         let reply = exec(
             &mut api,
@@ -1010,7 +1032,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 21, "{names:?}");
+        assert_eq!(names.len(), 24, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

@@ -73,6 +73,13 @@ const ui = {
   holeTip: element<HTMLInputElement>("hole-tip"),
   holeFit: element<HTMLInputElement>("hole-fit"),
   holePoints: element<HTMLParagraphElement>("hole-points"),
+  chamferButton: element<HTMLButtonElement>("chamfer"),
+  filletButton: element<HTMLButtonElement>("fillet"),
+  blendDialog: element<HTMLFormElement>("blend-dialog"),
+  blendTitle: element<HTMLHeadingElement>("blend-title"),
+  blendSizeLabel: element<HTMLSpanElement>("blend-size-label"),
+  blendSize: element<HTMLInputElement>("blend-size"),
+  blendPicked: element<HTMLParagraphElement>("blend-picked"),
   toast: element<HTMLDivElement>("toast"),
 };
 
@@ -254,7 +261,9 @@ function renderSketches(state: DocumentState): void {
     ui.sketchList.append(item);
   }
   // As in Fusion 360, a sketch a feature has used is hidden in 3D.
-  const used = new Set((state.document.features ?? []).map((f) => String(f.feature.sketch)));
+  const used = new Set(
+    (state.document.features ?? []).flatMap((f) => ("sketch" in f.feature ? [String(f.feature.sketch)] : [])),
+  );
   const placed = sketches.flatMap(([id, record]) => {
     const status = state.sketch_frames[id];
     return !used.has(id) && status?.state === "ok" ? [{ record, frame: status.frame }] : [];
@@ -355,6 +364,8 @@ function renderFeatures(state: DocumentState): void {
   ui.noFeatures.hidden = features.length > 0;
   ui.extrudeButton.disabled = Object.keys(state.document.sketches ?? {}).length === 0;
   ui.holeButton.disabled = !state.body;
+  ui.chamferButton.disabled = !state.body;
+  ui.filletButton.disabled = !state.body;
   for (const { id, feature } of features) {
     const status = state.feature_status[String(id)];
     const item = globalThis.document.createElement("li");
@@ -376,7 +387,11 @@ function renderFeatures(state: DocumentState): void {
       event.stopPropagation();
       guarded(async () => render(await execute("feature.delete", { feature: id })))();
     });
-    item.addEventListener("click", () => (feature.type === "hole" ? openHole(id) : openExtrude(id)));
+    item.addEventListener("click", () => {
+      if (feature.type === "hole") openHole(id);
+      else if (feature.type === "extrude") openExtrude(id);
+      else openBlend(feature.type, id);
+    });
     item.append(name, detail, remove);
     ui.featureList.append(item);
   }
@@ -387,6 +402,8 @@ function featureDetail(feature: import("./api").Feature): string {
   if (feature.type === "extrude") {
     return `${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
   }
+  if (feature.type === "chamfer") return `${formatNumber(feature.distance)} × 45°`;
+  if (feature.type === "fillet") return `R${formatNumber(feature.radius)}`;
   const { spec, points } = feature;
   const size = spec.thread ? spec.thread.size.replace(/x.*/, "") : `Ø${formatNumber(spec.diameter)}`;
   const depth = spec.depth === "through" ? "thru" : `${formatNumber(spec.depth.blind)} deep`;
@@ -411,6 +428,46 @@ function freePoints(id: string, state: DocumentState): number[] {
 
 let editingHole: number | null = null;
 
+/** The chamfer or fillet being set up: which kind, the picked faces, and
+ * the feature being edited (then no picking). */
+let blending: { kind: "chamfer" | "fillet"; faces: number[]; editing: number | null } | null = null;
+
+function syncBlend(): void {
+  if (!blending) return;
+  const n = blending.faces.length;
+  ui.blendPicked.textContent =
+    blending.editing !== null
+      ? "The edges stay as picked."
+      : n === 0
+        ? "Click faces on the part; every edge around them is blended. Click again to unpick."
+        : `${n} face${n === 1 ? "" : "s"} picked. Click more, or OK.`;
+  viewer.highlightFaces(blending.faces);
+}
+
+function openBlend(kind: "chamfer" | "fillet", feature: number | null): void {
+  if (!current) return;
+  closeExtrude();
+  closeHole();
+  const existing = current.document.features?.find((f) => f.id === feature)?.feature;
+  blending = { kind, faces: [], editing: feature };
+  const label = kind === "chamfer" ? "Chamfer" : "Fillet";
+  ui.blendTitle.textContent = existing ? `Edit ${existing.name}` : label;
+  ui.blendSizeLabel.textContent = kind === "chamfer" ? "Distance (mm)" : "Radius (mm)";
+  if (existing?.type === "chamfer") ui.blendSize.value = String(existing.distance);
+  else if (existing?.type === "fillet") ui.blendSize.value = String(existing.radius);
+  else ui.blendSize.value = kind === "chamfer" ? "0.5" : "2";
+  viewer.canvas.style.cursor = feature === null ? "pointer" : "";
+  ui.blendDialog.hidden = false;
+  syncBlend();
+}
+
+function closeBlend(): void {
+  blending = null;
+  ui.blendDialog.hidden = true;
+  viewer.canvas.style.cursor = "";
+  viewer.highlightFaces([]);
+}
+
 function syncHoleFields(): void {
   const type = ui.holeType.value;
   for (const field of ui.holeDialog.querySelectorAll<HTMLElement>("[data-for]")) {
@@ -429,6 +486,7 @@ function syncHoleFields(): void {
 
 function openHole(feature: number | null): void {
   if (!current) return;
+  closeBlend();
   if (editor.editing !== null) {
     editor.close();
     updateSketchUi();
@@ -508,6 +566,7 @@ let editingFeature: number | null = null;
 function openExtrude(feature: number | null): void {
   if (!current) return;
   closeHole();
+  closeBlend();
   if (editor.editing !== null) {
     editor.close();
     updateSketchUi();
@@ -552,6 +611,7 @@ function updateSketchUi(): void {
   if (editing !== null) {
     closeExtrude();
     closeHole();
+    closeBlend();
   }
   ui.sketchTools.hidden = editing === null;
   ui.sketchTools.parentElement?.classList.toggle("sketching", editing !== null);
@@ -799,6 +859,48 @@ element("sketch-on-face").addEventListener("click", () => {
 
 viewer.canvas.addEventListener("pointermove", (event) => {
   if (pickingFace) viewer.highlightFace(viewer.faceAt(event.clientX, event.clientY));
+  else if (blending && blending.editing === null) {
+    viewer.highlightFaces(blending.faces, viewer.faceAt(event.clientX, event.clientY));
+  }
+});
+
+viewer.canvas.addEventListener("click", (event) => {
+  if (!blending || blending.editing !== null) return;
+  const face = viewer.faceAt(event.clientX, event.clientY);
+  if (face === null) return;
+  blending.faces = blending.faces.includes(face)
+    ? blending.faces.filter((f) => f !== face)
+    : [...blending.faces, face];
+  syncBlend();
+});
+
+ui.chamferButton.addEventListener("click", () => openBlend("chamfer", null));
+ui.filletButton.addEventListener("click", () => openBlend("fillet", null));
+element("blend-cancel").addEventListener("click", closeBlend);
+ui.blendDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeBlend();
+});
+ui.blendDialog.addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    if (!blending) return;
+    const size = Number(ui.blendSize.value);
+    let next: DocumentState;
+    if (blending.editing !== null) {
+      next = await execute("feature.edit_blend", { feature: blending.editing, size });
+    } else {
+      if (blending.faces.length === 0) throw new Error("Pick at least one face on the part first.");
+      const faces = blending.faces.map((f) => {
+        const name = uniqueFaceName(f);
+        if (!name) throw new Error("One of the picked faces has no name of its own yet.");
+        return name;
+      });
+      const key = blending.kind === "chamfer" ? "distance" : "radius";
+      next = await execute(`feature.${blending.kind}`, { faces, [key]: size });
+    }
+    closeBlend();
+    render(next);
+  })();
 });
 
 viewer.canvas.addEventListener("click", (event) => {
