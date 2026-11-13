@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub mod expr;
 mod features;
 pub mod threads;
 
@@ -143,6 +144,10 @@ pub struct SketchRecord {
     pub plane: Plane,
     /// Its geometry and constraints.
     pub sketch: Sketch,
+    /// Dimensions driven by an expression, such as `thickness / 2`. The
+    /// constraint holds the evaluated value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub expressions: BTreeMap<sketch::ConstraintId, String>,
 }
 
 /// Why a change to the model was refused.
@@ -170,6 +175,20 @@ pub enum ModelError {
     UnknownFeature(FeatureId),
     /// A feature's values are not allowed; says why.
     InvalidFeature(String),
+    /// An expression could not be evaluated.
+    Expression {
+        /// The expression.
+        text: String,
+        /// Why.
+        reason: String,
+    },
+    /// Expressions still use this parameter.
+    ParameterInUse {
+        /// The parameter.
+        name: String,
+        /// What uses it.
+        by: Vec<String>,
+    },
     /// Features still use this sketch.
     SketchInUse {
         /// The sketch's name.
@@ -194,6 +213,10 @@ impl fmt::Display for ModelError {
             Self::UnknownSketch(id) => write!(f, "{id} does not exist"),
             Self::Sketch(error) => error.fmt(f),
             Self::UnknownFeature(id) => write!(f, "{id} does not exist"),
+            Self::Expression { text, reason } => write!(f, "cannot work out {text:?}: {reason}"),
+            Self::ParameterInUse { name, by } => {
+                write!(f, "{name} is used by {}; change those first", by.join(", "))
+            }
             Self::InvalidFeature(reason) => f.write_str(reason),
             Self::SketchInUse { sketch, by } => write!(
                 f,
@@ -304,7 +327,140 @@ impl Document {
                 name: name.to_owned(),
             });
         }
-        Ok(self.parameters.insert(name.to_owned(), parameter))
+        // Everything that uses the parameter follows it, or nothing changes.
+        let mut trial = self.clone();
+        let previous = trial.parameters.insert(name.to_owned(), parameter);
+        trial.reevaluate()?;
+        *self = trial;
+        Ok(previous)
+    }
+
+    /// Evaluates an expression against the parameters.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::Expression`] with the reason.
+    pub fn evaluate(&self, text: &str) -> Result<f64, ModelError> {
+        expr::evaluate(text, &self.parameters).map_err(|reason| ModelError::Expression {
+            text: text.to_owned(),
+            reason,
+        })
+    }
+
+    /// What uses a parameter: dimensions and features, by name.
+    fn users_of(&self, name: &str) -> Vec<String> {
+        let uses = |text: &str| expr::names(text).iter().any(|n| n == name);
+        let mut by = Vec::new();
+        for record in self.sketches.values() {
+            for (id, text) in &record.expressions {
+                if uses(text) {
+                    by.push(format!("{} dimension {}", record.name, id.0));
+                }
+            }
+        }
+        for entry in &self.features {
+            if let Feature::Extrude {
+                name: feature,
+                distance_expression: Some(text),
+                ..
+            } = &entry.feature
+                && uses(text)
+            {
+                by.push(feature.clone());
+            }
+        }
+        by
+    }
+
+    /// Re-evaluates every expression and applies the values: dimensions are
+    /// re-solved, feature values updated. Expressions on constraints that
+    /// no longer exist are dropped.
+    fn reevaluate(&mut self) -> Result<(), ModelError> {
+        let parameters = self.parameters.clone();
+        let eval = |text: &str| {
+            expr::evaluate(text, &parameters).map_err(|reason| ModelError::Expression {
+                text: text.to_owned(),
+                reason,
+            })
+        };
+        for record in self.sketches.values_mut() {
+            let sketch = &record.sketch;
+            record
+                .expressions
+                .retain(|id, _| sketch.constraint(*id).is_some());
+            for (id, text) in &record.expressions {
+                let value = eval(text)?;
+                let current = record
+                    .sketch
+                    .constraint(*id)
+                    .and_then(sketch::Constraint::value);
+                if current.is_none_or(|c| (c - value).abs() > 1e-12) {
+                    record
+                        .sketch
+                        .set_dimension(*id, value, &sketch::SolveOptions::default())?;
+                }
+            }
+        }
+        for entry in &mut self.features {
+            if let Feature::Extrude {
+                distance,
+                distance_expression: Some(text),
+                ..
+            } = &mut entry.feature
+            {
+                *distance = eval(text)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drives a sketch dimension by an expression, or by a plain value again
+    /// with `None`. Returns the sketch as it was, for undo.
+    ///
+    /// # Errors
+    ///
+    /// The expression's or the sketch's reason; nothing changes then.
+    pub fn set_dimension_expression(
+        &mut self,
+        sketch: SketchId,
+        constraint: sketch::ConstraintId,
+        text: Option<&str>,
+    ) -> Result<SketchRecord, ModelError> {
+        let before = self
+            .sketches
+            .get(&sketch)
+            .cloned()
+            .ok_or(ModelError::UnknownSketch(sketch))?;
+        if before
+            .sketch
+            .constraint(constraint)
+            .and_then(sketch::Constraint::value)
+            .is_none()
+        {
+            return Err(ModelError::Sketch(SketchError::NotADimension(constraint)));
+        }
+        let mut trial = self.clone();
+        if let Some(record) = trial.sketches.get_mut(&sketch) {
+            match text {
+                Some(text) => {
+                    record
+                        .expressions
+                        .insert(constraint, text.trim().to_owned());
+                }
+                None => {
+                    record.expressions.remove(&constraint);
+                }
+            }
+        }
+        trial.reevaluate()?;
+        *self = trial;
+        Ok(before)
+    }
+
+    /// Puts a sketch back exactly as it was, expressions included, as undo
+    /// does.
+    pub fn set_sketch_record(&mut self, id: SketchId, record: SketchRecord) {
+        self.sketches.insert(id, record);
     }
 
     /// Removes a parameter and returns it.
@@ -313,6 +469,13 @@ impl Document {
     ///
     /// Returns [`ModelError::UnknownParameter`] if no parameter has this name.
     pub fn remove_parameter(&mut self, name: &str) -> Result<Parameter, ModelError> {
+        let by = self.users_of(name);
+        if !by.is_empty() {
+            return Err(ModelError::ParameterInUse {
+                name: name.to_owned(),
+                by,
+            });
+        }
         self.parameters
             .remove(name)
             .ok_or_else(|| ModelError::UnknownParameter(name.to_owned()))
@@ -353,6 +516,7 @@ impl Document {
         self.restore_sketch(
             id,
             SketchRecord {
+                expressions: BTreeMap::new(),
                 name,
                 plane,
                 sketch: Sketch::new(),
@@ -542,6 +706,9 @@ impl Document {
             check_document_name(&record.name)?;
             check_plane(&record.plane)?;
             record.sketch.validate()?;
+            for text in record.expressions.values() {
+                self.evaluate(text)?;
+            }
         }
         let mut ids = BTreeSet::new();
         for entry in &self.features {
@@ -695,6 +862,7 @@ mod tests {
             sketch: s,
             profiles: vec![sketch::ProfileKey(vec![sketch::EntityId(4)])],
             distance: 10.0,
+            distance_expression: None,
             operation: Operation::Join,
         };
         let a = document.add_feature(extrude("Extrude1")).unwrap();
@@ -718,6 +886,77 @@ mod tests {
             Err(ModelError::InvalidFeature(_))
         ));
         assert_eq!(document.validate(), Ok(()));
+    }
+
+    #[test]
+    fn parameters_drive_dimensions_and_features() {
+        let mut d = Document::default();
+        d.set_parameter("width", Parameter::new(96.0, Unit::Millimetre))
+            .unwrap();
+        d.set_parameter("thickness", Parameter::new(20.0, Unit::Millimetre))
+            .unwrap();
+        let s = d.add_sketch("", Plane::Xy).unwrap();
+        let (line, length) = d
+            .edit_sketch(s, |k| {
+                let a = k.add_point(sketch::Point2::new(0.0, 0.0))?;
+                let b = k.add_point(sketch::Point2::new(90.0, 0.0))?;
+                let line = k.add_line(a, b)?;
+                let opts = sketch::SolveOptions::default();
+                k.add_constraint(sketch::Constraint::Fix { point: a }, &opts)?;
+                k.add_constraint(sketch::Constraint::Horizontal { line }, &opts)?;
+                let length =
+                    k.add_constraint(sketch::Constraint::Length { line, value: 90.0 }, &opts)?;
+                Ok((line, length))
+            })
+            .unwrap();
+        d.set_dimension_expression(s, length, Some("width"))
+            .unwrap();
+        let end = |d: &Document| {
+            d.sketch(s)
+                .unwrap()
+                .sketch
+                .point(sketch::EntityId(1))
+                .unwrap()
+                .x
+        };
+        assert!((end(&d) - 96.0).abs() < 1e-7);
+        d.add_feature(Feature::Extrude {
+            name: "Body".into(),
+            sketch: s,
+            profiles: vec![sketch::ProfileKey(vec![line])],
+            distance: 1.0,
+            distance_expression: Some("thickness / 2".into()),
+            operation: Operation::Join,
+        })
+        .unwrap();
+        // Changing a parameter moves everything that uses it.
+        d.set_parameter("width", Parameter::new(120.0, Unit::Millimetre))
+            .unwrap();
+        d.set_parameter("thickness", Parameter::new(30.0, Unit::Millimetre))
+            .unwrap();
+        assert!((end(&d) - 120.0).abs() < 1e-7);
+        let Feature::Extrude { distance, .. } = &d.features()[0].feature else {
+            panic!()
+        };
+        assert!((distance - 15.0).abs() < 1e-12);
+        // A parameter in use cannot be removed; an impossible value changes nothing.
+        let error = d.remove_parameter("width").unwrap_err();
+        assert!(error.to_string().contains("dimension"), "{error}");
+        let before = d.clone();
+        assert!(
+            d.set_parameter("width", Parameter::new(-5.0, Unit::Millimetre))
+                .is_err()
+        );
+        assert_eq!(d, before);
+        // Unknown names are refused.
+        let error = d
+            .set_dimension_expression(s, length, Some("depth"))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("no parameter named depth"),
+            "{error}"
+        );
+        assert_eq!(d.validate(), Ok(()));
     }
 
     #[test]

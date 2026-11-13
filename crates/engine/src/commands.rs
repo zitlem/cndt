@@ -44,13 +44,13 @@ impl Command for RenameDocument {
     }
 }
 
-/// Creates or changes a parameter.
+/// Creates or changes a parameter. Everything driven by it follows; undo
+/// puts the whole document back exactly.
 #[derive(Debug, Clone)]
 pub struct SetParameter {
     name: String,
     parameter: Parameter,
-    /// `Some(None)` once applied over no existing parameter.
-    previous: Option<Option<Parameter>>,
+    before: Option<Box<Document>>,
 }
 
 impl SetParameter {
@@ -60,7 +60,7 @@ impl SetParameter {
         Self {
             name: name.to_owned(),
             parameter,
-            previous: None,
+            before: None,
         }
     }
 }
@@ -75,19 +75,15 @@ impl Command for SetParameter {
     }
 
     fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
-        self.previous = Some(document.set_parameter(&self.name, self.parameter.clone())?);
+        let before = document.clone();
+        document.set_parameter(&self.name, self.parameter.clone())?;
+        self.before = Some(Box::new(before));
         Ok(())
     }
 
     fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
-        match self.previous.take().ok_or(CommandError::NotApplied)? {
-            Some(previous) => {
-                document.set_parameter(&self.name, previous)?;
-            }
-            None => {
-                document.remove_parameter(&self.name)?;
-            }
-        }
+        let before = self.before.take().ok_or(CommandError::NotApplied)?;
+        *document = *before;
         Ok(())
     }
 }

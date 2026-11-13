@@ -52,6 +52,9 @@ pub enum Feature {
         profiles: Vec<ProfileKey>,
         /// Millimetres along the plane's normal; negative goes the other way.
         distance: f64,
+        /// An expression the distance follows, such as `-thickness / 2`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        distance_expression: Option<String>,
         /// Join or cut.
         operation: Operation,
     },
@@ -1087,6 +1090,7 @@ mod tests {
             sketch,
             profiles,
             distance,
+            distance_expression: None,
             operation,
         }
     }

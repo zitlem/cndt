@@ -210,13 +210,11 @@ impl Registry {
                     } else {
                         None
                     };
-                    Ok(Box::new(AddExtrude::new(
-                        sketch_id(args)?,
-                        profiles,
-                        number(args, "distance")?,
-                        operation,
-                        name,
-                    )))
+                    let (distance, expression) = number_or_expression(args, "distance")?;
+                    Ok(Box::new(
+                        AddExtrude::new(sketch_id(args)?, profiles, distance, operation, name)
+                            .with_expression(expression),
+                    ))
                 },
             },
             CommandSpec {
@@ -244,10 +242,11 @@ impl Registry {
                     },
                 ],
                 build: |args| {
-                    let distance = if args.contains_key("distance") {
-                        Some(number(args, "distance")?)
+                    let (distance, expression) = if args.contains_key("distance") {
+                        let (d, e) = number_or_expression(args, "distance")?;
+                        (Some(d), e)
                     } else {
-                        None
+                        (None, None)
                     };
                     let op = if args.contains_key("operation") {
                         Some(operation(args)?)
@@ -259,12 +258,10 @@ impl Registry {
                     } else {
                         None
                     };
-                    Ok(Box::new(EditExtrude::new(
-                        FeatureId(id(args, "feature")?),
-                        distance,
-                        op,
-                        profiles,
-                    )))
+                    Ok(Box::new(
+                        EditExtrude::new(FeatureId(id(args, "feature")?), distance, op, profiles)
+                            .with_expression(expression),
+                    ))
                 },
             },
             CommandSpec {
@@ -570,18 +567,19 @@ impl Registry {
                         name: "value",
                         kind: ArgKind::Number,
                         required: true,
-                        description: "Millimetres, or degrees for an angle.",
+                        description: "Millimetres, or degrees for an angle; or an expression of the parameters, such as \"thickness / 2\".",
                     },
                 ],
                 build: |args| {
                     let constraint = ConstraintId(id(args, "constraint")?);
-                    edit(
-                        args,
-                        SketchEdit::SetDimension {
+                    let edit_kind = match number_or_expression(args, "value")? {
+                        (_, Some(expression)) => SketchEdit::SetDimensionExpression {
                             constraint,
-                            value: number(args, "value")?,
+                            expression,
                         },
-                    )
+                        (value, None) => SketchEdit::SetDimension { constraint, value },
+                    };
+                    edit(args, edit_kind)
                 },
             },
             CommandSpec {
@@ -835,6 +833,20 @@ const EDIT_HOLE_ARGS: &[ArgSpec] = &[
     HOLE_ARGS[6],
     HOLE_ARGS[7],
 ];
+
+/// A number, or an expression of the parameters such as `"thickness / 2"`
+/// (evaluated when the command runs; the number is then a placeholder).
+fn number_or_expression(
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<(f64, Option<String>), String> {
+    match args.get(key) {
+        Some(Value::String(text)) if !text.trim().is_empty() => {
+            Ok((0.0, Some(text.trim().to_owned())))
+        }
+        _ => number(args, key).map(|n| (n, None)),
+    }
+}
 
 fn optional_number(args: &Map<String, Value>, key: &str) -> Result<Option<f64>, String> {
     if args.contains_key(key) {

@@ -143,6 +143,14 @@ pub enum SketchEdit {
     },
     /// Adds a constraint.
     Constrain(Constraint),
+    /// Drives a dimension by an expression of the parameters, such as
+    /// `thickness / 2`.
+    SetDimensionExpression {
+        /// The dimension.
+        constraint: ConstraintId,
+        /// The expression.
+        expression: String,
+    },
     /// Changes a dimension's value.
     SetDimension {
         /// The dimension.
@@ -182,7 +190,9 @@ impl SketchEdit {
             Self::AddArc { .. } => "sketch.add_arc",
             Self::AddRectangle { .. } => "sketch.add_rectangle",
             Self::Constrain(_) => "sketch.constrain",
-            Self::SetDimension { .. } => "sketch.set_dimension",
+            Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => {
+                "sketch.set_dimension"
+            }
             Self::MovePoint { .. } => "sketch.move_point",
             Self::SetConstruction { .. } => "sketch.set_construction",
             Self::RemoveEntity(_) => "sketch.remove_entity",
@@ -198,7 +208,7 @@ impl SketchEdit {
             Self::AddArc { .. } => "Add arc",
             Self::AddRectangle { .. } => "Add rectangle",
             Self::Constrain(_) => "Add constraint",
-            Self::SetDimension { .. } => "Change dimension",
+            Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => "Change dimension",
             Self::MovePoint { .. } => "Move point",
             Self::SetConstruction { .. } => "Toggle construction",
             Self::RemoveEntity(_) => "Delete sketch entity",
@@ -267,6 +277,10 @@ impl SketchEdit {
             }
             Self::SetDimension { constraint, value } => {
                 sketch.set_dimension(constraint, value, &options)?;
+            }
+            // Needs the document's parameters; EditSketch applies it.
+            Self::SetDimensionExpression { constraint, .. } => {
+                return Err(SketchError::NotADimension(constraint));
             }
             Self::MovePoint { point, to } => sketch.move_point(point, to)?,
             Self::SetConstruction {
@@ -344,7 +358,7 @@ fn remove_with_dependents(sketch: &mut Sketch, id: EntityId) -> Result<(), Sketc
 pub struct EditSketch {
     sketch: SketchId,
     edit: SketchEdit,
-    before: Option<Sketch>,
+    before: Option<SketchRecord>,
 }
 
 impl EditSketch {
@@ -371,16 +385,34 @@ impl Command for EditSketch {
     fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
         let before = document
             .sketch(self.sketch)
-            .map(|record| record.sketch.clone())
+            .cloned()
             .ok_or(ModelError::UnknownSketch(self.sketch))?;
-        document.edit_sketch(self.sketch, |sketch| self.edit.run(sketch))?;
+        match &self.edit {
+            SketchEdit::SetDimensionExpression {
+                constraint,
+                expression,
+            } => {
+                document.set_dimension_expression(self.sketch, *constraint, Some(expression))?;
+            }
+            SketchEdit::SetDimension { constraint, .. } => {
+                document.edit_sketch(self.sketch, |sketch| self.edit.run(sketch))?;
+                // A typed number replaces the expression that drove it.
+                if before.expressions.contains_key(constraint)
+                    && let Some(mut record) = document.sketch(self.sketch).cloned()
+                {
+                    record.expressions.remove(constraint);
+                    document.set_sketch_record(self.sketch, record);
+                }
+            }
+            _ => document.edit_sketch(self.sketch, |sketch| self.edit.run(sketch))?,
+        }
         self.before = Some(before);
         Ok(())
     }
 
     fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
         let before = self.before.take().ok_or(CommandError::NotApplied)?;
-        document.replace_sketch(self.sketch, before)?;
+        document.set_sketch_record(self.sketch, before);
         Ok(())
     }
 }

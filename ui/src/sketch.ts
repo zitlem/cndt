@@ -145,8 +145,8 @@ export class SketchEditor {
     host.append(this.element);
 
     this.input = document.createElement("input");
-    this.input.type = "number";
-    this.input.step = "any";
+    this.input.type = "text";
+    this.input.spellcheck = false;
     this.input.className = "dimension-input";
     this.input.hidden = true;
     host.append(this.input);
@@ -553,7 +553,8 @@ export class SketchEditor {
     const id = Number(mark.slice(1));
     const constraint = this.sketch?.constraints[String(id)];
     if (constraint?.value === undefined) return;
-    this.askValue(where, constraint.value, async (value) => {
+    const expression = this.record?.expressions?.[String(id)];
+    this.askValue(where, expression ?? format(constraint.value), async (value) => {
       await this.run("sketch.set_dimension", { constraint: id, value });
     });
   }
@@ -762,9 +763,16 @@ export class SketchEditor {
     const rect = this.element.getBoundingClientRect();
     this.askValue(
       { clientX: rect.left + at.x, clientY: rect.top + at.y },
-      found.value,
+      format(found.value),
       async (value) => {
-        await this.run("sketch.constrain", { constraint: { ...found.constraint, value } });
+        if (typeof value === "number") {
+          await this.run("sketch.constrain", { constraint: { ...found.constraint, value } });
+        } else {
+          // Add it at its current size, then drive it by the expression.
+          const id = this.sketch?.next_constraint ?? 0;
+          const added = await this.run("sketch.constrain", { constraint: { ...found.constraint, value: found.value } });
+          if (added) await this.run("sketch.set_dimension", { constraint: id, value });
+        }
         this.selection = [];
         this.draw();
       },
@@ -773,13 +781,13 @@ export class SketchEditor {
 
   private askValue(
     where: { clientX: number; clientY: number },
-    value: number,
-    commit: (value: number) => Promise<void>,
+    initial: string,
+    commit: (value: number | string) => Promise<void>,
   ): void {
     const rect = this.host.getBoundingClientRect();
     this.input.style.left = `${where.clientX - rect.left + 12}px`;
     this.input.style.top = `${where.clientY - rect.top - 14}px`;
-    this.input.value = format(value);
+    this.input.value = initial;
     this.input.hidden = false;
     this.input.focus();
     this.input.select();
@@ -791,10 +799,12 @@ export class SketchEditor {
         this.draw();
         this.element.focus();
       } else if (event.key === "Enter") {
-        const next = Number(this.input.value);
+        // A number, or an expression of the parameters such as "width / 2".
+        const text = this.input.value.trim();
+        const number = Number(text);
         this.hideInput();
         this.element.focus();
-        if (Number.isFinite(next)) void commit(next);
+        if (text !== "") void commit(Number.isFinite(number) ? number : text);
       }
     };
   }
@@ -939,8 +949,11 @@ export class SketchEditor {
       if (this.selection.includes(`c${id}`)) classes.push("selected");
       if (this.flashed.has(id)) classes.push("flashed");
       const group = svg("g", { class: classes.join(" "), "data-key": `c${id}` });
+      const expression = this.record?.expressions?.[key];
       const label =
-        constraint.value !== undefined ? this.label(constraint) : (GLYPH[constraint.type] ?? "?");
+        constraint.value !== undefined
+          ? `${expression ? "ƒ " : ""}${this.label(constraint)}`
+          : (GLYPH[constraint.type] ?? "?");
       const width = Math.max(16, label.length * 7 + 8);
       const x = at.x + n * (width + 3) + 6;
       const y = at.y + 6;
@@ -951,7 +964,7 @@ export class SketchEditor {
       text.textContent = label;
       group.append(text);
       const title = svg("title");
-      title.textContent = `${constraint.type.replaceAll("_", " ")}${constraint.value !== undefined ? ` (double-click to change)` : ""}`;
+      title.textContent = `${constraint.type.replaceAll("_", " ")}${expression ? ` = ${expression}` : ""}${constraint.value !== undefined ? " (double-click to change; a number or an expression of the parameters)" : ""}`;
       group.append(title);
       this.marks.append(group);
     }

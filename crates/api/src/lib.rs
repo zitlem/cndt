@@ -873,6 +873,79 @@ mod tests {
     }
 
     #[test]
+    fn dimensions_follow_parameters() {
+        let mut api = Api::new();
+        let exec = |api: &mut Api, command: &str, args: Value| {
+            call(
+                api,
+                json!({"method": "execute", "command": command, "args": args}),
+            )
+        };
+        exec(
+            &mut api,
+            "parameter.set",
+            json!({"name": "width", "value": 96, "unit": "mm"}),
+        );
+        exec(&mut api, "sketch.create", json!({"plane": "xy"}));
+        exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 90, "y": 50}}),
+        );
+        exec(
+            &mut api,
+            "sketch.constrain",
+            json!({"sketch": 0, "constraint": {"type": "fix", "point": 0}}),
+        );
+        exec(
+            &mut api,
+            "sketch.constrain",
+            json!({"sketch": 0, "constraint": {"type": "length", "line": 4, "value": 90}}),
+        );
+        let reply = exec(
+            &mut api,
+            "sketch.set_dimension",
+            json!({"sketch": 0, "constraint": 5, "value": "width / 2"}),
+        );
+        let sketch = &reply["result"]["document"]["sketches"]["0"];
+        assert_eq!(sketch["expressions"]["5"], "width / 2", "{reply}");
+        assert_eq!(sketch["sketch"]["constraints"]["5"]["value"], 48.0);
+        let reply = exec(
+            &mut api,
+            "parameter.set",
+            json!({"name": "width", "value": 120, "unit": "mm"}),
+        );
+        assert_eq!(
+            reply["result"]["document"]["sketches"]["0"]["sketch"]["constraints"]["5"]["value"],
+            60.0
+        );
+        let reply = exec(
+            &mut api,
+            "sketch.set_dimension",
+            json!({"sketch": 0, "constraint": 5, "value": "depth"}),
+        );
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no parameter named depth"),
+            "{reply}"
+        );
+        // Typing a number drops the expression.
+        let reply = exec(
+            &mut api,
+            "sketch.set_dimension",
+            json!({"sketch": 0, "constraint": 5, "value": 70}),
+        );
+        assert!(
+            reply["result"]["document"]["sketches"]["0"]
+                .get("expressions")
+                .is_none(),
+            "{reply}"
+        );
+    }
+
+    #[test]
     fn errors_carry_a_stable_kind() {
         let mut api = Api::new();
         let cases = [
