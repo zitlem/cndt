@@ -156,6 +156,22 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         distance: f64,
     ) -> Result<Vec<OutlineSegment>, KernelError>;
 
+    /// The outline of the body cut through at height `z` by a plane parallel
+    /// to XY: the section's outer loop, offset outwards by `distance`. Lines
+    /// and arcs in running order. Unlike a face's outline, this is the true
+    /// wall whatever chamfers or fillets do at the faces above and below.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if there is no closed outline at `z`, or it
+    /// cannot be offset into one loop.
+    fn section_outline(
+        &self,
+        body: &Body,
+        z: f64,
+        distance: f64,
+    ) -> Result<Vec<OutlineSegment>, KernelError>;
+
     /// Every boundary loop of flat face `face` (parallel to XY), offset with
     /// the face by `distance`: positive grows the face, so the outer loop
     /// moves outwards and holes shrink.
@@ -435,30 +451,21 @@ impl Kernel for OpenCascade {
         face: u32,
         distance: f64,
     ) -> Result<Vec<OutlineSegment>, KernelError> {
-        let p = |a: [f64; 3]| Point3::new(a[0], a[1], a[2]);
-        Ok(cndt_occt_sys::face_outline(&body.0, face, distance)
-            .map_err(modelling)?
-            .into_iter()
-            .map(|s| match s {
-                cndt_occt_sys::Segment::Line { start, end } => OutlineSegment::Line {
-                    start: p(start),
-                    end: p(end),
-                },
-                cndt_occt_sys::Segment::Arc {
-                    start,
-                    end,
-                    center,
-                    ccw,
-                } => OutlineSegment::Arc {
-                    start: p(start),
-                    end: p(end),
-                    center: p(center),
-                    ccw,
-                },
-            })
-            .collect())
+        Ok(outline_segments(
+            cndt_occt_sys::face_outline(&body.0, face, distance).map_err(modelling)?,
+        ))
     }
 
+    fn section_outline(
+        &self,
+        body: &Body,
+        z: f64,
+        distance: f64,
+    ) -> Result<Vec<OutlineSegment>, KernelError> {
+        Ok(outline_segments(
+            cndt_occt_sys::section_outline(&body.0, z, distance).map_err(modelling)?,
+        ))
+    }
     fn face_loops(
         &self,
         body: &Body,
@@ -566,6 +573,31 @@ fn kernel_error(path: &Path, error: cndt_occt_sys::OcctError) -> KernelError {
         }
         OcctError::ModelFailed(reason) => KernelError::Modelling(reason),
     }
+}
+
+/// Kernel outline segments from the shim's.
+fn outline_segments(segments: Vec<cndt_occt_sys::Segment>) -> Vec<OutlineSegment> {
+    let p = |a: [f64; 3]| Point3::new(a[0], a[1], a[2]);
+    segments
+        .into_iter()
+        .map(|s| match s {
+            cndt_occt_sys::Segment::Line { start, end } => OutlineSegment::Line {
+                start: p(start),
+                end: p(end),
+            },
+            cndt_occt_sys::Segment::Arc {
+                start,
+                end,
+                center,
+                ccw,
+            } => OutlineSegment::Arc {
+                start: p(start),
+                end: p(end),
+                center: p(center),
+                ccw,
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]

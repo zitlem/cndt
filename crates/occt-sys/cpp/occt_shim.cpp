@@ -16,6 +16,9 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Section.hxx>
+#include <ShapeAnalysis_FreeBounds.hxx>
+#include <TopTools_HSequenceOfShape.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -1380,6 +1383,97 @@ int cndt_occt_face_loops(
                 return kModelFailed;
             }
             ++n;
+        }
+        *out = segments.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// The outline of a solid cut through at height `z` (a plane parallel to XY):
+// the outer loop of the section, offset outwards by `distance` (0 for the
+// section itself), as lines and arcs in running order. This is the true
+// profile of vertical walls, whatever chamfers or fillets do at their ends.
+int cndt_occt_section_outline(
+    const cndt_shape* shape,
+    double z,
+    double distance,
+    cndt_segments** out,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || out == nullptr || !std::isfinite(z) || !(distance >= 0.0)) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        silence_console_output();
+        BRepAlgoAPI_Section section(shape->shape, gp_Pln(gp_Pnt(0.0, 0.0, z), gp_Dir(0.0, 0.0, 1.0)), Standard_False);
+        section.Build();
+        if (!section.IsDone()) {
+            set_error(err, err_len, "the part could not be cut through at that height");
+            return kModelFailed;
+        }
+        Handle(TopTools_HSequenceOfShape) edges = new TopTools_HSequenceOfShape();
+        for (TopExp_Explorer it(section.Shape(), TopAbs_EDGE); it.More(); it.Next()) {
+            edges->Append(it.Current());
+        }
+        if (edges->IsEmpty()) {
+            set_error(err, err_len, "the part has nothing at that height");
+            return kModelFailed;
+        }
+        Handle(TopTools_HSequenceOfShape) wires;
+        ShapeAnalysis_FreeBounds::ConnectEdgesToWires(edges, 1e-6, Standard_False, wires);
+        TopoDS_Wire outer;
+        double largest = 0.0;
+        for (int i = 1; i <= wires->Length(); ++i) {
+            const TopoDS_Wire wire = TopoDS::Wire(wires->Value(i));
+            if (!wire.Closed()) {
+                continue;
+            }
+            const double area = wire_area(wire);
+            if (area > largest) {
+                largest = area;
+                outer = wire;
+            }
+        }
+        if (outer.IsNull()) {
+            set_error(err, err_len, "the section at that height has no closed outline");
+            return kModelFailed;
+        }
+        TopoDS_Wire path = outer;
+        if (distance > 0.0) {
+            TopoDS_Wire best;
+            for (const double signed_distance : {distance, -distance}) {
+                BRepOffsetAPI_MakeOffset offset(outer, GeomAbs_Arc, Standard_False);
+                offset.Perform(signed_distance);
+                if (!offset.IsDone()) {
+                    continue;
+                }
+                std::vector<TopoDS_Wire> found;
+                for (TopExp_Explorer w(offset.Shape(), TopAbs_WIRE); w.More(); w.Next()) {
+                    found.push_back(TopoDS::Wire(w.Current()));
+                }
+                if (found.size() == 1 && wire_area(found[0]) > largest) {
+                    best = found[0];
+                    break;
+                }
+            }
+            if (best.IsNull()) {
+                set_error(err, err_len, "the outline could not be offset into one closed loop");
+                return kModelFailed;
+            }
+            path = best;
+        }
+        auto segments = std::make_unique<cndt_segments>();
+        if (!append_wire(path, 0, *segments)) {
+            set_error(err, err_len, "an outline edge could not be followed");
+            return kModelFailed;
         }
         *out = segments.release();
         return kOk;

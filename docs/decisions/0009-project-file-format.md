@@ -91,3 +91,7 @@ Pocket operations in a setup: `{"type": "pocket", "floor": "<face name>"}`, opti
 ## Version 13 (2026-11-13)
 
 Chamfer milling operations in a setup: `{"type": "chamfer", "face": "<face name>", "width": <mm>}`, optionally with `"tool"`. Older builds refuse these files with the update message.
+
+## Version 14 (2026-11-13)
+
+Pocket operations may carry a finishing allowance: `"finish": <mm>`. The roughing leaves that much on the walls and one full-depth climbing lap takes it off. Older builds refuse files that use it with the update message; files without it are unchanged.

@@ -532,6 +532,12 @@ impl Registry {
                         description: "For pocket: the pocket's flat floor face.",
                     },
                     ArgSpec {
+                        name: "finish",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "For pocket: mm the roughing leaves on the walls, taken off by one full-depth finishing lap.",
+                    },
+                    ArgSpec {
                         name: "tool",
                         kind: ArgKind::Id,
                         required: false,
@@ -569,6 +575,7 @@ impl Registry {
                             } else {
                                 None
                             },
+                            finish: optional_number(args, "finish")?,
                         },
                         "contour" => cndt_model::cam::OperationDef::Contour {
                             face: text(args, "face")?,
