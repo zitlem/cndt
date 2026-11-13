@@ -82,6 +82,16 @@ unsafe extern "C" {
         err_len: usize,
     ) -> c_int;
     fn cndt_occt_free_mesh(handle: *mut MeshHandle);
+    fn cndt_occt_revolve(
+        points: *const f64,
+        point_count: usize,
+        axis_origin: *const f64,
+        axis_dir: *const f64,
+        out: *mut *mut ShapeHandle,
+        history: *mut *mut HistoryHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_face_plane(
         shape: *const ShapeHandle,
         face: u32,
@@ -286,6 +296,47 @@ pub fn extrude(loops: &[Vec<Curve>], normal: [f64; 3], distance: f64) -> Result<
             sizes.len(),
             normal.as_ptr(),
             distance,
+            &mut shape,
+            &mut history,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    // SAFETY: the call succeeded, so both handles are ours; the lock is held.
+    unsafe { take(shape, history) }
+}
+
+/// Revolves a closed polygon a full turn about an axis. The polygon lies in a
+/// plane through the axis and may touch it along an edge.
+///
+/// History sources: edge `i`, from point `i` to the next, for the face it
+/// swept; edges on the axis sweep none.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] with a reason when the profile is not valid.
+pub fn revolve(
+    points: &[[f64; 3]],
+    axis_origin: [f64; 3],
+    axis_dir: [f64; 3],
+) -> Result<Made, OcctError> {
+    let flat: Vec<f64> = points.iter().flatten().copied().collect();
+    let mut shape: *mut ShapeHandle = std::ptr::null_mut();
+    let mut history: *mut HistoryHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `flat` holds `points.len()` points of three doubles; the axis
+    // arrays hold three doubles each; the out-pointers are valid locals;
+    // `err` is writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_revolve(
+            flat.as_ptr(),
+            points.len(),
+            axis_origin.as_ptr(),
+            axis_dir.as_ptr(),
             &mut shape,
             &mut history,
             err.as_mut_ptr().cast::<c_char>(),
@@ -542,6 +593,32 @@ mod tests {
         let mesh = mesh(&cut.shape, 0.1).unwrap();
         assert_eq!(mesh.face_count, 11);
         assert!(!mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn revolve_a_drilled_hole_shape() {
+        // Half-section of a Ø10 × 20 hole with a 118° point, axis along -Z.
+        let r = 5.0;
+        let tip = r / (59f64.to_radians()).tan();
+        let profile = [
+            [0.0, 0.0, 0.0],
+            [r, 0.0, 0.0],
+            [r, 0.0, -20.0],
+            [0.0, 0.0, -20.0 - tip],
+        ];
+        let made = revolve(&profile, [0.0; 3], [0.0, 0.0, -1.0]).unwrap();
+        let props = properties(&made.shape).unwrap();
+        let expected = std::f64::consts::PI * r * r * (20.0 + tip / 3.0);
+        assert!(
+            (props.volume - expected).abs() < 1e-6,
+            "{} vs {expected}",
+            props.volume
+        );
+        // Top, wall and tip faces from edges 0, 1, 2; the axis edge sweeps none.
+        let mut sources: Vec<u32> = made.history.iter().map(|p| p.0).collect();
+        sources.sort_unstable();
+        assert_eq!(sources, [0, 1, 2], "{:?}", made.history);
+        assert_eq!(props.faces, 3);
     }
 
     #[test]

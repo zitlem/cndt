@@ -58,6 +58,21 @@ const ui = {
   extrudeSketch: element<HTMLSelectElement>("extrude-sketch"),
   extrudeDistance: element<HTMLInputElement>("extrude-distance"),
   extrudeOperation: element<HTMLSelectElement>("extrude-operation"),
+  holeButton: element<HTMLButtonElement>("hole"),
+  holeDialog: element<HTMLFormElement>("hole-dialog"),
+  holeTitle: element<HTMLHeadingElement>("hole-title"),
+  holeSketch: element<HTMLSelectElement>("hole-sketch"),
+  holeType: element<HTMLSelectElement>("hole-type"),
+  holeDiameter: element<HTMLInputElement>("hole-diameter"),
+  holeThread: element<HTMLSelectElement>("hole-thread"),
+  holeCbDiameter: element<HTMLInputElement>("hole-cb-diameter"),
+  holeCbDepth: element<HTMLInputElement>("hole-cb-depth"),
+  holeDepth: element<HTMLInputElement>("hole-depth"),
+  holeThrough: element<HTMLInputElement>("hole-through"),
+  holeThreadDepth: element<HTMLInputElement>("hole-thread-depth"),
+  holeTip: element<HTMLInputElement>("hole-tip"),
+  holeFit: element<HTMLInputElement>("hole-fit"),
+  holePoints: element<HTMLParagraphElement>("hole-points"),
   toast: element<HTMLDivElement>("toast"),
 };
 
@@ -339,6 +354,7 @@ function renderFeatures(state: DocumentState): void {
   ui.featureList.replaceChildren();
   ui.noFeatures.hidden = features.length > 0;
   ui.extrudeButton.disabled = Object.keys(state.document.sketches ?? {}).length === 0;
+  ui.holeButton.disabled = !state.body;
   for (const { id, feature } of features) {
     const status = state.feature_status[String(id)];
     const item = globalThis.document.createElement("li");
@@ -350,9 +366,7 @@ function renderFeatures(state: DocumentState): void {
     name.textContent = feature.name;
     const detail = globalThis.document.createElement("span");
     detail.className = failed ? "detail flag" : "detail";
-    detail.textContent = failed
-      ? "⚠ needs repair"
-      : `${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
+    detail.textContent = failed ? "⚠ needs repair" : featureDetail(feature);
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
     remove.setAttribute("aria-label", `Delete ${feature.name}`);
@@ -362,10 +376,130 @@ function renderFeatures(state: DocumentState): void {
       event.stopPropagation();
       guarded(async () => render(await execute("feature.delete", { feature: id })))();
     });
-    item.addEventListener("click", () => openExtrude(id));
+    item.addEventListener("click", () => (feature.type === "hole" ? openHole(id) : openExtrude(id)));
     item.append(name, detail, remove);
     ui.featureList.append(item);
   }
+}
+
+/** One line about a feature for the timeline. */
+function featureDetail(feature: import("./api").Feature): string {
+  if (feature.type === "extrude") {
+    return `${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
+  }
+  const { spec, points } = feature;
+  const size = spec.thread ? spec.thread.size.replace(/x.*/, "") : `Ø${formatNumber(spec.diameter)}`;
+  const depth = spec.depth === "through" ? "thru" : `${formatNumber(spec.depth.blind)} deep`;
+  const cb = spec.counterbore ? " cbore" : "";
+  return `${points.length} × ${size}${cb} ${depth}`;
+}
+
+/** Points no curve is drawn from: where holes go. */
+function freePoints(id: string, state: DocumentState): number[] {
+  const entities = state.document.sketches?.[id]?.sketch.entities ?? {};
+  const used = new Set<number>();
+  for (const e of Object.values(entities)) {
+    const g = e.geometry;
+    if (g.type === "line") [g.start, g.end].forEach((p) => used.add(p));
+    if (g.type === "circle") used.add(g.center);
+    if (g.type === "arc") [g.center, g.start, g.end].forEach((p) => used.add(p));
+  }
+  return Object.entries(entities)
+    .filter(([key, e]) => e.geometry.type === "point" && !e.construction && !used.has(Number(key)))
+    .map(([key]) => Number(key));
+}
+
+let editingHole: number | null = null;
+
+function syncHoleFields(): void {
+  const type = ui.holeType.value;
+  for (const field of ui.holeDialog.querySelectorAll<HTMLElement>("[data-for]")) {
+    field.hidden = !(field.dataset["for"] ?? "").split(" ").includes(type);
+  }
+  ui.holeDepth.disabled = ui.holeThrough.checked;
+  const id = ui.holeSketch.value;
+  const count = current ? freePoints(id, current).length : 0;
+  ui.holePoints.textContent =
+    editingHole !== null
+      ? "The hole keeps its points."
+      : count === 0
+        ? "This sketch has no free-standing points. Add points where the holes go."
+        : `${count} hole${count === 1 ? "" : "s"}, one at each free-standing point.`;
+}
+
+function openHole(feature: number | null): void {
+  if (!current) return;
+  if (editor.editing !== null) {
+    editor.close();
+    updateSketchUi();
+  }
+  closeExtrude();
+  editingHole = feature;
+  const sketches = Object.entries(current.document.sketches ?? {});
+  ui.holeSketch.replaceChildren(
+    ...sketches.map(([id, record]) => {
+      const option = globalThis.document.createElement("option");
+      option.value = id;
+      option.textContent = `${record.name} (${planeLabel(record.plane)}, ${freePoints(id, current!).length} points)`;
+      return option;
+    }),
+  );
+  const existing = current.document.features?.find((f) => f.id === feature)?.feature;
+  if (existing?.type === "hole") {
+    const { spec } = existing;
+    ui.holeTitle.textContent = `Edit ${existing.name}`;
+    ui.holeSketch.value = String(existing.sketch);
+    ui.holeSketch.disabled = true;
+    ui.holeType.value = spec.thread ? "tapped" : spec.counterbore ? "counterbore" : "simple";
+    ui.holeDiameter.value = String(spec.diameter);
+    if (spec.thread) {
+      ui.holeThread.value = spec.thread.size;
+      ui.holeThreadDepth.value = String(spec.thread.depth);
+    }
+    if (spec.counterbore) {
+      ui.holeCbDiameter.value = String(spec.counterbore.diameter);
+      ui.holeCbDepth.value = String(spec.counterbore.depth);
+    }
+    ui.holeThrough.checked = spec.depth === "through";
+    if (spec.depth !== "through") ui.holeDepth.value = String(spec.depth.blind);
+    ui.holeTip.value = String(spec.tip_angle);
+    ui.holeFit.value = spec.fit ?? "";
+  } else {
+    ui.holeTitle.textContent = "Hole";
+    ui.holeSketch.disabled = false;
+    // The newest sketch with points is the likely one.
+    const withPoints = sketches.filter(([id]) => freePoints(id, current!).length > 0).at(-1) ?? sketches.at(-1);
+    if (withPoints) ui.holeSketch.value = withPoints[0];
+  }
+  syncHoleFields();
+  ui.holeDialog.hidden = false;
+  ui.holeType.focus();
+}
+
+function closeHole(): void {
+  ui.holeDialog.hidden = true;
+  editingHole = null;
+}
+
+function holeArgs(): Record<string, unknown> {
+  const type = ui.holeType.value;
+  const args: Record<string, unknown> = {
+    depth: ui.holeThrough.checked ? "through" : Number(ui.holeDepth.value),
+    tip_angle: Number(ui.holeTip.value),
+  };
+  if (type === "tapped") {
+    args["thread"] = ui.holeThread.value;
+    args["thread_depth"] = Number(ui.holeThreadDepth.value);
+  } else {
+    args["diameter"] = Number(ui.holeDiameter.value);
+  }
+  if (type === "counterbore") {
+    args["counterbore_diameter"] = Number(ui.holeCbDiameter.value);
+    args["counterbore_depth"] = Number(ui.holeCbDepth.value);
+  }
+  const fit = ui.holeFit.value.trim();
+  if (fit) args["fit"] = fit;
+  return args;
 }
 
 /** The feature being edited by the dialog, or null for a new extrude. */
@@ -373,6 +507,7 @@ let editingFeature: number | null = null;
 
 function openExtrude(feature: number | null): void {
   if (!current) return;
+  closeHole();
   if (editor.editing !== null) {
     editor.close();
     updateSketchUi();
@@ -388,7 +523,7 @@ function openExtrude(feature: number | null): void {
     }),
   );
   const existing = current.document.features?.find((f) => f.id === feature)?.feature;
-  if (existing) {
+  if (existing?.type === "extrude") {
     ui.extrudeTitle.textContent = `Edit ${existing.name}`;
     ui.extrudeSketch.value = String(existing.sketch);
     ui.extrudeSketch.disabled = true;
@@ -414,7 +549,10 @@ function closeExtrude(): void {
 
 function updateSketchUi(): void {
   const editing = editor.editing;
-  if (editing !== null) closeExtrude();
+  if (editing !== null) {
+    closeExtrude();
+    closeHole();
+  }
   ui.sketchTools.hidden = editing === null;
   ui.sketchTools.parentElement?.classList.toggle("sketching", editing !== null);
   ui.viewportHint.hidden = editing !== null || ui.modelEmpty.hidden;
@@ -561,6 +699,23 @@ element("fit").addEventListener("click", () => {
 });
 
 ui.extrudeButton.addEventListener("click", () => openExtrude(null));
+ui.holeButton.addEventListener("click", () => openHole(null));
+element("hole-cancel").addEventListener("click", closeHole);
+for (const input of [ui.holeType, ui.holeThrough, ui.holeSketch]) input.addEventListener("change", syncHoleFields);
+ui.holeDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeHole();
+});
+ui.holeDialog.addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    const next =
+      editingHole === null
+        ? await execute("feature.hole", { sketch: Number(ui.holeSketch.value), ...holeArgs() })
+        : await execute("feature.edit_hole", { feature: editingHole, ...holeArgs() });
+    closeHole();
+    render(next);
+  })();
+});
 element("extrude-cancel").addEventListener("click", closeExtrude);
 
 /** On a face, the normal points out of the part: a cut goes in (negative)
@@ -768,6 +923,11 @@ window.addEventListener("keydown", (event) => {
   if (!mod && editor.editing === null && event.key.toLowerCase() === "e" && !ui.extrudeButton.disabled) {
     event.preventDefault();
     openExtrude(null);
+    return;
+  }
+  if (!mod && editor.editing === null && event.key.toLowerCase() === "h" && !ui.holeButton.disabled) {
+    event.preventDefault();
+    openHole(null);
     return;
   }
   if (!mod) return;

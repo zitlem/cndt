@@ -10,10 +10,12 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    AddExtrude, Command, CommandError, CreateSketch, DeleteFeature, DeleteSketch, EditExtrude,
-    EditSketch, PointRef, RemoveParameter, RenameDocument, SetParameter, SketchEdit,
+    AddExtrude, AddHole, Command, CommandError, CreateSketch, DeleteFeature, DeleteSketch,
+    EditExtrude, EditHole, EditSketch, PointRef, RemoveParameter, RenameDocument, SetParameter,
+    SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
+use cndt_model::{Counterbore, HoleDepth, HoleSpec, Thread};
 use cndt_model::{FeatureId, Operation};
 
 /// The type of a command argument.
@@ -43,6 +45,10 @@ pub enum ArgKind {
     /// A list of profiles, each the list of its outer boundary's curve ids,
     /// such as `[[4, 5, 6, 7]]`.
     Profiles,
+    /// A list of ids, such as `[3, 8]`.
+    Ids,
+    /// A depth in millimetres, or `"through"`.
+    Depth,
 }
 
 /// One argument a command accepts.
@@ -253,6 +259,40 @@ impl Registry {
                         distance,
                         op,
                         profiles,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.hole",
+                description: "Drill holes at sketch points: simple, counterbored or tapped.",
+                args: ADD_HOLE_ARGS,
+                build: |args| {
+                    let points = if args.contains_key("points") {
+                        Some(ids(args, "points")?)
+                    } else {
+                        None
+                    };
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(AddHole::new(
+                        sketch_id(args)?,
+                        points,
+                        hole_spec(args)?,
+                        name,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.edit_hole",
+                description: "Change a hole's size and type. Give its full specification.",
+                args: EDIT_HOLE_ARGS,
+                build: |args| {
+                    Ok(Box::new(EditHole::new(
+                        FeatureId(id(args, "feature")?),
+                        hole_spec(args)?,
                     )))
                 },
             },
@@ -643,6 +683,182 @@ fn number(args: &Map<String, Value>, key: &str) -> Result<f64, String> {
     }
 }
 
+const HOLE_ARGS: [ArgSpec; 8] = [
+    ArgSpec {
+        name: "diameter",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Drill diameter in mm. Defaults to the tap drill when a thread is given.",
+    },
+    ArgSpec {
+        name: "depth",
+        kind: ArgKind::Depth,
+        required: true,
+        description: "Millimetres to the end of the full diameter, or \"through\".",
+    },
+    ArgSpec {
+        name: "tip_angle",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Drill point angle in degrees, 118 by default; 180 is flat.",
+    },
+    ArgSpec {
+        name: "counterbore_diameter",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Counterbore diameter in mm; give with counterbore_depth.",
+    },
+    ArgSpec {
+        name: "counterbore_depth",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Counterbore depth in mm.",
+    },
+    ArgSpec {
+        name: "thread",
+        kind: ArgKind::Text,
+        required: false,
+        description: "Thread size, such as M6 or M6x1.0.",
+    },
+    ArgSpec {
+        name: "thread_depth",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Full-thread depth in mm; defaults to the hole depth.",
+    },
+    ArgSpec {
+        name: "fit",
+        kind: ArgKind::Text,
+        required: false,
+        description: "A fit such as H7, for CAM to finish to.",
+    },
+];
+
+const ADD_HOLE_ARGS: &[ArgSpec] = &[
+    SKETCH,
+    ArgSpec {
+        name: "points",
+        kind: ArgKind::Ids,
+        required: false,
+        description: "Point ids; by default every free-standing point of the sketch.",
+    },
+    ArgSpec {
+        name: "name",
+        kind: ArgKind::Text,
+        required: false,
+        description: "Defaults to the next HoleN.",
+    },
+    HOLE_ARGS[0],
+    HOLE_ARGS[1],
+    HOLE_ARGS[2],
+    HOLE_ARGS[3],
+    HOLE_ARGS[4],
+    HOLE_ARGS[5],
+    HOLE_ARGS[6],
+    HOLE_ARGS[7],
+];
+
+const EDIT_HOLE_ARGS: &[ArgSpec] = &[
+    FEATURE,
+    HOLE_ARGS[0],
+    HOLE_ARGS[1],
+    HOLE_ARGS[2],
+    HOLE_ARGS[3],
+    HOLE_ARGS[4],
+    HOLE_ARGS[5],
+    HOLE_ARGS[6],
+    HOLE_ARGS[7],
+];
+
+fn optional_number(args: &Map<String, Value>, key: &str) -> Result<Option<f64>, String> {
+    if args.contains_key(key) {
+        number(args, key).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Reads a hole's size and type from command arguments.
+fn hole_spec(args: &Map<String, Value>) -> Result<HoleSpec, String> {
+    let depth = match args.get("depth") {
+        Some(Value::String(s)) if s == "through" => HoleDepth::Through,
+        Some(_) => HoleDepth::Blind(
+            number(args, "depth")
+                .map_err(|_| String::from("\"depth\" must be a number of mm or \"through\""))?,
+        ),
+        None => return Err(String::from("missing argument \"depth\"")),
+    };
+    let thread_size = if args.contains_key("thread") {
+        Some(text(args, "thread")?)
+    } else {
+        None
+    };
+    let known = thread_size
+        .as_deref()
+        .map(|t| {
+            cndt_model::threads::thread(t).ok_or_else(|| {
+                format!("unknown thread {t:?}; use a metric coarse size such as M6x1.0")
+            })
+        })
+        .transpose()?;
+    let diameter = match (optional_number(args, "diameter")?, known) {
+        (Some(d), _) => d,
+        (None, Some(t)) => t.tap_drill(),
+        (None, None) => {
+            return Err(String::from(
+                "give \"diameter\", or a \"thread\" to use its tap drill",
+            ));
+        }
+    };
+    let thread = match known {
+        Some(t) => {
+            let depth = match (optional_number(args, "thread_depth")?, depth) {
+                (Some(d), _) | (None, HoleDepth::Blind(d)) => d,
+                (None, HoleDepth::Through) => {
+                    return Err(String::from(
+                        "give \"thread_depth\" for a through tapped hole",
+                    ));
+                }
+            };
+            Some(Thread {
+                size: t.designation.to_owned(),
+                depth,
+            })
+        }
+        None => None,
+    };
+    let counterbore = match (
+        optional_number(args, "counterbore_diameter")?,
+        optional_number(args, "counterbore_depth")?,
+    ) {
+        (Some(diameter), Some(depth)) => Some(Counterbore { diameter, depth }),
+        (None, None) => None,
+        _ => {
+            return Err(String::from(
+                "give both \"counterbore_diameter\" and \"counterbore_depth\"",
+            ));
+        }
+    };
+    let fit = if args.contains_key("fit") {
+        Some(text(args, "fit")?)
+    } else {
+        None
+    };
+    Ok(HoleSpec {
+        diameter,
+        depth,
+        tip_angle: optional_number(args, "tip_angle")?.unwrap_or(118.0),
+        counterbore,
+        thread,
+        fit,
+    })
+}
+
+fn ids(args: &Map<String, Value>, key: &str) -> Result<Vec<EntityId>, String> {
+    serde_json::from_value(args.get(key).cloned().unwrap_or_default())
+        .map_err(|_| format!("{key:?} must be a list of ids, like [3, 8]"))
+}
+
 /// The `feature` argument of the timeline commands.
 const FEATURE: ArgSpec = ArgSpec {
     name: "feature",
@@ -771,6 +987,31 @@ mod tests {
             ("sketch.create", json!({"plane": "top"}), "unknown plane"),
             ("sketch.create", json!({}), "either"),
             (
+                "feature.hole",
+                json!({"sketch": 0, "depth": 5}),
+                "give \"diameter\"",
+            ),
+            (
+                "feature.hole",
+                json!({"sketch": 0, "diameter": 5, "depth": "deep"}),
+                "or \"through\"",
+            ),
+            (
+                "feature.hole",
+                json!({"sketch": 0, "thread": "M7", "depth": 5}),
+                "unknown thread",
+            ),
+            (
+                "feature.hole",
+                json!({"sketch": 0, "diameter": 5, "depth": 9, "counterbore_depth": 2}),
+                "both",
+            ),
+            (
+                "feature.hole",
+                json!({"sketch": 0, "thread": "M6", "depth": "through"}),
+                "thread_depth",
+            ),
+            (
                 "sketch.create",
                 json!({"plane": "xy", "face": "f0/end/1"}),
                 "either",
@@ -839,6 +1080,14 @@ mod tests {
                 json!({"feature": 0, "distance": 25, "operation": "cut", "profiles": [[4, 5, 6, 7]]}),
             ),
             ("feature.delete", json!({"feature": 0})),
+            (
+                "feature.hole",
+                json!({"sketch": 0, "thread": "M6", "depth": 15}),
+            ),
+            (
+                "feature.edit_hole",
+                json!({"feature": 0, "diameter": 5.5, "depth": "through", "counterbore_diameter": 9.5, "counterbore_depth": 5.4}),
+            ),
             ("sketch.create", json!({"face": "f0/end/4-5-6-7"})),
             ("sketch.delete", json!({"sketch": 0})),
             (

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Timeline commands: add, change and delete solid features.
 
-use cndt_model::sketch::ProfileKey;
+use cndt_model::sketch::{EntityId, Geometry, ProfileKey};
 use cndt_model::{
-    Document, Feature, FeatureEntry, FeatureId, ModelError, Operation, SketchId, default_profiles,
+    Document, Feature, FeatureEntry, FeatureId, HoleSpec, ModelError, Operation, SketchId,
+    default_profiles,
 };
 
 use crate::{Command, CommandError};
@@ -144,7 +145,12 @@ impl Command for EditExtrude {
             operation,
             profiles,
             ..
-        } = &mut feature;
+        } = &mut feature
+        else {
+            return Err(
+                ModelError::InvalidFeature(String::from("that feature is not an extrude")).into(),
+            );
+        };
         if let Some(d) = self.distance {
             *distance = d;
         }
@@ -154,6 +160,164 @@ impl Command for EditExtrude {
         if let Some(p) = &self.profiles {
             p.clone_into(profiles);
         }
+        self.previous = Some(document.replace_feature(self.id, feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let previous = self.previous.take().ok_or(CommandError::NotApplied)?;
+        document.replace_feature(self.id, previous)?;
+        Ok(())
+    }
+}
+
+/// The points a new hole uses when none are picked: the sketch's free-standing
+/// points, the ones no line, circle or arc is drawn from.
+fn standalone_points(document: &Document, sketch: SketchId) -> Vec<EntityId> {
+    let Some(record) = document.sketch(sketch) else {
+        return Vec::new();
+    };
+    let used: Vec<EntityId> = record
+        .sketch
+        .entities()
+        .flat_map(|(_, e)| match e.geometry {
+            Geometry::Line { start, end } => vec![start, end],
+            Geometry::Circle { center, .. } => vec![center],
+            Geometry::Arc { center, start, end } => vec![center, start, end],
+            Geometry::Point { .. } => Vec::new(),
+        })
+        .collect();
+    record
+        .sketch
+        .entities()
+        .filter(|(id, e)| {
+            matches!(e.geometry, Geometry::Point { .. }) && !e.construction && !used.contains(id)
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Adds a hole feature at the end of the timeline.
+#[derive(Debug, Clone)]
+pub struct AddHole {
+    sketch: SketchId,
+    points: Option<Vec<EntityId>>,
+    spec: HoleSpec,
+    name: Option<String>,
+    created: Option<FeatureId>,
+    undone: Option<(usize, FeatureEntry)>,
+}
+
+impl AddHole {
+    /// Holes at `points` of `sketch`, or when `None`, at every free-standing
+    /// point of it.
+    #[must_use]
+    pub const fn new(
+        sketch: SketchId,
+        points: Option<Vec<EntityId>>,
+        spec: HoleSpec,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            sketch,
+            points,
+            spec,
+            name,
+            created: None,
+            undone: None,
+        }
+    }
+}
+
+impl Command for AddHole {
+    fn name(&self) -> &'static str {
+        "feature.hole"
+    }
+
+    fn label(&self) -> String {
+        String::from("Hole")
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        if let Some((index, entry)) = self.undone.take() {
+            document.restore_feature(index, entry);
+            return Ok(());
+        }
+        let record = document
+            .sketch(self.sketch)
+            .ok_or(ModelError::UnknownSketch(self.sketch))?;
+        let points = match &self.points {
+            Some(p) => p.clone(),
+            None => standalone_points(document, self.sketch),
+        };
+        if points.is_empty() {
+            return Err(ModelError::InvalidFeature(format!(
+                "{} has no points to put holes at; add points to the sketch first",
+                record.name
+            ))
+            .into());
+        }
+        let name = match &self.name {
+            Some(name) => name.clone(),
+            None => document.next_feature_name("Hole"),
+        };
+        let feature = Feature::Hole {
+            name,
+            sketch: self.sketch,
+            points,
+            spec: self.spec.clone(),
+        };
+        self.created = Some(document.add_feature(feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let id = self.created.ok_or(CommandError::NotApplied)?;
+        self.undone = Some(document.remove_feature(id)?);
+        Ok(())
+    }
+}
+
+/// Changes a hole's size and type, keeping its points.
+#[derive(Debug, Clone)]
+pub struct EditHole {
+    id: FeatureId,
+    spec: HoleSpec,
+    previous: Option<Feature>,
+}
+
+impl EditHole {
+    /// Gives hole feature `id` a new size and type.
+    #[must_use]
+    pub const fn new(id: FeatureId, spec: HoleSpec) -> Self {
+        Self {
+            id,
+            spec,
+            previous: None,
+        }
+    }
+}
+
+impl Command for EditHole {
+    fn name(&self) -> &'static str {
+        "feature.edit_hole"
+    }
+
+    fn label(&self) -> String {
+        String::from("Edit hole")
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let mut feature = document
+            .feature(self.id)
+            .cloned()
+            .ok_or(ModelError::UnknownFeature(self.id))?;
+        let Feature::Hole { spec, .. } = &mut feature else {
+            return Err(
+                ModelError::InvalidFeature(String::from("that feature is not a hole")).into(),
+            );
+        };
+        *spec = self.spec.clone();
         self.previous = Some(document.replace_feature(self.id, feature)?);
         Ok(())
     }
@@ -236,7 +400,9 @@ mod tests {
             )))
             .unwrap();
         let added = session.document().clone();
-        let Feature::Extrude { name, profiles, .. } = &added.features()[0].feature;
+        let Feature::Extrude { name, profiles, .. } = &added.features()[0].feature else {
+            panic!()
+        };
         assert_eq!(name, "Extrude1");
         assert_eq!(profiles.len(), 1);
         session
@@ -262,6 +428,56 @@ mod tests {
             &added,
             "redo restores the same id and name"
         );
+    }
+
+    #[test]
+    fn holes_default_to_free_standing_points() {
+        let (mut session, sketch) = with_rectangle();
+        session
+            .execute(Box::new(AddExtrude::new(
+                sketch,
+                None,
+                10.0,
+                Operation::Join,
+                None,
+            )))
+            .unwrap();
+        let spec = HoleSpec {
+            diameter: 3.0,
+            depth: cndt_model::HoleDepth::Through,
+            tip_angle: 118.0,
+            counterbore: None,
+            thread: None,
+            fit: None,
+        };
+        // The rectangle's corners are not free-standing: nothing to drill yet.
+        let error = session
+            .execute(Box::new(AddHole::new(sketch, None, spec.clone(), None)))
+            .unwrap_err();
+        assert!(error.to_string().contains("no points"), "{error}");
+        let add = SketchEdit::AddPoint(Point2::new(4.5, 2.5));
+        session
+            .execute(Box::new(EditSketch::new(sketch, add)))
+            .unwrap();
+        session
+            .execute(Box::new(AddHole::new(sketch, None, spec.clone(), None)))
+            .unwrap();
+        let Feature::Hole { name, points, .. } = &session.document().features()[1].feature else {
+            panic!()
+        };
+        assert_eq!((name.as_str(), points.len()), ("Hole1", 1));
+        let bigger = HoleSpec {
+            diameter: 4.0,
+            ..spec
+        };
+        session
+            .execute(Box::new(EditHole::new(FeatureId(1), bigger)))
+            .unwrap();
+        session.undo().unwrap();
+        let Feature::Hole { spec, .. } = &session.document().features()[1].feature else {
+            panic!()
+        };
+        assert!((spec.diameter - 3.0).abs() < 1e-12);
     }
 
     #[test]

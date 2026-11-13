@@ -836,3 +836,15 @@ button:disabled {
   stroke-width: 0.5;
   pointer-events: none;
 }
+
+.dialog label.check {
+  flex-direction: row;
+  align-items: center;
+  align-self: end;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+
+.dialog [hidden] {
+  display: none;
+}

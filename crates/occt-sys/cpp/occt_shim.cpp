@@ -19,9 +19,15 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+#include <gp_Ax1.hxx>
 #include <GProp_GProps.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS_Edge.hxx>
@@ -721,6 +727,122 @@ int cndt_occt_face_plane(
         return kOk;
     } catch (const Standard_Failure& failure) {
         set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// Revolves a closed planar polygon `points` (model coordinates, in order,
+// not repeating the first) a full turn about the axis through `axis_origin`
+// along `axis_dir`. The polygon must lie in a plane containing the axis and
+// may touch the axis along an edge.
+//
+// History sources: edge `i` (from point `i` to point `i + 1`) for the face
+// it swept. Edges on the axis sweep no face.
+int cndt_occt_revolve(
+    const double* points,
+    std::size_t point_count,
+    const double axis_origin[3],
+    const double axis_dir[3],
+    cndt_shape** out,
+    cndt_history** history,
+    char* err,
+    std::size_t err_len) {
+    if (points == nullptr || point_count < 3 || axis_origin == nullptr || axis_dir == nullptr ||
+        out == nullptr || history == nullptr) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    *history = nullptr;
+    try {
+        silence_console_output();
+        std::vector<TopoDS_Edge> edges(point_count);
+        BRepBuilderAPI_MakeWire wire;
+        for (std::size_t i = 0; i < point_count; ++i) {
+            const std::size_t j = (i + 1) % point_count;
+            wire.Add(BRepBuilderAPI_MakeEdge(point(points + 3 * i), point(points + 3 * j)).Edge());
+            if (!wire.IsDone()) {
+                set_error(err, err_len, "the revolve profile is not a closed polygon");
+                return kModelFailed;
+            }
+            edges[i] = wire.Edge();
+        }
+        BRepBuilderAPI_MakeFace face(wire.Wire(), Standard_True);
+        if (!face.IsDone()) {
+            set_error(err, err_len, "the revolve profile is not flat");
+            return kModelFailed;
+        }
+        // Building the wire and face can replace edges with copies, so match
+        // the finished face's edges to the segments by their end points.
+        for (TopExp_Explorer it(face.Face(), TopAbs_EDGE); it.More(); it.Next()) {
+            const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+            TopoDS_Vertex a;
+            TopoDS_Vertex b;
+            TopExp::Vertices(edge, a, b);
+            const gp_Pnt pa = BRep_Tool::Pnt(a);
+            const gp_Pnt pb = BRep_Tool::Pnt(b);
+            for (std::size_t i = 0; i < point_count; ++i) {
+                const gp_Pnt p = point(points + 3 * i);
+                const gp_Pnt q = point(points + 3 * ((i + 1) % point_count));
+                if ((pa.Distance(p) < 1e-7 && pb.Distance(q) < 1e-7) ||
+                    (pa.Distance(q) < 1e-7 && pb.Distance(p) < 1e-7)) {
+                    edges[i] = edge;
+                }
+            }
+        }
+        const gp_Ax1 axis(point(axis_origin), gp_Dir(axis_dir[0], axis_dir[1], axis_dir[2]));
+        BRepPrimAPI_MakeRevol revol(face.Face(), axis);
+        if (!revol.IsDone()) {
+            set_error(err, err_len, "the revolve failed");
+            return kModelFailed;
+        }
+        const TopoDS_Shape solid = revol.Shape();
+        if (!is_valid_solid(solid, err, err_len)) {
+            return kModelFailed;
+        }
+        TopTools_IndexedMapOfShape map;
+        TopExp::MapShapes(solid, TopAbs_FACE, map);
+        auto record = std::make_unique<cndt_history>();
+        std::vector<bool> named(static_cast<std::size_t>(map.Extent()), false);
+        for (std::size_t i = 0; i < point_count; ++i) {
+            for (const std::uint32_t f : faces_of(revol.Generated(edges[i]), map)) {
+                record->pairs.push_back(static_cast<std::uint32_t>(i));
+                record->pairs.push_back(f);
+                named[f] = true;
+            }
+        }
+        // OpenCascade does not report every swept face (a flat face square
+        // to the axis is missed). Each segment's midpoint lies on exactly the
+        // face it swept, so find the source of any face left over that way.
+        for (int f = 1; f <= map.Extent(); ++f) {
+            if (named[static_cast<std::size_t>(f - 1)]) {
+                continue;
+            }
+            for (std::size_t i = 0; i < point_count; ++i) {
+                const gp_Pnt p = point(points + 3 * i);
+                const gp_Pnt q = point(points + 3 * ((i + 1) % point_count));
+                const gp_Pnt mid((p.X() + q.X()) / 2, (p.Y() + q.Y()) / 2, (p.Z() + q.Z()) / 2);
+                BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(mid).Vertex(), map(f));
+                if (distance.IsDone() && distance.Value() < 1e-7) {
+                    record->pairs.push_back(static_cast<std::uint32_t>(i));
+                    record->pairs.push_back(static_cast<std::uint32_t>(f - 1));
+                    break;
+                }
+            }
+        }
+        auto shape = std::make_unique<cndt_shape>();
+        shape->shape = solid;
+        *out = shape.release();
+        *history = record.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (const std::exception& exception) {
+        set_error(err, err_len, exception.what());
         return kKernelError;
     } catch (...) {
         set_error(err, err_len, "unknown C++ exception");

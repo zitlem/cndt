@@ -13,11 +13,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 mod features;
+pub mod threads;
 
 pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 pub use features::{
-    FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus, Frame, FrameStatus,
-    Operation, Rebuilt, default_profiles, rebuild,
+    Counterbore, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus, Frame,
+    FrameStatus, HoleDepth, HoleSpec, HoleSurface, Operation, Rebuilt, Thread, default_profiles,
+    rebuild,
 };
 use serde::{Deserialize, Serialize};
 
@@ -706,7 +708,9 @@ mod tests {
         assert_eq!(document.features()[0].id, a);
         assert_eq!(document.features()[1].id, b);
         let mut zero = extrude("Bad");
-        let Feature::Extrude { distance, .. } = &mut zero;
+        let Feature::Extrude { distance, .. } = &mut zero else {
+            panic!()
+        };
         *distance = 0.0;
         assert!(matches!(
             document.add_feature(zero),

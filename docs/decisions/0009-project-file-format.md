@@ -55,3 +55,7 @@ The feature timeline is stored in `design/document.json` as `features`: an order
 ## Version 4 (2026-11-12)
 
 A sketch's `plane` may be `{"face": "<face name>"}` instead of `xy`, `xz` or `yz`: a flat face of the part by its persistent name (decision 0012). Older builds refuse such files with the update message instead of failing to read them. A version 3 or older file that contains one is refused as damaged.
+
+## Version 5 (2026-11-12)
+
+Hole features: `{"type": "hole", "name", "sketch", "points": [point ids], "spec": {...}}`. The spec holds the drill `diameter`, `depth` (`{"blind": mm}` or `"through"`), `tip_angle` in degrees, and optionally `counterbore` (`diameter`, `depth`), `thread` (`size` such as `M6x1.0`, `depth`) and `fit` (such as `H7`). Older builds refuse these files with the update message; a version 4 or older file containing a hole is refused as damaged.

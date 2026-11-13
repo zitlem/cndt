@@ -52,6 +52,9 @@
             <button id="extrude" type="button" class="tool" title="Extrude a sketch into a solid, or cut it away (E)">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 14l6 3 6-3-6-3zM4 14V7l6-3 6 3v7M10 11V4" /></svg>Extrude
             </button>
+            <button id="hole" type="button" class="tool" title="Holes at sketch points: simple, counterbored or tapped (H)">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="5" ry="2" /><path d="M5 5v9M15 5v9M5 14l5 4 5-4" /></svg>Hole
+            </button>
             <button id="fit" type="button" class="tool">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" /></svg>Fit view
             </button>
@@ -176,6 +179,42 @@
             <p class="muted small">Negative distances go the other way from the sketch plane.</p>
             <div class="dialog-buttons">
               <button id="extrude-cancel" type="button" class="secondary">Cancel</button>
+              <button type="submit" class="primary">OK</button>
+            </div>
+          </form>
+          <form id="hole-dialog" class="dialog" hidden>
+            <h3 id="hole-title">Hole</h3>
+            <label>Sketch with the hole points<select id="hole-sketch"></select></label>
+            <label>Type
+              <select id="hole-type">
+                <option value="simple">Simple</option>
+                <option value="counterbore">Counterbore</option>
+                <option value="tapped">Tapped</option>
+              </select>
+            </label>
+            <label data-for="simple counterbore">Diameter (mm)<input id="hole-diameter" type="number" step="any" min="0" value="6.6" /></label>
+            <label data-for="tapped">Thread
+              <select id="hole-thread">
+                <option>M3x0.5</option><option>M4x0.7</option><option>M5x0.8</option>
+                <option selected>M6x1.0</option><option>M8x1.25</option><option>M10x1.5</option><option>M12x1.75</option>
+              </select>
+            </label>
+            <div class="form-row" data-for="counterbore">
+              <label>Counterbore Ø<input id="hole-cb-diameter" type="number" step="any" min="0" value="9.5" /></label>
+              <label>Counterbore depth<input id="hole-cb-depth" type="number" step="any" min="0" value="5.4" /></label>
+            </div>
+            <div class="form-row">
+              <label>Depth (mm)<input id="hole-depth" type="number" step="any" min="0" value="15" /></label>
+              <label class="check"><input id="hole-through" type="checkbox" /> Through</label>
+            </div>
+            <label data-for="tapped">Thread depth (mm)<input id="hole-thread-depth" type="number" step="any" min="0" value="12" /></label>
+            <div class="form-row">
+              <label>Point angle (°)<input id="hole-tip" type="number" step="any" value="118" /></label>
+              <label>Fit<input id="hole-fit" type="text" placeholder="H7" spellcheck="false" /></label>
+            </div>
+            <p id="hole-points" class="muted small"></p>
+            <div class="dialog-buttons">
+              <button id="hole-cancel" type="button" class="secondary">Cancel</button>
               <button type="submit" class="primary">OK</button>
             </div>
           </form>
