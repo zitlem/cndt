@@ -15,7 +15,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use cndt_cam_core::{
-    Coolant, Cycle, CycleKind, Event, Move, Operation, Program, SpindleDirection, Step,
+    ArcDirection, Coolant, Cycle, CycleKind, Event, Move, Operation, Program, SpindleDirection,
+    Step,
 };
 use cndt_geom::Point3;
 use cndt_model::cam::{OperationDef, SetupDef, Side};
@@ -103,7 +104,7 @@ impl Setup {
     }
 
     /// A model point in program coordinates.
-    fn program_point(&self, p: Point3) -> Point3 {
+    pub fn program_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
         match self.side {
             Side::Top => Point3::new(round3(p.x - o.x), round3(p.y - o.y), round3(p.z - o.z)),
@@ -136,6 +137,8 @@ pub enum CamError {
     NoSetups,
     /// Facing needs the stock to be set.
     NoStock,
+    /// A contour cannot be made; says why.
+    Contour(String),
 }
 
 impl fmt::Display for CamError {
@@ -145,6 +148,7 @@ impl fmt::Display for CamError {
             Self::NoTool(what) => write!(f, "the tool library has no {what}; add one"),
             Self::Nothing => write!(f, "the part has no holes this setup can make"),
             Self::UnknownSetup(id) => write!(f, "there is no setup {id}"),
+            Self::Contour(reason) => write!(f, "the contour cannot be made: {reason}"),
             Self::NoStock => write!(f, "facing needs the stock; set it first (cam.set_stock)"),
             Self::NoSetups => write!(
                 f,
@@ -563,6 +567,294 @@ fn face(
     })
 }
 
+/// Depth per contour pass, as a multiple of the cutter diameter.
+const CONTOUR_DEPTH_PER_PASS: f64 = 1.0;
+
+/// One piece of a cutter path in program coordinates.
+#[derive(Debug, Clone, Copy)]
+enum Piece {
+    Line {
+        start: Point3,
+        end: Point3,
+    },
+    Arc {
+        start: Point3,
+        end: Point3,
+        center: Point3,
+        ccw: bool,
+    },
+}
+
+impl Piece {
+    fn reversed(self) -> Self {
+        match self {
+            Self::Line { start, end } => Self::Line {
+                start: end,
+                end: start,
+            },
+            Self::Arc {
+                start,
+                end,
+                center,
+                ccw,
+            } => Self::Arc {
+                start: end,
+                end: start,
+                center,
+                ccw: !ccw,
+            },
+        }
+    }
+
+    /// Points along it for area and length sums.
+    fn samples(&self) -> Vec<Point3> {
+        match *self {
+            Self::Line { start, .. } => vec![start],
+            Self::Arc {
+                start,
+                end,
+                center,
+                ccw,
+            } => {
+                let r = (start.x - center.x).hypot(start.y - center.y);
+                let a0 = (start.y - center.y).atan2(start.x - center.x);
+                let a1 = (end.y - center.y).atan2(end.x - center.x);
+                let tau = std::f64::consts::TAU;
+                let sweep = if ccw {
+                    (a1 - a0).rem_euclid(tau)
+                } else {
+                    -(a0 - a1).rem_euclid(tau)
+                };
+                let sweep = if sweep.abs() < 1e-12 {
+                    if ccw { tau } else { -tau }
+                } else {
+                    sweep
+                };
+                (0..16)
+                    .map(|k| {
+                        let a = a0 + sweep * f64::from(k) / 16.0;
+                        Point3::new(center.x + r * a.cos(), center.y + r * a.sin(), start.z)
+                    })
+                    .collect()
+            }
+        }
+    }
+}
+
+/// The one face named `token`.
+fn unique_face(rebuilt: &Rebuilt, token: &str) -> Result<u32, CamError> {
+    let found: Vec<usize> = rebuilt
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(_, names)| names.iter().any(|n| n.to_string() == token))
+        .map(|(i, _)| i)
+        .collect();
+    match found.as_slice() {
+        [one] => u32::try_from(*one).map_err(|_| CamError::Contour(String::from("too many faces"))),
+        [] => Err(CamError::Contour(format!(
+            "the face {token} no longer exists; pick it again"
+        ))),
+        _ => Err(CamError::Contour(format!(
+            "the face {token} is split into {} faces; pick one",
+            found.len()
+        ))),
+    }
+}
+
+/// The outside profile: the outline of a flat face, offset by the cutter's
+/// radius, climb-milled (clockwise) in equal levels no deeper than the
+/// cutter diameter. Each level starts and ends at the middle of the longest
+/// straight side, fed in square to the wall from a point outside the
+/// stock, where the cutter also plunges.
+#[allow(clippy::too_many_arguments)]
+fn contour(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    setup: &Setup,
+    library: &ToolLibrary,
+    face: &str,
+    tool: Option<u32>,
+    depth: Option<f64>,
+) -> Result<Operation, CamError> {
+    let body = rebuilt.body.as_ref().ok_or(CamError::NoPart)?;
+    let (number, cutter) = match tool {
+        Some(n) => library
+            .tools
+            .get(&n)
+            .map(|t| (n, t))
+            .ok_or_else(|| CamError::NoTool(format!("tool {n}")))?,
+        None => library
+            .find(|t| t.kind == ToolKind::EndMill)
+            .ok_or_else(|| CamError::NoTool(String::from("end mill")))?,
+    };
+    let r = cutter.diameter / 2.0;
+    let index = unique_face(rebuilt, face)?;
+    let (point, normal) = kernel
+        .face_plane(body, index)
+        .map_err(|e| CamError::Contour(e.to_string()))?;
+    if normal[2].abs() < 1.0 - 1e-9 {
+        return Err(CamError::Contour(String::from(
+            "the face is not square to the spindle",
+        )));
+    }
+    let outline = kernel
+        .face_outline(body, index, r)
+        .map_err(|e| CamError::Contour(e.to_string()))?;
+    let flip = setup.side == Side::Bottom;
+    let mut path: Vec<Piece> = outline
+        .into_iter()
+        .map(|s| match s {
+            cndt_kernel::OutlineSegment::Line { start, end } => Piece::Line {
+                start: setup.program_point(start),
+                end: setup.program_point(end),
+            },
+            // Turning the part over mirrors the arcs' sense.
+            cndt_kernel::OutlineSegment::Arc {
+                start,
+                end,
+                center,
+                ccw,
+            } => Piece::Arc {
+                start: setup.program_point(start),
+                end: setup.program_point(end),
+                center: setup.program_point(center),
+                ccw: ccw != flip,
+            },
+        })
+        .collect();
+    // Climb milling outside a part with a clockwise spindle: go clockwise.
+    let samples: Vec<Point3> = path.iter().flat_map(Piece::samples).collect();
+    let n = samples.len();
+    let area: f64 = (0..n)
+        .filter_map(|i| Some((samples.get(i)?, samples.get((i + 1) % n)?)))
+        .map(|(a, b)| a.x * b.y - b.x * a.y)
+        .sum::<f64>()
+        / 2.0;
+    if area > 0.0 {
+        path = path.into_iter().rev().map(Piece::reversed).collect();
+    }
+    // Start in the middle of the longest straight side.
+    let longest = path
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| match *p {
+            Piece::Line { start, end } => Some((i, (end.x - start.x).hypot(end.y - start.y))),
+            Piece::Arc { .. } => None,
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+        .ok_or_else(|| {
+            CamError::Contour(String::from(
+                "the outline has no straight side to start from",
+            ))
+        })?;
+    path.rotate_left(longest);
+    let Some(Piece::Line { start, end }) = path.first().copied() else {
+        return Err(CamError::Contour(String::from(
+            "the outline has no straight side to start from",
+        )));
+    };
+    let mid = Point3::new(
+        round3((start.x + end.x) / 2.0),
+        round3((start.y + end.y) / 2.0),
+        0.0,
+    );
+    path.remove(0);
+    path.insert(0, Piece::Line { start: mid, end });
+    path.push(Piece::Line { start, end: mid });
+    // Outward from a clockwise loop is to the left of travel.
+    let length = (end.x - start.x).hypot(end.y - start.y);
+    let (ux, uy) = ((end.x - start.x) / length, (end.y - start.y) / length);
+    let lead = document.cam().stock.map_or(0.0, |s| s.side) + 2.0;
+    let entry = Point3::new(round3(mid.x - uy * lead), round3(mid.y + ux * lead), 0.0);
+
+    let face_z = setup.program_point(point).z;
+    let total = depth.unwrap_or(-face_z);
+    if !(total.is_finite() && total > 0.0) {
+        return Err(CamError::Contour(format!(
+            "the depth must be more than zero, not {total}"
+        )));
+    }
+    let passes = ((total / (cutter.diameter * CONTOUR_DEPTH_PER_PASS)).ceil() as usize).max(1);
+    let levels: Vec<f64> = (1..=passes)
+        .map(|k| round3(-total * k as f64 / passes as f64))
+        .collect();
+    let stock_top = document.cam().stock.map_or(0.0, |s| match setup.side {
+        Side::Top => s.top,
+        Side::Bottom => s.bottom,
+    });
+    let safe = round3(setup.safe_z.max(stock_top + setup.clearance));
+    let at = |p: Point3, z: f64| Point3::new(round3(p.x), round3(p.y), z);
+    let mut steps = vec![
+        Step::Event(Event::ToolChange {
+            number,
+            description: if cutter.description.is_empty() {
+                format!("tool {number}")
+            } else {
+                cutter.description.clone()
+            },
+        }),
+        Step::Event(Event::SpindleOn {
+            rpm: cutter.rpm,
+            direction: SpindleDirection::Clockwise,
+        }),
+        Step::Event(Event::Coolant {
+            mode: Coolant::Flood,
+        }),
+        Step::Move(Move::Rapid {
+            to: at(entry, safe),
+        }),
+        Step::Move(Move::Rapid {
+            to: at(entry, round3(stock_top + setup.clearance)),
+        }),
+    ];
+    let plunge = cutter.feed / 3.0;
+    for z in levels {
+        steps.push(Step::Move(Move::Linear {
+            to: at(entry, z),
+            feed: plunge,
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: at(mid, z),
+            feed: cutter.feed,
+        }));
+        for piece in &path {
+            steps.push(Step::Move(match *piece {
+                Piece::Line { end, .. } => Move::Linear {
+                    to: at(end, z),
+                    feed: cutter.feed,
+                },
+                Piece::Arc {
+                    end, center, ccw, ..
+                } => Move::Arc {
+                    to: at(end, z),
+                    center: at(center, z),
+                    direction: if ccw {
+                        ArcDirection::CounterClockwise
+                    } else {
+                        ArcDirection::Clockwise
+                    },
+                    feed: cutter.feed,
+                },
+            }));
+        }
+        steps.push(Step::Move(Move::Linear {
+            to: at(entry, z),
+            feed: cutter.feed,
+        }));
+    }
+    steps.push(Step::Move(Move::Rapid {
+        to: at(entry, safe),
+    }));
+    steps.push(Step::Event(Event::Coolant { mode: Coolant::Off }));
+    Ok(Operation {
+        name: format!("Contour {} mm deep", round3(total)),
+        steps,
+    })
+}
+
 /// Plans every operation of a stored setup (decision 0014).
 ///
 /// # Errors
@@ -572,6 +864,7 @@ fn face(
 pub fn plan_setup(
     document: &Document,
     rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
     setup_id: Option<u32>,
 ) -> Result<Planned, CamError> {
     let cam = document.cam();
@@ -597,6 +890,15 @@ pub fn plan_setup(
     let mut notes = Vec::new();
     for op in &entry.setup.operations {
         match op.operation {
+            OperationDef::Contour {
+                ref face,
+                tool,
+                depth,
+            } => {
+                program.operations.push(contour(
+                    document, rebuilt, kernel, &setup, &library, face, tool, depth,
+                )?);
+            }
             OperationDef::Face { tool } => {
                 program
                     .operations
@@ -772,14 +1074,20 @@ mod tests {
         .unwrap();
         let r = rebuild(&d, &OpenCascade);
         // From the top the hole does not face the spindle.
-        assert_eq!(plan_setup(&d, &r, Some(top)), Err(CamError::Nothing));
+        assert_eq!(
+            plan_setup(&d, &r, &OpenCascade, Some(top)),
+            Err(CamError::Nothing)
+        );
         // From below it does: flipped about X, model y = 10 is program
         // y = 56 − 10 = 46, and the bottom face is Z0.
-        let planned = plan_setup(&d, &r, Some(under)).unwrap();
+        let planned = plan_setup(&d, &r, &OpenCascade, Some(under)).unwrap();
         assert_eq!(planned.program.work_offset, 2);
         let spot = first_cycle(&planned);
         assert_eq!(spot.holes, vec![Point3::new(10.0, 46.0, 0.0)]);
-        assert_eq!(plan_setup(&d, &r, Some(9)), Err(CamError::UnknownSetup(9)));
+        assert_eq!(
+            plan_setup(&d, &r, &OpenCascade, Some(9)),
+            Err(CamError::UnknownSetup(9))
+        );
     }
 
     #[test]
@@ -799,14 +1107,17 @@ mod tests {
         })
         .unwrap();
         let r = rebuild(&d, &OpenCascade);
-        assert_eq!(plan_setup(&d, &r, Some(top)), Err(CamError::NoStock));
+        assert_eq!(
+            plan_setup(&d, &r, &OpenCascade, Some(top)),
+            Err(CamError::NoStock)
+        );
         d.edit_cam(CamEdit::SetStock(cndt_model::cam::Stock {
             side: 2.0,
             top: 2.0,
             bottom: 3.0,
         }))
         .unwrap();
-        let planned = plan_setup(&d, &r, Some(top)).unwrap();
+        let planned = plan_setup(&d, &r, &OpenCascade, Some(top)).unwrap();
         planned.program.validate().unwrap();
         let moves: Vec<(Point3, bool)> = planned.program.operations[0]
             .steps
@@ -856,14 +1167,109 @@ mod tests {
             operation: OperationDef::Face { tool: None },
         })
         .unwrap();
-        let planned = plan_setup(&d, &r, Some(under)).unwrap();
+        let planned = plan_setup(&d, &r, &OpenCascade, Some(under)).unwrap();
         assert_eq!(planned.program.operations[0].name, "Face 3 mm");
+    }
+
+    #[test]
+    fn the_outside_contour_climbs_one_radius_out() {
+        let mut d = block_with_bottom_hole();
+        d.edit_cam(CamEdit::SetStock(cndt_model::cam::Stock {
+            side: 2.0,
+            top: 2.0,
+            bottom: 3.0,
+        }))
+        .unwrap();
+        let top = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+            })
+            .unwrap()
+            .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        let bottom = r
+            .faces
+            .iter()
+            .flatten()
+            .map(ToString::to_string)
+            .find(|n| n.starts_with("f0/start/"))
+            .unwrap();
+        d.edit_cam(CamEdit::AddOperation {
+            setup: top,
+            operation: OperationDef::Contour {
+                face: bottom,
+                tool: None,
+                depth: None,
+            },
+        })
+        .unwrap();
+        let planned = plan_setup(&d, &r, &OpenCascade, Some(top)).unwrap();
+        planned.program.validate().unwrap();
+        let op = &planned.program.operations[0];
+        assert_eq!(op.name, "Contour 20 mm deep");
+        let cuts: Vec<Point3> = op
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Move(Move::Linear { to, .. } | Move::Arc { to, .. }) => Some(*to),
+                _ => None,
+            })
+            .collect();
+        // Two 10 mm levels with the 10 mm end mill.
+        let levels: std::collections::BTreeSet<i64> =
+            cuts.iter().map(|p| (p.z * 1000.0) as i64).collect();
+        assert_eq!(levels.into_iter().collect::<Vec<_>>(), [-20000, -10000]);
+        // On the path the cutter's centre is exactly 5 mm outside the
+        // 96 × 56 part (a sharp-cornered box here, so corners are R5 arcs).
+        let level: Vec<Point3> = cuts
+            .iter()
+            .copied()
+            .filter(|p| (p.z + 10.0).abs() < 1e-9)
+            .collect();
+        let on_path = &level[1..level.len() - 1];
+        for p in on_path {
+            let dx = (-p.x).max(p.x - 96.0).max(0.0);
+            let dy = (-p.y).max(p.y - 56.0).max(0.0);
+            assert!(
+                (dx.hypot(dy) - 5.0).abs() < 1e-6,
+                "{p:?} is not 5 mm outside the part"
+            );
+        }
+        // Clockwise: the signed area of the path is negative.
+        let n = on_path.len();
+        let area: f64 = (0..n)
+            .map(|i| on_path[i].x * on_path[(i + 1) % n].y - on_path[(i + 1) % n].x * on_path[i].y)
+            .sum();
+        assert!(area < 0.0, "climb milling runs clockwise");
+        // Plunges (feeds downwards) only outside the 2 mm stock allowance.
+        let mut last = Point3::new(0.0, 0.0, 100.0);
+        for s in &op.steps {
+            if let Step::Move(Move::Linear { to, .. }) = s {
+                if to.z < last.z - 1e-9 {
+                    assert!(
+                        to.x < -2.0 - 5.0
+                            || to.x > 98.0 + 5.0
+                            || to.y < -2.0 - 5.0
+                            || to.y > 58.0 + 5.0,
+                        "plunge at {to:?}"
+                    );
+                }
+                last = *to;
+            } else if let Step::Move(Move::Rapid { to }) = s {
+                last = *to;
+            }
+        }
     }
 
     #[test]
     fn no_setups_says_so() {
         let d = block_with_bottom_hole();
         let r = rebuild(&d, &OpenCascade);
-        assert_eq!(plan_setup(&d, &r, None), Err(CamError::NoSetups));
+        assert_eq!(
+            plan_setup(&d, &r, &OpenCascade, None),
+            Err(CamError::NoSetups)
+        );
     }
 }

@@ -9,10 +9,9 @@ publish.workspace = true
 [dependencies]
 cndt-cam-core.workspace = true
 cndt-geom.workspace = true
+cndt-kernel.workspace = true
 cndt-model.workspace = true
 
-[dev-dependencies]
-cndt-kernel.workspace = true
 
 [lints]
 workspace = true

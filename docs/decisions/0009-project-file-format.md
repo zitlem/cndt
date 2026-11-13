@@ -79,3 +79,7 @@ CAM definitions (decision 0014) under `cam`: `stock` (`side`, `top`, `bottom` al
 ## Version 10 (2026-11-13)
 
 Facing operations in a setup: `{"type": "face"}`, optionally with `"tool": <number>`. Older builds refuse these files with the update message.
+
+## Version 11 (2026-11-13)
+
+Contour operations in a setup: `{"type": "contour", "face": "<face name>"}`, optionally with `"tool"` and `"depth"` (mm below Z0). Older builds refuse these files with the update message.

@@ -505,7 +505,7 @@ impl Registry {
             },
             CommandSpec {
                 name: "cam.add_operation",
-                description: "Add an operation at the end of a setup. Kinds: face (face the stock down to the part), holes (spot, drill, tap and ream every hole facing the spindle).",
+                description: "Add an operation at the end of a setup. Kinds: face (face the stock down to the part), contour (follow a face's outline outside it), holes (spot, drill, tap and ream every hole facing the spindle).",
                 args: &[
                     ArgSpec {
                         name: "setup",
@@ -517,12 +517,39 @@ impl Registry {
                         name: "type",
                         kind: ArgKind::Text,
                         required: true,
-                        description: "holes",
+                        description: "face, contour or holes",
+                    },
+                    ArgSpec {
+                        name: "tool",
+                        kind: ArgKind::Id,
+                        required: false,
+                        description: "For face and contour: the tool number; by default the first face mill or end mill.",
+                    },
+                    ArgSpec {
+                        name: "face",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "For contour: the flat face whose outline is followed.",
+                    },
+                    ArgSpec {
+                        name: "depth",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "For contour: millimetres below Z0; by default the face's depth.",
                     },
                 ],
                 build: |args| {
                     let operation = match text(args, "type")?.as_str() {
                         "holes" => cndt_model::cam::OperationDef::Holes,
+                        "contour" => cndt_model::cam::OperationDef::Contour {
+                            face: text(args, "face")?,
+                            tool: if args.contains_key("tool") {
+                                Some(id(args, "tool")?)
+                            } else {
+                                None
+                            },
+                            depth: optional_number(args, "depth")?,
+                        },
                         "face" => cndt_model::cam::OperationDef::Face {
                             tool: if args.contains_key("tool") {
                                 Some(id(args, "tool")?)
@@ -531,7 +558,9 @@ impl Registry {
                             },
                         },
                         other => {
-                            return Err(format!("unknown operation {other:?}; use face or holes"));
+                            return Err(format!(
+                                "unknown operation {other:?}; use face, contour or holes"
+                            ));
                         }
                     };
                     cam(
@@ -1603,7 +1632,10 @@ mod tests {
             ("cam.set_stock", json!({"side": 2, "top": 2, "bottom": 3})),
             ("cam.add_setup", json!({"side": "top"})),
             ("cam.remove_setup", json!({"setup": 0})),
-            ("cam.add_operation", json!({"setup": 0, "type": "holes"})),
+            (
+                "cam.add_operation",
+                json!({"setup": 0, "type": "contour", "face": "f0/start/4-5-6-7", "tool": 11, "depth": 20}),
+            ),
             ("cam.remove_operation", json!({"setup": 0, "operation": 0})),
             (
                 "cam.set_tool",

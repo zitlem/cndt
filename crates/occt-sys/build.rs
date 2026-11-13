@@ -28,6 +28,7 @@ const CORE_LIBS: &[&str] = &[
     "TKBool",
     "TKShHealing",
     "TKFillet",
+    "TKOffset",
 ];
 
 /// STEP support: one library from 7.8 on, four before.

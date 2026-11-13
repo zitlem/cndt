@@ -20,6 +20,21 @@ struct HistoryHandle {
 }
 
 #[repr(C)]
+struct SegmentsHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawSegment {
+    kind: i32,
+    start: [f64; 3],
+    end: [f64; 3],
+    center: [f64; 3],
+    ccw: i32,
+}
+
+#[repr(C)]
 struct PolylinesHandle {
     _private: [u8; 0],
 }
@@ -138,6 +153,20 @@ unsafe extern "C" {
         points_len: *mut usize,
     );
     fn cndt_occt_free_polylines(lines: *mut PolylinesHandle);
+    fn cndt_occt_face_outline(
+        shape: *const ShapeHandle,
+        face: u32,
+        distance: f64,
+        out: *mut *mut SegmentsHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn cndt_occt_segments_view(
+        segments: *const SegmentsHandle,
+        items: *mut *const RawSegment,
+        len: *mut usize,
+    );
+    fn cndt_occt_free_segments(segments: *mut SegmentsHandle);
     fn cndt_occt_face_plane(
         shape: *const ShapeHandle,
         face: u32,
@@ -574,6 +603,81 @@ pub fn edge_polylines(shape: &Shape, deflection: f64) -> Result<Vec<Vec<f32>>, O
     Ok(lines)
 }
 
+/// One piece of an outline, in running order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Segment {
+    /// A straight line.
+    Line {
+        /// Start.
+        start: [f64; 3],
+        /// End.
+        end: [f64; 3],
+    },
+    /// A circular arc.
+    Arc {
+        /// Start.
+        start: [f64; 3],
+        /// End.
+        end: [f64; 3],
+        /// Centre.
+        center: [f64; 3],
+        /// Counter-clockwise about +Z.
+        ccw: bool,
+    },
+}
+
+/// The outer boundary of a flat face parallel to XY, offset outwards by
+/// `distance` (0 for the boundary itself), as lines and arcs in running
+/// order. Corners grow as arcs.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] if the offset is not one closed loop.
+pub fn face_outline(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Segment>, OcctError> {
+    let mut out: *mut SegmentsHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `out` is a valid out-pointer; `err` is
+    // writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_face_outline(
+            shape.ptr.as_ptr(),
+            face,
+            distance,
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK || out.is_null() {
+        return Err(status_error(code, &err));
+    }
+    let mut items: *const RawSegment = std::ptr::null();
+    let mut len = 0_usize;
+    // SAFETY: `out` is a live handle; the out-pointers are valid locals.
+    unsafe { cndt_occt_segments_view(out, &mut items, &mut len) };
+    // SAFETY: the view points into `out`'s vector of `len` segments, which is
+    // freed only after this copy.
+    let raw = unsafe { copy_array(items, len) };
+    // SAFETY: `out` is owned here and freed exactly once.
+    unsafe { cndt_occt_free_segments(out) };
+    Ok(raw
+        .into_iter()
+        .map(|s| match s.kind {
+            1 => Segment::Arc {
+                start: s.start,
+                end: s.end,
+                center: s.center,
+                ccw: s.ccw != 0,
+            },
+            _ => Segment::Line {
+                start: s.start,
+                end: s.end,
+            },
+        })
+        .collect())
+}
+
 /// Fuses or cuts two shapes.
 ///
 /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -908,6 +1012,37 @@ mod tests {
         for p in circles[0].chunks(3) {
             assert!((f64::from(p[0]).hypot(f64::from(p[1])) - 5.0).abs() < 0.02);
         }
+    }
+
+    #[test]
+    fn outlines_offset_outwards_with_round_corners() {
+        let block = extrude(&[rectangle(20.0, 10.0)], Z, 5.0).unwrap();
+        let (_, top) = *block.history.iter().find(|s| s.0 == 5).unwrap();
+        let exact = face_outline(&block.shape, top, 0.0).unwrap();
+        assert_eq!(exact.len(), 4);
+        let grown = face_outline(&block.shape, top, 3.0).unwrap();
+        // Four sides pushed out by 3, joined by four R3 corner arcs.
+        let arcs: Vec<_> = grown
+            .iter()
+            .filter(|s| matches!(s, Segment::Arc { .. }))
+            .collect();
+        assert_eq!((grown.len(), arcs.len()), (8, 4), "{grown:?}");
+        for s in &grown {
+            if let Segment::Arc { start, center, .. } = s {
+                assert!(((start[0] - center[0]).hypot(start[1] - center[1]) - 3.0).abs() < 1e-7);
+            }
+        }
+        // Connected end to end, and closed.
+        let ends = |s: &Segment| match *s {
+            Segment::Line { start, end } | Segment::Arc { start, end, .. } => (start, end),
+        };
+        for pair in grown.windows(2) {
+            let ((_, a), (b, _)) = (ends(&pair[0]), ends(&pair[1]));
+            assert!((a[0] - b[0]).hypot(a[1] - b[1]) < 1e-7);
+        }
+        let x: Vec<f64> = grown.iter().map(|s| ends(s).0[0]).collect();
+        assert!(x.iter().copied().fold(f64::MAX, f64::min) < -2.999);
+        assert!(x.iter().copied().fold(f64::MIN, f64::max) > 22.999);
     }
 
     #[test]

@@ -392,6 +392,21 @@ fn the_cndt_test_block() {
         "Setup 1 (top)"
     );
     s.exec("cam.add_operation", json!({"setup": 0, "type": "face"}));
+    // The outside profile, followed down the walls to the part's bottom
+    // face (the 3 mm left under it holds the part until setup 2).
+    let underside = s.state()["body"]["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|names| names.as_array().unwrap().iter())
+        .filter_map(Value::as_str)
+        .find(|name| name.starts_with("f0/start/"))
+        .unwrap()
+        .to_owned();
+    s.exec(
+        "cam.add_operation",
+        json!({"setup": 0, "type": "contour", "face": underside}),
+    );
     s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
     // The bottom setup: the part flipped about X. Face it to thickness; no
     // holes face it yet, so the holes operation adds nothing.

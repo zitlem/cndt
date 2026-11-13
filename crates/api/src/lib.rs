@@ -333,8 +333,13 @@ impl Api {
             })?;
         let post = cndt_post::Post::from_toml(text)
             .map_err(|e| ApiError::new("internal", e.to_string()))?;
-        let planned = cndt_process_mill::plan_setup(self.session.document(), &self.rebuilt, setup)
-            .map_err(|e| ApiError::new("cam", e.to_string()))?;
+        let planned = cndt_process_mill::plan_setup(
+            self.session.document(),
+            &self.rebuilt,
+            self.kernel.as_ref(),
+            setup,
+        )
+        .map_err(|e| ApiError::new("cam", e.to_string()))?;
         let gcode = post
             .run(&planned.program, env!("CARGO_PKG_VERSION"))
             .map_err(|e| ApiError::new("post", e.to_string()))?;
