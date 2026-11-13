@@ -103,6 +103,17 @@ impl Setup {
         })
     }
 
+    /// A program point in model coordinates (the inverse of
+    /// [`Setup::program_point`]).
+    #[must_use]
+    pub fn model_point(&self, p: Point3) -> Point3 {
+        let o = self.origin;
+        match self.side {
+            Side::Top => Point3::new(p.x + o.x, p.y + o.y, p.z + o.z),
+            Side::Bottom => Point3::new(p.x + o.x, o.y - p.y, o.z - p.z),
+        }
+    }
+
     /// A model point in program coordinates.
     pub fn program_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
@@ -165,6 +176,8 @@ impl std::error::Error for CamError {}
 pub struct Planned {
     /// The program.
     pub program: Program,
+    /// Where the setup puts the part, for previews.
+    pub setup: Option<Setup>,
     /// Things left out, with reasons, for the user to see.
     pub notes: Vec<String>,
 }
@@ -472,7 +485,11 @@ pub fn hole_program(
         work_offset: setup.work_offset,
         operations,
     };
-    Ok(Planned { program, notes })
+    Ok(Planned {
+        program,
+        notes,
+        setup: None,
+    })
 }
 
 /// Most material a face mill takes in one pass, in millimetres.
@@ -1364,6 +1381,103 @@ fn chamfer_mill(
     })
 }
 
+/// One straight piece of a toolpath preview, in model coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewSegment {
+    /// A rapid move rather than a cut.
+    pub rapid: bool,
+    /// Where it starts.
+    pub from: Point3,
+    /// Where it ends.
+    pub to: Point3,
+}
+
+/// A planned program as straight pieces in model coordinates, for drawing:
+/// arcs are split into short chords, cycles into their rapids and feeds.
+#[must_use]
+pub fn preview(program: &Program, setup: &Setup) -> Vec<PreviewSegment> {
+    let mut out = Vec::new();
+    let mut at: Option<Point3> = None;
+    let push = |out: &mut Vec<PreviewSegment>, from: Option<Point3>, to: Point3, rapid: bool| {
+        if let Some(from) = from {
+            out.push(PreviewSegment {
+                rapid,
+                from: setup.model_point(from),
+                to: setup.model_point(to),
+            });
+        }
+    };
+    for step in program.operations.iter().flat_map(|op| &op.steps) {
+        let Step::Move(motion) = step else { continue };
+        match motion {
+            Move::Rapid { to } => {
+                push(&mut out, at, *to, true);
+                at = Some(*to);
+            }
+            Move::Linear { to, .. } => {
+                push(&mut out, at, *to, false);
+                at = Some(*to);
+            }
+            Move::Arc {
+                to,
+                center,
+                direction,
+                ..
+            } => {
+                let Some(start) = at else {
+                    at = Some(*to);
+                    continue;
+                };
+                let r = (start.x - center.x).hypot(start.y - center.y);
+                let a0 = (start.y - center.y).atan2(start.x - center.x);
+                let a1 = (to.y - center.y).atan2(to.x - center.x);
+                let tau = std::f64::consts::TAU;
+                let ccw = *direction == ArcDirection::CounterClockwise;
+                let mut sweep = if ccw {
+                    (a1 - a0).rem_euclid(tau)
+                } else {
+                    -(a0 - a1).rem_euclid(tau)
+                };
+                if sweep.abs() < 1e-9 {
+                    sweep = if ccw { tau } else { -tau };
+                }
+                let n = ((sweep.abs() / tau) * 48.0).ceil().max(2.0) as usize;
+                let mut prev = start;
+                for k in 1..=n {
+                    let f = k as f64 / n as f64;
+                    let a = a0 + sweep * f;
+                    let p = Point3::new(
+                        center.x + r * a.cos(),
+                        center.y + r * a.sin(),
+                        start.z + (to.z - start.z) * f,
+                    );
+                    push(&mut out, Some(prev), p, false);
+                    prev = p;
+                }
+                at = Some(*to);
+            }
+            Move::Cycle(cycle) => {
+                let Some(start) = at else { continue };
+                for hole in &cycle.holes {
+                    let over = |z: f64| Point3::new(hole.x, hole.y, z);
+                    push(&mut out, at, over(start.z), true);
+                    push(&mut out, Some(over(start.z)), over(cycle.clearance), true);
+                    push(
+                        &mut out,
+                        Some(over(cycle.clearance)),
+                        over(cycle.bottom),
+                        false,
+                    );
+                    push(&mut out, Some(over(cycle.bottom)), over(start.z), true);
+                    at = Some(over(start.z));
+                }
+            }
+            Move::Dwell { .. } => {}
+        }
+    }
+    out
+}
+
 /// Plans every operation of a stored setup (decision 0014).
 ///
 /// # Errors
@@ -1437,7 +1551,11 @@ pub fn plan_setup(
     if program.operations.is_empty() {
         return Err(CamError::Nothing);
     }
-    Ok(Planned { program, notes })
+    Ok(Planned {
+        program,
+        notes,
+        setup: Some(setup),
+    })
 }
 
 /// Mills counterbores: for each, a helix down at most 3° per turn to the

@@ -466,6 +466,18 @@ fn the_cndt_test_block() {
     assert!(!notes.contains("Counterbored M5"), "{notes}");
     assert!(gcode.contains("(COUNTERBORE 9.5 MM X 5.4 MM)"), "{gcode}");
     check_golden("test-block-setup-1-fanuc-mill", gcode);
+    // The preview for the 3D view: cuts and rapids, in model coordinates.
+    let preview = s.api.toolpath_preview(Some(0)).unwrap();
+    assert_eq!(&preview[..8], b"CNDTTPH1");
+    let count = u32::from_le_bytes(preview[8..12].try_into().unwrap()) as usize;
+    assert_eq!(preview.len(), 12 + count * 25);
+    assert!(count > 1000, "{count}");
+    // Written to a file as well.
+    let nc = std::env::temp_dir().join(format!("cndt-test-block-{}.nc", std::process::id()));
+    let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 0, "path": nc}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(std::fs::read_to_string(&nc).unwrap(), gcode);
+    let _ = std::fs::remove_file(nc);
     // GRBL cannot rigid-tap, and says so.
     let reply = s.call(json!({"method": "post", "post": "grbl"}));
     assert!(

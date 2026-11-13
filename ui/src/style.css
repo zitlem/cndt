@@ -854,3 +854,68 @@ button:disabled {
 .panel > * {
   flex-shrink: 0;
 }
+
+/* Manufacture */
+.cam-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.cam-actions button,
+.setup-list button,
+.setup-list select {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.setup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.setup-list > li.showing {
+  border-color: #4fd1c5;
+}
+
+.setup-list .head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.setup-list .head .name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.setup-list .ops {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.setup-list .row {
+  display: flex;
+  gap: 6px;
+}
+
+.setup-list select {
+  flex: 1;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel-raised);
+}

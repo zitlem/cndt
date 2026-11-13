@@ -122,12 +122,29 @@ export interface BodyView {
   edges: [number, number][];
 }
 
+export type CamOperation =
+  | { type: "holes" }
+  | { type: "face"; tool?: number }
+  | { type: "contour"; face: string; tool?: number; depth?: number }
+  | { type: "pocket"; floor: string; tool?: number }
+  | { type: "chamfer"; face: string; width: number; tool?: number };
+
+export interface Cam {
+  stock?: { side: number; top: number; bottom: number };
+  tools?: Record<string, { kind: { type: string }; diameter: number; description: string }>;
+  setups?: {
+    id: number;
+    setup: { name: string; side: "top" | "bottom"; work_offset: number; operations: { id: number; operation: CamOperation }[] };
+  }[];
+}
+
 export interface DocumentState {
   document: {
     name: string;
     parameters: Record<string, Parameter>;
     sketches?: Record<string, SketchRecord>;
     features?: { id: number; feature: Feature }[];
+    cam?: Cam;
   };
   path: string | null;
   dirty: boolean;
@@ -269,4 +286,34 @@ export async function bodyEdges(): Promise<Float32Array[]> {
     offset += points * 12;
   }
   return lines;
+}
+
+/** A setup's toolpath as segments in model coordinates. */
+export interface Toolpath {
+  rapids: Float32Array;
+  cuts: Float32Array;
+}
+
+export async function toolpathPreview(setup: number): Promise<Toolpath> {
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await invoke<ArrayBuffer>("toolpath_preview", { setup });
+  } catch (error) {
+    throw new ApiFailure("cam", String(error));
+  }
+  const view = new DataView(buffer);
+  const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
+  if (buffer.byteLength < 12 || magic !== "CNDTTPH1") {
+    throw new ApiFailure("internal", "the toolpath data is not in the expected format");
+  }
+  const count = view.getUint32(8, true);
+  if (buffer.byteLength !== 12 + count * 25) throw new ApiFailure("internal", "the toolpath data has the wrong length");
+  const rapids: number[] = [];
+  const cuts: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const at = 12 + i * 25;
+    const out = view.getUint8(at) === 0 ? rapids : cuts;
+    for (let k = 0; k < 6; k++) out.push(view.getFloat32(at + 1 + 4 * k, true));
+  }
+  return { rapids: new Float32Array(rapids), cuts: new Float32Array(cuts) };
 }
