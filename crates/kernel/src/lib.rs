@@ -141,6 +141,20 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// [`KernelError::Internal`] if the kernel fails.
     fn edge_polylines(&self, body: &Body, deflection: f64) -> Result<Vec<Vec<f32>>, KernelError>;
 
+    /// The outer boundary of flat face `face` (parallel to XY), offset
+    /// outwards by `distance` (0 for the boundary itself), as lines and arcs
+    /// in running order. Corners grow as arcs.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if the offset is not one closed loop.
+    fn face_outline(
+        &self,
+        body: &Body,
+        face: u32,
+        distance: f64,
+    ) -> Result<Vec<OutlineSegment>, KernelError>;
+
     /// Chamfers or fillets edges of a body.
     ///
     /// History sources: input face `i` is `i`; the face made from the `k`-th
@@ -228,6 +242,29 @@ pub enum Blend {
     Chamfer(f64),
     /// Rounds it to a radius.
     Fillet(f64),
+}
+
+/// One piece of an outline, in model coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OutlineSegment {
+    /// A straight line.
+    Line {
+        /// Start.
+        start: Point3,
+        /// End.
+        end: Point3,
+    },
+    /// A circular arc.
+    Arc {
+        /// Start.
+        start: Point3,
+        /// End.
+        end: Point3,
+        /// Centre.
+        center: Point3,
+        /// Counter-clockwise about +Z.
+        ccw: bool,
+    },
 }
 
 /// How a boolean combines two bodies.
@@ -375,6 +412,36 @@ impl Kernel for OpenCascade {
 
     fn edge_polylines(&self, body: &Body, deflection: f64) -> Result<Vec<Vec<f32>>, KernelError> {
         cndt_occt_sys::edge_polylines(&body.0, deflection).map_err(modelling)
+    }
+
+    fn face_outline(
+        &self,
+        body: &Body,
+        face: u32,
+        distance: f64,
+    ) -> Result<Vec<OutlineSegment>, KernelError> {
+        let p = |a: [f64; 3]| Point3::new(a[0], a[1], a[2]);
+        Ok(cndt_occt_sys::face_outline(&body.0, face, distance)
+            .map_err(modelling)?
+            .into_iter()
+            .map(|s| match s {
+                cndt_occt_sys::Segment::Line { start, end } => OutlineSegment::Line {
+                    start: p(start),
+                    end: p(end),
+                },
+                cndt_occt_sys::Segment::Arc {
+                    start,
+                    end,
+                    center,
+                    ccw,
+                } => OutlineSegment::Arc {
+                    start: p(start),
+                    end: p(end),
+                    center: p(center),
+                    ccw,
+                },
+            })
+            .collect())
     }
 
     fn edges(&self, body: &Body) -> Result<Vec<(u32, u32)>, KernelError> {

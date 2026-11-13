@@ -164,6 +164,18 @@ pub enum Side {
 pub enum OperationDef {
     /// Every hole facing the spindle: spot, drill, tap and ream as needed.
     Holes,
+    /// Follows the outline of a flat face with the cutter outside it, down
+    /// to that face's depth or `depth`: the outside profile.
+    Contour {
+        /// The face whose outer boundary is followed, by its persistent name.
+        face: String,
+        /// The tool; by default the library's first end mill.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<u32>,
+        /// Millimetres below Z0; by default the face's own depth.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        depth: Option<f64>,
+    },
     /// Faces the stock down to the part's face on the side machined.
     Face {
         /// The tool; by default the library's first face mill.

@@ -24,6 +24,11 @@
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <GeomAbs_JoinType.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Vertex.hxx>
@@ -1113,6 +1118,170 @@ int cndt_occt_edge_polylines(
             lines->counts.push_back(count);
         }
         *out = lines.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// One segment of an outline. Layout must match `RawSegment` in
+// src/solid.rs. kind 0: line; kind 1: circular arc around `center`,
+// counter-clockwise about +Z when `ccw` is 1.
+struct cndt_segment {
+    std::int32_t kind;
+    double start[3];
+    double end[3];
+    double center[3];
+    std::int32_t ccw;
+};
+
+// Owned segments. Opaque to Rust; free with `cndt_occt_free_segments`.
+struct cndt_segments {
+    std::vector<cndt_segment> items;
+};
+
+void cndt_occt_free_segments(cndt_segments* segments) {
+    delete segments;
+}
+
+void cndt_occt_segments_view(const cndt_segments* segments, const cndt_segment** items, std::size_t* len) {
+    if (segments == nullptr || items == nullptr || len == nullptr) {
+        return;
+    }
+    *items = segments->items.data();
+    *len = segments->items.size();
+}
+
+}  // extern "C"
+
+namespace {
+
+double wire_area(const TopoDS_Wire& wire) {
+    BRepBuilderAPI_MakeFace face(wire, Standard_True);
+    if (!face.IsDone()) {
+        return 0.0;
+    }
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(face.Face(), props);
+    return props.Mass();
+}
+
+void put(double out[3], const gp_Pnt& p) {
+    out[0] = p.X();
+    out[1] = p.Y();
+    out[2] = p.Z();
+}
+
+}  // namespace
+
+extern "C" {
+
+// The outer boundary of flat face `face` (face numbers as in the history),
+// offset outwards by `distance` (0 for the boundary itself), as lines and
+// arcs in running order. Corners grow as arcs. The face must be parallel to
+// XY. Fails with kModelFailed if the offset outline is not one closed loop.
+int cndt_occt_face_outline(
+    const cndt_shape* shape,
+    std::uint32_t face,
+    double distance,
+    cndt_segments** out,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || out == nullptr || !(distance >= 0.0)) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        silence_console_output();
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(shape->shape, TopAbs_FACE, faces);
+        const int index = static_cast<int>(face) + 1;
+        if (index < 1 || index > faces.Extent()) {
+            set_error(err, err_len, "no such face");
+            return kBadArgument;
+        }
+        const TopoDS_Wire outer = BRepTools::OuterWire(TopoDS::Face(faces(index)));
+        if (outer.IsNull()) {
+            set_error(err, err_len, "the face has no outer boundary");
+            return kModelFailed;
+        }
+        TopoDS_Wire path = outer;
+        if (distance > 0.0) {
+            const double original = wire_area(outer);
+            TopoDS_Wire best;
+            for (const double signed_distance : {distance, -distance}) {
+                BRepOffsetAPI_MakeOffset offset(outer, GeomAbs_Arc, Standard_False);
+                offset.Perform(signed_distance);
+                if (!offset.IsDone()) {
+                    continue;
+                }
+                std::vector<TopoDS_Wire> wires;
+                for (TopExp_Explorer it(offset.Shape(), TopAbs_WIRE); it.More(); it.Next()) {
+                    wires.push_back(TopoDS::Wire(it.Current()));
+                }
+                if (wires.size() == 1 && wire_area(wires[0]) > original) {
+                    best = wires[0];
+                    break;
+                }
+            }
+            if (best.IsNull()) {
+                set_error(err, err_len, "the outline could not be offset into one closed loop");
+                return kModelFailed;
+            }
+            path = best;
+        }
+        auto segments = std::make_unique<cndt_segments>();
+        for (BRepTools_WireExplorer it(path); it.More(); it.Next()) {
+            const TopoDS_Edge& edge = it.Current();
+            const bool reversed = edge.Orientation() == TopAbs_REVERSED;
+            const BRepAdaptor_Curve curve(edge);
+            const double first = curve.FirstParameter();
+            const double last = curve.LastParameter();
+            const gp_Pnt a = curve.Value(reversed ? last : first);
+            const gp_Pnt b = curve.Value(reversed ? first : last);
+            if (curve.GetType() == GeomAbs_Line) {
+                cndt_segment s{};
+                s.kind = 0;
+                put(s.start, a);
+                put(s.end, b);
+                segments->items.push_back(s);
+            } else if (curve.GetType() == GeomAbs_Circle) {
+                const gp_Circ circle = curve.Circle();
+                // The circle's parameter runs counter-clockwise about its
+                // axis; traversal reverses it on a reversed edge.
+                const bool axis_up = circle.Axis().Direction().Z() > 0.0;
+                cndt_segment s{};
+                s.kind = 1;
+                put(s.start, a);
+                put(s.end, b);
+                put(s.center, circle.Location());
+                s.ccw = (axis_up != reversed) ? 1 : 0;
+                segments->items.push_back(s);
+            } else {
+                // Anything else as short straight lines.
+                GCPnts_QuasiUniformDeflection sample(curve, 0.001);
+                if (!sample.IsDone() || sample.NbPoints() < 2) {
+                    set_error(err, err_len, "an outline edge could not be followed");
+                    return kModelFailed;
+                }
+                const int n = sample.NbPoints();
+                for (int k = 1; k < n; ++k) {
+                    const int i = reversed ? n - k + 1 : k;
+                    const int j = reversed ? n - k : k + 1;
+                    cndt_segment s{};
+                    s.kind = 0;
+                    put(s.start, sample.Value(i));
+                    put(s.end, sample.Value(j));
+                    segments->items.push_back(s);
+                }
+            }
+        }
+        *out = segments.release();
         return kOk;
     } catch (const Standard_Failure& failure) {
         set_error(err, err_len, failure.GetMessageString());
