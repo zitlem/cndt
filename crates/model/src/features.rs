@@ -181,6 +181,9 @@ pub struct Rebuilt {
     pub status: BTreeMap<FeatureId, FeatureStatus>,
     /// Size of the body.
     pub properties: Option<BodyProperties>,
+    /// Where each sketch sits: for a sketch a feature uses, as placed for
+    /// the first such feature; otherwise on the finished part.
+    pub frames: BTreeMap<SketchId, FrameStatus>,
 }
 
 /// Faces named after an operation: result face → names.
@@ -203,31 +206,157 @@ fn carry(made: &Made, sources: &dyn Fn(u32) -> Option<BTreeSet<FaceName>>) -> Na
     names
 }
 
-/// Sketch coordinates to model coordinates on an origin plane.
-fn to_model(plane: Plane, x: f64, y: f64) -> Point3 {
-    match plane {
-        Plane::Xy => Point3::new(x, y, 0.0),
-        Plane::Xz => Point3::new(x, 0.0, y),
-        Plane::Yz => Point3::new(0.0, x, y),
+/// Where a sketch sits in the model: its origin, axes and normal, all in
+/// model coordinates. Counter-clockwise in the sketch is counter-clockwise
+/// about the normal.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Frame {
+    /// Sketch (0, 0).
+    pub origin: Point3,
+    /// Sketch +X, a unit vector.
+    pub x: [f64; 3],
+    /// Sketch +Y, a unit vector.
+    pub y: [f64; 3],
+    /// The sketch's normal: out of the part for a face sketch.
+    pub normal: [f64; 3],
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn unit(a: [f64; 3]) -> Option<[f64; 3]> {
+    let length = dot(a, a).sqrt();
+    (length > 1e-9).then(|| [a[0] / length, a[1] / length, a[2] / length])
+}
+
+impl Frame {
+    /// The frame of an origin plane, or `None` for a face.
+    #[must_use]
+    pub fn of_origin_plane(plane: &Plane) -> Option<Self> {
+        let o = Point3::new(0.0, 0.0, 0.0);
+        let (x, y) = match plane {
+            Plane::Xy => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            Plane::Xz => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            Plane::Yz => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+            Plane::Face(_) => return None,
+        };
+        Some(Self {
+            origin: o,
+            x,
+            y,
+            normal: cross(x, y),
+        })
+    }
+
+    /// The frame of a flat face through `point` with outward `normal`. The
+    /// origin is the model origin projected onto the face, and X is the
+    /// model X axis projected onto it (model Y when X is along the normal),
+    /// so a top face's sketch coordinates are the model's X and Y.
+    #[must_use]
+    pub fn on_face(point: Point3, normal: [f64; 3]) -> Option<Self> {
+        let n = unit(normal)?;
+        let p = [point.x, point.y, point.z];
+        let d = dot(p, n);
+        let origin = Point3::new(n[0] * d, n[1] * d, n[2] * d);
+        let project = |a: [f64; 3]| {
+            let k = dot(a, n);
+            unit([a[0] - k * n[0], a[1] - k * n[1], a[2] - k * n[2]])
+        };
+        let x = project([1.0, 0.0, 0.0]).or_else(|| project([0.0, 1.0, 0.0]))?;
+        Some(Self {
+            origin,
+            x,
+            y: cross(n, x),
+            normal: n,
+        })
+    }
+
+    /// A sketch point in model coordinates.
+    #[must_use]
+    pub fn at(&self, x: f64, y: f64) -> Point3 {
+        let o = self.origin;
+        Point3::new(
+            o.x + x * self.x[0] + y * self.y[0],
+            o.y + x * self.x[1] + y * self.y[1],
+            o.z + x * self.x[2] + y * self.y[2],
+        )
     }
 }
 
-/// The plane's normal: sketch X cross sketch Y, so counter-clockwise in the
-/// sketch is counter-clockwise about it.
-const fn normal(plane: Plane) -> [f64; 3] {
-    match plane {
-        Plane::Xy => [0.0, 0.0, 1.0],
-        Plane::Xz => [0.0, -1.0, 0.0],
-        Plane::Yz => [1.0, 0.0, 0.0],
+/// Where a sketch could be placed, or why not.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum FrameStatus {
+    /// Placed.
+    Ok {
+        /// The frame.
+        frame: Frame,
+    },
+    /// Its face could not be found; says why.
+    Failed {
+        /// The reason.
+        reason: String,
+    },
+}
+
+/// Finds a sketch's frame on the part as it is at this point of the
+/// timeline. A face name must match exactly one flat face: none or several
+/// is reported, never guessed (decision 0012).
+fn resolve(
+    plane: &Plane,
+    part: Option<&(Body, Names)>,
+    kernel: &dyn Kernel,
+) -> Result<Frame, String> {
+    if let Some(frame) = Frame::of_origin_plane(plane) {
+        return Ok(frame);
     }
+    let Plane::Face(token) = plane else {
+        return Err(String::from("unknown plane"));
+    };
+    let Some((body, names)) = part else {
+        return Err(format!(
+            "its face ({token}) does not exist at this point of the timeline"
+        ));
+    };
+    let matches: Vec<usize> = names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.iter().any(|name| name.to_string() == *token))
+        .map(|(i, _)| i)
+        .collect();
+    let face = match matches.as_slice() {
+        [one] => u32::try_from(*one).map_err(|_| String::from("too many faces"))?,
+        [] => {
+            return Err(format!(
+                "the face it is on ({token}) no longer exists; edit the sketch and pick a face again"
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "the face it is on ({token}) is now split into {} faces; edit the sketch and pick one",
+                matches.len()
+            ));
+        }
+    };
+    let (point, normal) = kernel.face_plane(body, face).map_err(|e| e.to_string())?;
+    Frame::on_face(point, normal).ok_or_else(|| String::from("the face has no usable normal"))
 }
 
 /// A loop as kernel curves, with the sketch curve of each.
-fn loop_curves(sketch: &Sketch, plane: Plane, l: &Loop) -> Result<Vec<(Curve, EntityId)>, String> {
+fn loop_curves(sketch: &Sketch, frame: &Frame, l: &Loop) -> Result<Vec<(Curve, EntityId)>, String> {
     let point = |id: EntityId| {
         sketch
             .point(id)
-            .map(|p| to_model(plane, p.x, p.y))
+            .map(|p| frame.at(p.x, p.y))
             .ok_or_else(|| format!("{id} is missing"))
     };
     let mut out = Vec::with_capacity(l.curves.len());
@@ -279,6 +408,7 @@ fn extrude_tool(
     kernel: &dyn Kernel,
     id: FeatureId,
     feature: &Feature,
+    frame: &Frame,
 ) -> Result<(Body, Names), String> {
     let Feature::Extrude {
         sketch,
@@ -301,13 +431,13 @@ fn extrude_tool(
         let mut loops = Vec::new();
         let mut origins = Vec::new();
         for l in std::iter::once(&profile.outer).chain(&profile.holes) {
-            let curves = loop_curves(&record.sketch, record.plane, l)?;
+            let curves = loop_curves(&record.sketch, frame, l)?;
             origins.extend(curves.iter().map(|(_, e)| *e));
             loops.push(curves.into_iter().map(|(c, _)| c).collect::<Vec<_>>());
         }
         let n = u32::try_from(origins.len()).unwrap_or(u32::MAX);
         let made = kernel
-            .extrude(&loops, normal(record.plane), *distance)
+            .extrude(&loops, frame.normal, *distance)
             .map_err(|e| format!("the extrusion failed: {e}"))?;
         let name = |origin| {
             BTreeSet::from([FaceName {
@@ -367,10 +497,25 @@ fn combine(
 pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
     let mut part: Option<(Body, Names)> = None;
     let mut status = BTreeMap::new();
+    let mut frames = BTreeMap::new();
     for entry in document.features() {
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
-            let Feature::Extrude { operation, .. } = &entry.feature;
-            let (tool, names) = extrude_tool(document, kernel, entry.id, &entry.feature)?;
+            let Feature::Extrude {
+                operation, sketch, ..
+            } = &entry.feature;
+            let record = document
+                .sketch(*sketch)
+                .ok_or_else(|| format!("its sketch ({sketch}) has been deleted"))?;
+            let placed = resolve(&record.plane, part.as_ref(), kernel);
+            frames.entry(*sketch).or_insert_with(|| match &placed {
+                Ok(frame) => FrameStatus::Ok { frame: *frame },
+                Err(reason) => FrameStatus::Failed {
+                    reason: reason.clone(),
+                },
+            });
+            let frame =
+                placed.map_err(|reason| format!("{} cannot be placed: {reason}", record.name))?;
+            let (tool, names) = extrude_tool(document, kernel, entry.id, &entry.feature, &frame)?;
             Ok(Some(match (&part, operation) {
                 (None, Operation::Join) => (tool, names),
                 (None, Operation::Cut) => {
@@ -396,6 +541,15 @@ pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
             }
         }
     }
+    // Sketches no feature uses yet sit on the finished part.
+    for (id, record) in document.sketches() {
+        frames
+            .entry(*id)
+            .or_insert_with(|| match resolve(&record.plane, part.as_ref(), kernel) {
+                Ok(frame) => FrameStatus::Ok { frame },
+                Err(reason) => FrameStatus::Failed { reason },
+            });
+    }
     let properties = part
         .as_ref()
         .and_then(|(body, _)| kernel.properties(body).ok());
@@ -408,6 +562,7 @@ pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
         faces,
         status,
         properties,
+        frames,
     }
 }
 
@@ -522,6 +677,84 @@ mod tests {
                 .count();
             assert_eq!(on, 1, "{t}");
         }
+    }
+
+    /// The test block's pocket, drawn on the block's top face and cut down
+    /// into it (decision 0010, feature 3).
+    #[test]
+    fn a_pocket_sketched_on_the_top_face() {
+        let (mut d, _, _) = block();
+        let r = rebuild(&d, &OpenCascade);
+        let top = r
+            .faces
+            .iter()
+            .flatten()
+            .map(ToString::to_string)
+            .find(|t| t.starts_with("f0/end/"))
+            .unwrap();
+        let s = d.add_sketch("Pocket", Plane::Face(top.clone())).unwrap();
+        d.edit_sketch(s, |k| Ok(rectangle(k, 28.0, 18.0, 40.0, 20.0)))
+            .unwrap();
+        let profiles = default_profiles(&d.sketch(s).unwrap().sketch);
+        d.add_feature(extrude("Pocket", s, profiles, -8.0, Operation::Cut))
+            .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(
+            r.status.get(&FeatureId(1)),
+            Some(&FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let unused = d.add_sketch("Later", Plane::Face(top.clone())).unwrap();
+        let later = rebuild(&d, &OpenCascade);
+        assert!(
+            matches!(later.frames.get(&unused), Some(FrameStatus::Ok { .. })),
+            "a sketch no feature uses yet is placed on the finished part"
+        );
+        let Some(FrameStatus::Ok { frame }) = r.frames.get(&s) else {
+            panic!("{:?}", r.frames)
+        };
+        assert_eq!(
+            frame.at(28.0, 18.0),
+            Point3::new(28.0, 18.0, 20.0),
+            "top-face coordinates are model X and Y"
+        );
+        let p = r.properties.unwrap();
+        assert!((p.volume - (96.0 * 56.0 * 20.0 - 40.0 * 20.0 * 8.0)).abs() < 1e-6);
+        assert!(
+            (p.bounds.max.z - 20.0).abs() < 1e-9,
+            "cut down from the top, not up from below"
+        );
+        // The top face, now with the pocket opening in it, keeps its name,
+        // so the sketch still finds it after an edit to the block.
+        assert!(r.faces.iter().flatten().any(|n| n.to_string() == top));
+        let Feature::Extrude { distance, .. } = d.features()[0].feature.clone();
+        let mut taller = d.features()[0].feature.clone();
+        let Feature::Extrude { distance: dd, .. } = &mut taller;
+        *dd = distance + 5.0;
+        d.replace_feature(FeatureId(0), taller).unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(r.status.get(&FeatureId(1)), Some(&FeatureStatus::Ok));
+        assert!((r.properties.unwrap().bounds.max.z - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_sketch_on_a_missing_face_is_flagged() {
+        let (mut d, _, _) = block();
+        let s = d
+            .add_sketch("Ghost", Plane::Face(String::from("f9/end/1-2-3-4")))
+            .unwrap();
+        d.edit_sketch(s, |k| Ok(rectangle(k, 0.0, 0.0, 5.0, 5.0)))
+            .unwrap();
+        let profiles = default_profiles(&d.sketch(s).unwrap().sketch);
+        d.add_feature(extrude("Boss", s, profiles, 5.0, Operation::Join))
+            .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        let Some(FeatureStatus::Failed { reason }) = r.status.get(&FeatureId(1)) else {
+            panic!()
+        };
+        assert!(reason.contains("no longer exists"), "{reason}");
+        assert!(matches!(r.frames.get(&s), Some(FrameStatus::Failed { .. })));
     }
 
     #[test]

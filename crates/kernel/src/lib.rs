@@ -131,6 +131,14 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     ///
     /// [`KernelError::Internal`] if triangulation fails.
     fn mesh(&self, body: &Body, deflection: f64) -> Result<TriangleMesh, KernelError>;
+
+    /// A point on flat face `face` of a body (numbered as in the history)
+    /// and its outward unit normal.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if the face is not flat.
+    fn face_plane(&self, body: &Body, face: u32) -> Result<(Point3, [f64; 3]), KernelError>;
 }
 
 /// A profile curve in model coordinates, millimetres.
@@ -307,6 +315,11 @@ impl Kernel for OpenCascade {
             faces: p.faces,
             solids: p.solids,
         })
+    }
+
+    fn face_plane(&self, body: &Body, face: u32) -> Result<(Point3, [f64; 3]), KernelError> {
+        let (p, n) = cndt_occt_sys::face_plane(&body.0, face).map_err(modelling)?;
+        Ok((Point3::new(p[0], p[1], p[2]), n))
     }
 
     fn mesh(&self, body: &Body, deflection: f64) -> Result<TriangleMesh, KernelError> {

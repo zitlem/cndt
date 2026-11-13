@@ -10,6 +10,7 @@ import {
   ApiFailure,
   bodyMesh,
   type DocumentState,
+  planeLabel,
   execute,
   type Parameter,
   request,
@@ -215,8 +216,9 @@ function renderSketches(state: DocumentState): void {
     const empty = Object.keys(record.sketch.entities).length === 0;
     const status = empty ? "under" : (state.freedom[id]?.status ?? "under");
     badge.className = `badge ${status}`;
-    badge.textContent = status === "fully" ? "✓" : `${record.plane.toUpperCase()}`;
-    badge.title = freedomText(id, state);
+    const frame = state.sketch_frames[id];
+    badge.textContent = frame?.state === "failed" ? "⚠" : status === "fully" ? "✓" : planeLabel(record.plane);
+    badge.title = frame?.state === "failed" ? frame.reason : freedomText(id, state);
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
     remove.setAttribute("aria-label", `Delete ${record.name}`);
@@ -230,7 +232,7 @@ function renderSketches(state: DocumentState): void {
       })();
     });
     item.addEventListener("click", () => {
-      if (current) editor.open(Number(id), current);
+      if (current) editSketch(Number(id), current);
       updateSketchUi();
     });
     item.append(name, badge, remove);
@@ -238,17 +240,53 @@ function renderSketches(state: DocumentState): void {
   }
   // As in Fusion 360, a sketch a feature has used is hidden in 3D.
   const used = new Set((state.document.features ?? []).map((f) => String(f.feature.sketch)));
-  viewer.setSketches(sketches.filter(([id]) => !used.has(id)).map(([, record]) => record));
+  const placed = sketches.flatMap(([id, record]) => {
+    const status = state.sketch_frames[id];
+    return !used.has(id) && status?.state === "ok" ? [{ record, frame: status.frame }] : [];
+  });
+  viewer.setSketches(placed);
 }
 
 let shownRevision = -1;
 let bodyShown = false;
+let bodyTriangles: { mesh: import("./api").Mesh } | null = null;
+
+/** The triangles of the face a sketch is on, in that sketch's coordinates. */
+function faceReference(id: number, state: DocumentState): import("./api").XY[] {
+  const plane = state.document.sketches?.[String(id)]?.plane;
+  const frame = state.sketch_frames[String(id)];
+  if (!plane || typeof plane === "string" || frame?.state !== "ok" || !bodyTriangles || !state.body) return [];
+  const face = state.body.faces.findIndex((names) => names.includes(plane.face));
+  if (face < 0) return [];
+  const { positions, indices, triangleFaces } = bodyTriangles.mesh;
+  const { origin: o, x, y } = frame.frame;
+  const out: import("./api").XY[] = [];
+  triangleFaces.forEach((f, t) => {
+    if (f !== face) return;
+    for (let k = 0; k < 3; k++) {
+      const v = indices[t * 3 + k] ?? 0;
+      const px = (positions[v * 3] ?? 0) - o.x;
+      const py = (positions[v * 3 + 1] ?? 0) - o.y;
+      const pz = (positions[v * 3 + 2] ?? 0) - o.z;
+      out.push({ x: px * x[0] + py * x[1] + pz * x[2], y: px * y[0] + py * y[1] + pz * y[2] });
+    }
+  });
+  return out;
+}
+
+/** Opens a sketch for editing, with the face it is on shown under it. */
+function editSketch(id: number, state: DocumentState): void {
+  editor.open(id, state);
+  editor.setReference(faceReference(id, state));
+  editor.fit();
+}
 
 /** Fetches and shows the rebuilt part when it changed. */
 async function showBody(state: DocumentState): Promise<void> {
   if (state.body_revision === shownRevision) return;
   shownRevision = state.body_revision;
   if (!state.body) {
+    bodyTriangles = null;
     if (bodyShown) viewer.clear();
     bodyShown = false;
     renderBodyInfo(state);
@@ -256,6 +294,7 @@ async function showBody(state: DocumentState): Promise<void> {
   }
   try {
     const mesh = await bodyMesh();
+    bodyTriangles = { mesh };
     // Keep the camera where it is once a part is on screen.
     viewer.show(mesh, bodyShown);
     bodyShown = true;
@@ -344,7 +383,7 @@ function openExtrude(feature: number | null): void {
     ...sketches.map(([id, record]) => {
       const option = globalThis.document.createElement("option");
       option.value = id;
-      option.textContent = `${record.name} (${record.plane.toUpperCase()})`;
+      option.textContent = `${record.name} (${planeLabel(record.plane)})`;
       return option;
     }),
   );
@@ -523,6 +562,16 @@ element("fit").addEventListener("click", () => {
 
 ui.extrudeButton.addEventListener("click", () => openExtrude(null));
 element("extrude-cancel").addEventListener("click", closeExtrude);
+
+/** On a face, the normal points out of the part: a cut goes in (negative)
+ * and a join goes out (positive). Switching the operation flips the sign
+ * to match; the user can still type either. */
+ui.extrudeOperation.addEventListener("change", () => {
+  const plane = current?.document.sketches?.[ui.extrudeSketch.value]?.plane;
+  if (typeof plane === "string") return;
+  const distance = Math.abs(Number(ui.extrudeDistance.value) || 0);
+  ui.extrudeDistance.value = String(ui.extrudeOperation.value === "cut" ? -distance : distance);
+});
 ui.extrudeDialog.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeExtrude();
 });
@@ -564,6 +613,66 @@ for (const button of ui.planeMenu.querySelectorAll<HTMLButtonElement>("[data-pla
     }),
   );
 }
+/** Face picking for "New sketch → On a face". */
+let pickingFace = false;
+
+function stopPicking(): void {
+  pickingFace = false;
+  viewer.highlightFace(null);
+  viewer.canvas.style.cursor = "";
+  ui.viewportHint.hidden = true;
+}
+
+/** A name that belongs to this face alone, so the sketch finds exactly it. */
+function uniqueFaceName(face: number): string | null {
+  const faces = current?.body?.faces ?? [];
+  const names = faces[face] ?? [];
+  return names.find((name) => faces.filter((other) => other.includes(name)).length === 1) ?? null;
+}
+
+element("sketch-on-face").addEventListener("click", () => {
+  ui.planeMenu.hidden = true;
+  if (!current?.body) {
+    showError(new Error("There is no part yet. Extrude a sketch first, then sketch on one of its faces."));
+    return;
+  }
+  pickingFace = true;
+  viewer.canvas.style.cursor = "pointer";
+  ui.viewportHint.textContent = "Click a flat face to sketch on. Esc cancels.";
+  ui.viewportHint.hidden = false;
+});
+
+viewer.canvas.addEventListener("pointermove", (event) => {
+  if (pickingFace) viewer.highlightFace(viewer.faceAt(event.clientX, event.clientY));
+});
+
+viewer.canvas.addEventListener("click", (event) => {
+  if (!pickingFace) return;
+  const face = viewer.faceAt(event.clientX, event.clientY);
+  if (face === null) return;
+  stopPicking();
+  guarded(async () => {
+    const name = uniqueFaceName(face);
+    if (!name) throw new Error("That face has no name of its own yet, so a sketch could not find it again.");
+    const next = await execute("sketch.create", { face: name });
+    const ids = Object.keys(next.document.sketches ?? {}).map(Number);
+    const created = Math.max(...ids);
+    const frame = next.sketch_frames[String(created)];
+    if (frame?.state === "failed") {
+      // Not a flat face: take the sketch back out and say why.
+      render(await request<DocumentState>({ method: "undo" }));
+      throw new Error(`Can't sketch there: ${frame.reason}.`);
+    }
+    render(next);
+    editSketch(created, next);
+    editor.setTool("line");
+  })();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (pickingFace && event.key === "Escape") stopPicking();
+});
+
 globalThis.document.addEventListener("pointerdown", (event) => {
   const target = event.target as Node;
   if (!ui.planeMenu.hidden && !ui.planeMenu.contains(target) && !ui.newSketch.contains(target)) {

@@ -16,8 +16,8 @@ mod features;
 
 pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 pub use features::{
-    FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus, Operation, Rebuilt,
-    default_profiles, rebuild,
+    FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus, Frame, FrameStatus,
+    Operation, Rebuilt, default_profiles, rebuild,
 };
 use serde::{Deserialize, Serialize};
 
@@ -98,9 +98,9 @@ impl fmt::Display for SketchId {
     }
 }
 
-/// The plane a sketch is drawn on. Sketches on model faces arrive with solid
-/// features and stable references (decision 0012).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The plane a sketch is drawn on: an origin plane, or a flat face of the
+/// part named by its history (decision 0012).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Plane {
     /// The XY origin plane, seen from +Z. Sketch X is model X.
@@ -111,6 +111,11 @@ pub enum Plane {
     /// The YZ origin plane, seen from +X. Sketch X is model Y, sketch Y is
     /// model Z.
     Yz,
+    /// A flat face of the part, by its persistent name, such as
+    /// `f0/end/4-5-6-7`. Sketch axes follow the model's: the origin and X
+    /// axis are the model's projected onto the face, and the normal points
+    /// out of the part.
+    Face(String),
 }
 
 impl Plane {
@@ -324,6 +329,8 @@ impl Document {
     }
 
     /// Adds an empty sketch. An empty name gets the next free `SketchN`.
+    /// A face plane is checked for form only; whether the face exists is
+    /// known at rebuild.
     ///
     /// # Errors
     ///
@@ -340,6 +347,7 @@ impl Document {
             check_document_name(name)?;
             name.to_owned()
         };
+        check_plane(&plane)?;
         self.restore_sketch(
             id,
             SketchRecord {
@@ -529,6 +537,7 @@ impl Document {
                 ))));
             }
             check_document_name(&record.name)?;
+            check_plane(&record.plane)?;
             record.sketch.validate()?;
         }
         let mut ids = BTreeSet::new();
@@ -561,6 +570,20 @@ fn check_document_name(name: &str) -> Result<(), ModelError> {
             reason,
         })
     })
+}
+
+fn check_plane(plane: &Plane) -> Result<(), ModelError> {
+    match plane {
+        Plane::Face(name)
+            if name.is_empty() || name.len() > 200 || name.chars().any(char::is_control) =>
+        {
+            Err(ModelError::InvalidName {
+                name: name.clone(),
+                reason: "it is not a face name",
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 fn check_parameter_name(name: &str) -> Result<(), ModelError> {

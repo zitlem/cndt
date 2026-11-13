@@ -4,18 +4,16 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { Mesh, Plane, SketchRecord, XY } from "./api";
+import type { Frame, Mesh, SketchRecord, XY } from "./api";
 
-/** Sketch coordinates to model coordinates for each origin plane. */
-function onPlane(plane: Plane, p: XY): THREE.Vector3 {
-  switch (plane) {
-    case "xy":
-      return new THREE.Vector3(p.x, p.y, 0);
-    case "xz":
-      return new THREE.Vector3(p.x, 0, p.y);
-    case "yz":
-      return new THREE.Vector3(0, p.x, p.y);
-  }
+/** A sketch point in model coordinates. */
+function onFrame(frame: Frame, p: XY): THREE.Vector3 {
+  const { origin: o, x, y } = frame;
+  return new THREE.Vector3(
+    o.x + p.x * x[0] + p.y * y[0],
+    o.y + p.x * x[1] + p.y * y[1],
+    o.z + p.x * x[2] + p.y * y[2],
+  );
 }
 
 /** Line segments (pairs of sketch points) tracing a sketch's curves. */
@@ -69,6 +67,10 @@ export class Viewer {
   private readonly controls: OrbitControls;
   private readonly grid: THREE.GridHelper;
   private model: THREE.Group | null = null;
+  private surface: THREE.Mesh | null = null;
+  private triangleFaces: Uint32Array | null = null;
+  private highlight: THREE.Mesh | null = null;
+  private readonly raycaster = new THREE.Raycaster();
   private sketches = new THREE.Group();
 
   constructor(private readonly host: HTMLElement) {
@@ -128,11 +130,68 @@ export class Viewer {
       new THREE.EdgesGeometry(geometry, 25),
       new THREE.LineBasicMaterial({ color: 0x0e1013 }),
     );
+    this.surface = surface;
+    this.triangleFaces = mesh.triangleFaces;
     this.model = new THREE.Group();
     this.model.add(surface, edges);
     this.scene.add(this.model);
     if (keepView) this.render();
     else this.fit();
+  }
+
+  /** The face number under a point of the canvas, or null. */
+  faceAt(clientX: number, clientY: number): number | null {
+    if (!this.surface || !this.triangleFaces) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(pointer, this.camera);
+    const hit = this.raycaster.intersectObject(this.surface)[0];
+    if (hit?.faceIndex === undefined || hit.faceIndex === null) return null;
+    return this.triangleFaces[hit.faceIndex] ?? null;
+  }
+
+  /** Tints one face, or none. */
+  highlightFace(face: number | null): void {
+    if (this.highlight) {
+      this.scene.remove(this.highlight);
+      this.highlight.geometry.dispose();
+      (this.highlight.material as THREE.Material).dispose();
+      this.highlight = null;
+    }
+    if (face !== null && this.surface && this.triangleFaces) {
+      const source = this.surface.geometry;
+      const index = source.getIndex();
+      if (index) {
+        const picked: number[] = [];
+        this.triangleFaces.forEach((f, t) => {
+          if (f === face) picked.push(index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2));
+        });
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", source.getAttribute("position"));
+        geometry.setIndex(picked);
+        this.highlight = new THREE.Mesh(
+          geometry,
+          new THREE.MeshBasicMaterial({
+            color: 0xffb454,
+            transparent: true,
+            opacity: 0.45,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1,
+          }),
+        );
+        this.scene.add(this.highlight);
+      }
+    }
+    this.render();
+  }
+
+  /** The canvas, for pointer events. */
+  get canvas(): HTMLCanvasElement {
+    return this.renderer.domElement;
   }
 
   /** Whether a model is shown. */
@@ -141,7 +200,7 @@ export class Viewer {
   }
 
   /** Draws the document's sketches on their planes. */
-  setSketches(records: SketchRecord[]): void {
+  setSketches(records: { record: SketchRecord; frame: Frame }[]): void {
     for (const child of [...this.sketches.children]) {
       this.sketches.remove(child);
       if (child instanceof THREE.LineSegments) {
@@ -149,12 +208,12 @@ export class Viewer {
         (child.material as THREE.Material).dispose();
       }
     }
-    for (const record of records) {
+    for (const { record, frame } of records) {
       const { segments, construction } = sketchSegments(record);
       const add = (points: XY[], material: THREE.LineBasicMaterial | THREE.LineDashedMaterial) => {
         if (points.length === 0) return;
         const geometry = new THREE.BufferGeometry().setFromPoints(
-          points.map((p) => onPlane(record.plane, p)),
+          points.map((p) => onFrame(frame, p)),
         );
         const lines = new THREE.LineSegments(geometry, material);
         lines.computeLineDistances();
@@ -168,6 +227,9 @@ export class Viewer {
 
   /** Removes the model. */
   clear(): void {
+    this.highlightFace(null);
+    this.surface = null;
+    this.triangleFaces = null;
     if (!this.model) return;
     this.scene.remove(this.model);
     this.model.traverse((object) => {

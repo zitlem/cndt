@@ -44,7 +44,22 @@ export interface Sketch {
   next_constraint: number;
 }
 
-export type Plane = "xy" | "xz" | "yz";
+export type Plane = "xy" | "xz" | "yz" | { face: string };
+
+/** Where a sketch sits in the model, in model coordinates. */
+export interface Frame {
+  origin: Point3;
+  x: [number, number, number];
+  y: [number, number, number];
+  normal: [number, number, number];
+}
+
+export type FrameStatus = { state: "ok"; frame: Frame } | { state: "failed"; reason: string };
+
+/** A short label for a plane: XY, XZ, YZ or Face. */
+export function planeLabel(plane: Plane): string {
+  return typeof plane === "string" ? plane.toUpperCase() : "Face";
+}
 
 export interface SketchRecord {
   name: string;
@@ -91,6 +106,7 @@ export interface DocumentState {
   redo: string | null;
   freedom: Record<string, Freedom>;
   feature_status: Record<string, FeatureStatus>;
+  sketch_frames: Record<string, FrameStatus>;
   body: BodyView | null;
   body_revision: number;
 }
