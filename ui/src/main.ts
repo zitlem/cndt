@@ -8,6 +8,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import {
   ApiFailure,
+  bodyMesh,
   type DocumentState,
   execute,
   type Parameter,
@@ -48,6 +49,14 @@ const ui = {
   newSketch: element<HTMLButtonElement>("new-sketch"),
   planeMenu: element<HTMLDivElement>("plane-menu"),
   sketchTools: element<HTMLDivElement>("sketch-tools"),
+  featureList: element<HTMLOListElement>("feature-list"),
+  noFeatures: element<HTMLParagraphElement>("no-features"),
+  extrudeButton: element<HTMLButtonElement>("extrude"),
+  extrudeDialog: element<HTMLFormElement>("extrude-dialog"),
+  extrudeTitle: element<HTMLHeadingElement>("extrude-title"),
+  extrudeSketch: element<HTMLSelectElement>("extrude-sketch"),
+  extrudeDistance: element<HTMLInputElement>("extrude-distance"),
+  extrudeOperation: element<HTMLSelectElement>("extrude-operation"),
   toast: element<HTMLDivElement>("toast"),
 };
 
@@ -162,6 +171,8 @@ function render(next: DocumentState): void {
   }
 
   renderSketches(next);
+  renderFeatures(next);
+  void showBody(next);
   editor.update(next);
   updateSketchUi();
 
@@ -225,11 +236,146 @@ function renderSketches(state: DocumentState): void {
     item.append(name, badge, remove);
     ui.sketchList.append(item);
   }
-  viewer.setSketches(sketches.map(([, record]) => record));
+  // As in Fusion 360, a sketch a feature has used is hidden in 3D.
+  const used = new Set((state.document.features ?? []).map((f) => String(f.feature.sketch)));
+  viewer.setSketches(sketches.filter(([id]) => !used.has(id)).map(([, record]) => record));
+}
+
+let shownRevision = -1;
+let bodyShown = false;
+
+/** Fetches and shows the rebuilt part when it changed. */
+async function showBody(state: DocumentState): Promise<void> {
+  if (state.body_revision === shownRevision) return;
+  shownRevision = state.body_revision;
+  if (!state.body) {
+    if (bodyShown) viewer.clear();
+    bodyShown = false;
+    renderBodyInfo(state);
+    return;
+  }
+  try {
+    const mesh = await bodyMesh();
+    // Keep the camera where it is once a part is on screen.
+    viewer.show(mesh, bodyShown);
+    bodyShown = true;
+    renderBodyInfo(state);
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function renderBodyInfo(state: DocumentState): void {
+  const body = state.body;
+  if (!body) {
+    if (!ui.modelNote.hidden) return; // a STEP preview is showing
+    ui.modelInfo.hidden = true;
+    ui.modelEmpty.hidden = false;
+    return;
+  }
+  const { min, max } = body.bounds;
+  const size = [max.x - min.x, max.y - min.y, max.z - min.z].map((v) => formatNumber(Number(v.toFixed(3))));
+  const rows: [string, string][] = [
+    ["Size", `${size.join(" × ")} mm`],
+    ["Volume", `${formatNumber(Number((body.volume / 1000).toFixed(3)))} cm³`],
+    ["Faces", String(body.faces.length)],
+  ];
+  ui.modelInfo.replaceChildren(
+    ...rows.flatMap(([term, detail]) => {
+      const dt = globalThis.document.createElement("dt");
+      dt.textContent = term;
+      const dd = globalThis.document.createElement("dd");
+      dd.textContent = detail;
+      return [dt, dd];
+    }),
+  );
+  ui.modelInfo.hidden = false;
+  ui.modelNote.hidden = true;
+  ui.modelEmpty.hidden = true;
+  ui.viewportHint.hidden = true;
+}
+
+function renderFeatures(state: DocumentState): void {
+  const features = state.document.features ?? [];
+  ui.featureList.replaceChildren();
+  ui.noFeatures.hidden = features.length > 0;
+  ui.extrudeButton.disabled = Object.keys(state.document.sketches ?? {}).length === 0;
+  for (const { id, feature } of features) {
+    const status = state.feature_status[String(id)];
+    const item = globalThis.document.createElement("li");
+    const failed = status?.state === "failed";
+    item.classList.toggle("failed", failed);
+    item.title = failed ? status.reason : "Click to edit";
+    const name = globalThis.document.createElement("span");
+    name.className = "name";
+    name.textContent = feature.name;
+    const detail = globalThis.document.createElement("span");
+    detail.className = failed ? "detail flag" : "detail";
+    detail.textContent = failed
+      ? "⚠ needs repair"
+      : `${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
+    const remove = globalThis.document.createElement("button");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Delete ${feature.name}`);
+    remove.innerHTML =
+      '<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" /></svg>';
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      guarded(async () => render(await execute("feature.delete", { feature: id })))();
+    });
+    item.addEventListener("click", () => openExtrude(id));
+    item.append(name, detail, remove);
+    ui.featureList.append(item);
+  }
+}
+
+/** The feature being edited by the dialog, or null for a new extrude. */
+let editingFeature: number | null = null;
+
+function openExtrude(feature: number | null): void {
+  if (!current) return;
+  if (editor.editing !== null) {
+    editor.close();
+    updateSketchUi();
+  }
+  editingFeature = feature;
+  const sketches = Object.entries(current.document.sketches ?? {});
+  ui.extrudeSketch.replaceChildren(
+    ...sketches.map(([id, record]) => {
+      const option = globalThis.document.createElement("option");
+      option.value = id;
+      option.textContent = `${record.name} (${record.plane.toUpperCase()})`;
+      return option;
+    }),
+  );
+  const existing = current.document.features?.find((f) => f.id === feature)?.feature;
+  if (existing) {
+    ui.extrudeTitle.textContent = `Edit ${existing.name}`;
+    ui.extrudeSketch.value = String(existing.sketch);
+    ui.extrudeSketch.disabled = true;
+    ui.extrudeDistance.value = String(existing.distance);
+    ui.extrudeOperation.value = existing.operation;
+  } else {
+    ui.extrudeTitle.textContent = "Extrude";
+    ui.extrudeSketch.disabled = false;
+    // The most recent sketch is the likely one.
+    const last = sketches.at(-1);
+    if (last) ui.extrudeSketch.value = last[0];
+    ui.extrudeOperation.value = (current.document.features?.length ?? 0) === 0 ? "join" : ui.extrudeOperation.value;
+  }
+  ui.extrudeDialog.hidden = false;
+  ui.extrudeDistance.focus();
+  ui.extrudeDistance.select();
+}
+
+function closeExtrude(): void {
+  ui.extrudeDialog.hidden = true;
+  editingFeature = null;
 }
 
 function updateSketchUi(): void {
   const editing = editor.editing;
+  if (editing !== null) closeExtrude();
   ui.sketchTools.hidden = editing === null;
   ui.sketchTools.parentElement?.classList.toggle("sketching", editing !== null);
   ui.viewportHint.hidden = editing !== null || ui.modelEmpty.hidden;
@@ -375,6 +521,29 @@ element("fit").addEventListener("click", () => {
   else viewer.fit();
 });
 
+ui.extrudeButton.addEventListener("click", () => openExtrude(null));
+element("extrude-cancel").addEventListener("click", closeExtrude);
+ui.extrudeDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeExtrude();
+});
+ui.extrudeDialog.addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    const distance = Number(ui.extrudeDistance.value);
+    const operation = ui.extrudeOperation.value;
+    const next =
+      editingFeature === null
+        ? await execute("feature.extrude", {
+            sketch: Number(ui.extrudeSketch.value),
+            distance,
+            operation,
+          })
+        : await execute("feature.edit_extrude", { feature: editingFeature, distance, operation });
+    closeExtrude();
+    render(next);
+  })();
+});
+
 ui.newSketch.addEventListener("click", () => {
   const open = ui.planeMenu.hidden;
   ui.planeMenu.hidden = !open;
@@ -485,6 +654,11 @@ window.addEventListener("keydown", (event) => {
     else if (key === "f") editor.fit();
     else return;
     event.preventDefault();
+    return;
+  }
+  if (!mod && editor.editing === null && event.key.toLowerCase() === "e" && !ui.extrudeButton.disabled) {
+    event.preventDefault();
+    openExtrude(null);
     return;
   }
   if (!mod) return;

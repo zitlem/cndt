@@ -49,6 +49,9 @@
             <button id="import-step" type="button" class="tool">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 3v9M6.5 8.5L10 12l3.5-3.5M4 16h12" /></svg>Import STEP
             </button>
+            <button id="extrude" type="button" class="tool" title="Extrude a sketch into a solid, or cut it away (E)">
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 14l6 3 6-3-6-3zM4 14V7l6-3 6 3v7M10 11V4" /></svg>Extrude
+            </button>
             <button id="fit" type="button" class="tool">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" /></svg>Fit view
             </button>
@@ -156,13 +159,34 @@
         </aside>
 
         <section id="viewport" class="viewport" aria-label="3D view">
-          <div id="viewport-hint" class="viewport-hint">Import a STEP file to see it here.</div>
+          <div id="viewport-hint" class="viewport-hint">Start a sketch, or import a STEP file.</div>
+          <form id="extrude-dialog" class="dialog" hidden>
+            <h3 id="extrude-title">Extrude</h3>
+            <label>Sketch<select id="extrude-sketch"></select></label>
+            <div class="form-row">
+              <label>Distance (mm)<input id="extrude-distance" type="number" step="any" required value="10" /></label>
+              <label>Operation
+                <select id="extrude-operation">
+                  <option value="join">Join</option>
+                  <option value="cut">Cut</option>
+                </select>
+              </label>
+            </div>
+            <p class="muted small">Negative distances go the other way from the sketch plane.</p>
+            <div class="dialog-buttons">
+              <button id="extrude-cancel" type="button" class="secondary">Cancel</button>
+              <button type="submit" class="primary">OK</button>
+            </div>
+          </form>
         </section>
 
         <aside class="panel" aria-labelledby="model-title">
           <h2 class="panel-title">Sketches</h2>
           <ul id="sketch-list" class="sketch-list"></ul>
           <p id="no-sketches" class="muted">No sketches yet.</p>
+          <h2 class="panel-title">Timeline</h2>
+          <ol id="feature-list" class="feature-list"></ol>
+          <p id="no-features" class="muted">No features yet.</p>
           <h2 id="model-title" class="panel-title">Model</h2>
           <div id="model-empty" class="muted">No model loaded.</div>
           <dl id="model-info" class="model-info" hidden></dl>
