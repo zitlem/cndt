@@ -179,6 +179,8 @@ struct Hole {
     diameter: f64,
     thread: Option<(&'static threads::ThreadSize, f64)>,
     reamed: bool,
+    /// Counterbore diameter and depth.
+    counterbore: Option<(f64, f64)>,
 }
 
 /// How far a drill's 118° point reaches below its full diameter.
@@ -239,11 +241,6 @@ pub fn hole_program(
                 "{name}: the model has a flat bottom, but the drill's point goes deeper than the full-diameter depth; a flat bottom needs milling"
             ));
         }
-        if spec.counterbore.is_some() {
-            notes.push(format!(
-                "{name}: drilled through; the counterbores need milling, which comes next"
-            ));
-        }
         let Some(record) = document.sketch(*sketch) else {
             continue;
         };
@@ -266,6 +263,7 @@ pub fn hole_program(
                 diameter: spec.diameter,
                 thread,
                 reamed: spec.fit.is_some(),
+                counterbore: spec.counterbore.map(|c| (c.diameter, c.depth)),
             });
         }
     }
@@ -348,6 +346,39 @@ pub fn hole_program(
             setup,
             cycles,
         ));
+    }
+
+    // Counterbores: milled with a helix, after the through drill.
+    let mut counterbores: BTreeMap<(u64, u64), Vec<&Hole>> = BTreeMap::new();
+    for hole in &holes {
+        if let Some((d, depth)) = hole.counterbore {
+            counterbores
+                .entry(((d * 1000.0).round() as u64, (depth * 1000.0).round() as u64))
+                .or_default()
+                .push(hole);
+        }
+    }
+    for ((d, depth), group) in counterbores {
+        let (diameter, depth) = (d as f64 / 1000.0, depth as f64 / 1000.0);
+        // One circle must also clear the middle: at least half the bore.
+        let (number, tool) = library
+            .tools
+            .iter()
+            .filter(|(_, t)| {
+                t.kind == ToolKind::EndMill
+                    && t.diameter >= diameter / 2.0
+                    && t.diameter < diameter - 0.2
+            })
+            .max_by(|a, b| a.1.diameter.total_cmp(&b.1.diameter).then(b.0.cmp(a.0)))
+            .map(|(n, t)| (*n, t))
+            .ok_or_else(|| {
+                CamError::NoTool(format!(
+                    "end mill between {} and {} mm for the {diameter} mm counterbores",
+                    diameter / 2.0,
+                    diameter - 0.2
+                ))
+            })?;
+        operations.push(counterbore_op(number, tool, setup, &group, diameter, depth));
     }
 
     // Tap: rigid, feed = rpm × pitch.
@@ -1202,6 +1233,80 @@ pub fn plan_setup(
         return Err(CamError::Nothing);
     }
     Ok(Planned { program, notes })
+}
+
+/// Mills counterbores: for each, a helix down at most 3° per turn to the
+/// floor, one flat circle to finish it, then to the centre and out.
+fn counterbore_op(
+    number: u32,
+    tool: &Tool,
+    setup: &Setup,
+    holes: &[&Hole],
+    diameter: f64,
+    depth: f64,
+) -> Operation {
+    let r = tool.diameter / 2.0;
+    let e = round3(diameter / 2.0 - r);
+    let circumference = std::f64::consts::TAU * e;
+    let pitch = (circumference * RAMP_DEGREES.to_radians().tan()).min(r);
+    let turns = (depth / pitch).ceil().max(1.0) as usize;
+    let safe = round3(setup.safe_z);
+    let mut steps = vec![
+        Step::Event(Event::ToolChange {
+            number,
+            description: if tool.description.is_empty() {
+                format!("tool {number}")
+            } else {
+                tool.description.clone()
+            },
+        }),
+        Step::Event(Event::SpindleOn {
+            rpm: tool.rpm,
+            direction: SpindleDirection::Clockwise,
+        }),
+        Step::Event(Event::Coolant {
+            mode: Coolant::Flood,
+        }),
+    ];
+    for hole in holes {
+        let c = hole.at;
+        let start = |z: f64| Point3::new(round3(c.x + e), round3(c.y), round3(z));
+        let center = |z: f64| Point3::new(round3(c.x), round3(c.y), round3(z));
+        let floor = c.z - depth;
+        steps.push(Step::Move(Move::Rapid { to: start(safe) }));
+        steps.push(Step::Move(Move::Rapid {
+            to: start(c.z + 0.5),
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: start(c.z),
+            feed: tool.feed / 2.0,
+        }));
+        for turn in 1..=turns {
+            let z = c.z - depth * turn as f64 / turns as f64;
+            steps.push(Step::Move(Move::Arc {
+                to: start(z),
+                center: center(z),
+                direction: ArcDirection::CounterClockwise,
+                feed: tool.feed / 2.0,
+            }));
+        }
+        steps.push(Step::Move(Move::Arc {
+            to: start(floor),
+            center: center(floor),
+            direction: ArcDirection::CounterClockwise,
+            feed: tool.feed,
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: center(floor),
+            feed: tool.feed,
+        }));
+        steps.push(Step::Move(Move::Rapid { to: center(safe) }));
+    }
+    steps.push(Step::Event(Event::Coolant { mode: Coolant::Off }));
+    Operation {
+        name: format!("Counterbore {diameter} mm x {depth} mm"),
+        steps,
+    }
 }
 
 /// One tool's operation: change, spindle, coolant, then each cycle from
