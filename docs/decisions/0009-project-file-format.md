@@ -83,3 +83,7 @@ Facing operations in a setup: `{"type": "face"}`, optionally with `"tool": <numb
 ## Version 11 (2026-11-13)
 
 Contour operations in a setup: `{"type": "contour", "face": "<face name>"}`, optionally with `"tool"` and `"depth"` (mm below Z0). Older builds refuse these files with the update message.
+
+## Version 12 (2026-11-13)
+
+Pocket operations in a setup: `{"type": "pocket", "floor": "<face name>"}`, optionally with `"tool"`. Older builds refuse these files with the update message.

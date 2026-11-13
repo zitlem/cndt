@@ -45,7 +45,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 9: CAM definitions: stock, tools, setups, operations (decision 0014).
 /// - 10: facing operations.
 /// - 11: contour operations.
-pub const SCHEMA_VERSION: u32 = 11;
+/// - 12: pocket operations.
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -261,6 +262,20 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 11 knew nothing of pockets.
+    if manifest.schema_version < 12
+        && document
+            .cam()
+            .setups
+            .iter()
+            .flat_map(|s| &s.setup.operations)
+            .any(|o| matches!(o.operation, cndt_model::cam::OperationDef::Pocket { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain pocket operations",
+            manifest.schema_version
         )));
     }
     // Version 10 knew nothing of contours.

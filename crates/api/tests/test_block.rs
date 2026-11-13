@@ -407,11 +407,45 @@ fn the_cndt_test_block() {
         "cam.add_operation",
         json!({"setup": 0, "type": "contour", "face": underside}),
     );
+    // The pocket (feature 1) and the open slot (feature 2), down to their
+    // floors: the end caps of those cuts.
+    let floor = |s: &mut Session, feature: u32| {
+        s.state()["body"]["faces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|names| names.as_array().unwrap().iter())
+            .filter_map(Value::as_str)
+            .find(|name| name.starts_with(&format!("f{feature}/end/")))
+            .unwrap()
+            .to_owned()
+    };
+    let pocket_floor = floor(&mut s, 1);
+    s.exec(
+        "cam.add_operation",
+        json!({"setup": 0, "type": "pocket", "floor": pocket_floor}),
+    );
+    let open_floor = floor(&mut s, 2);
+    s.exec(
+        "cam.add_operation",
+        json!({"setup": 0, "type": "pocket", "floor": open_floor}),
+    );
     s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
     // The bottom setup: the part flipped about X. Face it to thickness; no
     // holes face it yet, so the holes operation adds nothing.
     s.exec("cam.add_setup", json!({"side": "bottom", "work_offset": 2}));
     s.exec("cam.add_operation", json!({"setup": 1, "type": "face"}));
+    // The closed slot (feature 8) and the keyway (feature 9), from below.
+    let slot_floor = floor(&mut s, 8);
+    s.exec(
+        "cam.add_operation",
+        json!({"setup": 1, "type": "pocket", "floor": slot_floor}),
+    );
+    let keyway_floor = floor(&mut s, 9);
+    s.exec(
+        "cam.add_operation",
+        json!({"setup": 1, "type": "pocket", "floor": keyway_floor}),
+    );
     let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 1}));
     assert_eq!(reply["ok"], true, "{reply}");
     check_golden(

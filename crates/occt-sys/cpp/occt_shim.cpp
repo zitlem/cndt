@@ -72,6 +72,7 @@
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1181,9 +1182,11 @@ void put(double out[3], const gp_Pnt& p) {
 extern "C" {
 
 // The outer boundary of flat face `face` (face numbers as in the history),
-// offset outwards by `distance` (0 for the boundary itself), as lines and
-// arcs in running order. Corners grow as arcs. The face must be parallel to
-// XY. Fails with kModelFailed if the offset outline is not one closed loop.
+// offset by `distance`: outwards when positive, inwards when negative, the
+// boundary itself at 0. Lines and arcs in running order; outward corners
+// grow as arcs. The face must be parallel to XY. Fails with kModelFailed if
+// the offset outline is not one closed loop (inwards: it has vanished or
+// split).
 int cndt_occt_face_outline(
     const cndt_shape* shape,
     std::uint32_t face,
@@ -1191,13 +1194,15 @@ int cndt_occt_face_outline(
     cndt_segments** out,
     char* err,
     std::size_t err_len) {
-    if (shape == nullptr || out == nullptr || !(distance >= 0.0)) {
+    if (shape == nullptr || out == nullptr || !std::isfinite(distance)) {
         set_error(err, err_len, "bad argument");
         return kBadArgument;
     }
     *out = nullptr;
     try {
         silence_console_output();
+        const bool inwards = distance < 0.0;
+        distance = std::fabs(distance);
         TopTools_IndexedMapOfShape faces;
         TopExp::MapShapes(shape->shape, TopAbs_FACE, faces);
         const int index = static_cast<int>(face) + 1;
@@ -1224,13 +1229,16 @@ int cndt_occt_face_outline(
                 for (TopExp_Explorer it(offset.Shape(), TopAbs_WIRE); it.More(); it.Next()) {
                     wires.push_back(TopoDS::Wire(it.Current()));
                 }
-                if (wires.size() == 1 && wire_area(wires[0]) > original) {
+                const double area = wires.size() == 1 ? wire_area(wires[0]) : 0.0;
+                if (wires.size() == 1 && (inwards ? (area > 1e-9 && area < original) : area > original)) {
                     best = wires[0];
                     break;
                 }
             }
             if (best.IsNull()) {
-                set_error(err, err_len, "the outline could not be offset into one closed loop");
+                set_error(err, err_len,
+                          inwards ? "the outline vanishes or splits when offset this far inwards"
+                                  : "the outline could not be offset into one closed loop");
                 return kModelFailed;
             }
             path = best;
