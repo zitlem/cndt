@@ -5,13 +5,20 @@
 //! rule 2). The engine's session owns the document and hands out shared
 //! references, so code outside a command cannot reach the mutating methods.
 //!
-//! For now the document holds a name, user parameters and sketches. Solid
-//! features and CAM data arrive later.
+//! The document holds a name, user parameters, sketches and the timeline of
+//! solid features. The part itself is not stored: [`rebuild`] makes it from
+//! the timeline. CAM data arrives later.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+mod features;
+
 pub use cndt_sketch::{self as sketch, Sketch, SketchError};
+pub use features::{
+    FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus, Operation, Rebuilt,
+    default_profiles, rebuild,
+};
 use serde::{Deserialize, Serialize};
 
 /// Longest allowed parameter name, in characters.
@@ -152,6 +159,17 @@ pub enum ModelError {
     UnknownSketch(SketchId),
     /// The sketch refused the change.
     Sketch(SketchError),
+    /// No feature has this id.
+    UnknownFeature(FeatureId),
+    /// A feature's values are not allowed; says why.
+    InvalidFeature(String),
+    /// Features still use this sketch.
+    SketchInUse {
+        /// The sketch's name.
+        sketch: String,
+        /// The features that use it.
+        by: Vec<String>,
+    },
 }
 
 impl From<SketchError> for ModelError {
@@ -168,6 +186,13 @@ impl fmt::Display for ModelError {
             Self::UnknownParameter(name) => write!(f, "there is no parameter named {name}"),
             Self::UnknownSketch(id) => write!(f, "{id} does not exist"),
             Self::Sketch(error) => error.fmt(f),
+            Self::UnknownFeature(id) => write!(f, "{id} does not exist"),
+            Self::InvalidFeature(reason) => f.write_str(reason),
+            Self::SketchInUse { sketch, by } => write!(
+                f,
+                "{sketch} is used by {}; delete or change those first",
+                by.join(", ")
+            ),
         }
     }
 }
@@ -189,6 +214,11 @@ pub struct Document {
     sketches: BTreeMap<SketchId, SketchRecord>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_sketch: u32,
+    /// The timeline, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    features: Vec<FeatureEntry>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    next_feature: u32,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes fields by reference
@@ -216,6 +246,8 @@ impl Document {
             parameters: BTreeMap::new(),
             sketches: BTreeMap::new(),
             next_sketch: 0,
+            features: Vec::new(),
+            next_feature: 0,
         }
     }
 
@@ -331,9 +363,114 @@ impl Document {
     ///
     /// Returns [`ModelError::UnknownSketch`] if there is no such sketch.
     pub fn remove_sketch(&mut self, id: SketchId) -> Result<SketchRecord, ModelError> {
+        let record = self
+            .sketches
+            .get(&id)
+            .ok_or(ModelError::UnknownSketch(id))?;
+        let by: Vec<String> = self
+            .features
+            .iter()
+            .filter(|e| e.feature.sketch() == id)
+            .map(|e| e.feature.name().to_owned())
+            .collect();
+        if !by.is_empty() {
+            return Err(ModelError::SketchInUse {
+                sketch: record.name.clone(),
+                by,
+            });
+        }
         self.sketches
             .remove(&id)
             .ok_or(ModelError::UnknownSketch(id))
+    }
+
+    /// The timeline, in order.
+    #[must_use]
+    pub fn features(&self) -> &[FeatureEntry] {
+        &self.features
+    }
+
+    /// One feature.
+    #[must_use]
+    pub fn feature(&self, id: FeatureId) -> Option<&Feature> {
+        self.features
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| &e.feature)
+    }
+
+    /// The next free `<prefix>N` feature name.
+    #[must_use]
+    pub fn next_feature_name(&self, prefix: &str) -> String {
+        (1..)
+            .map(|n| format!("{prefix}{n}"))
+            .find(|candidate| self.features.iter().all(|e| e.feature.name() != candidate))
+            .unwrap_or_default()
+    }
+
+    /// Adds a feature at the end of the timeline.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::InvalidFeature`] for bad values, or
+    /// [`ModelError::UnknownSketch`].
+    pub fn add_feature(&mut self, feature: Feature) -> Result<FeatureId, ModelError> {
+        self.check_feature(&feature)?;
+        let id = FeatureId(self.next_feature);
+        self.next_feature = self.next_feature.saturating_add(1);
+        self.features.push(FeatureEntry { id, feature });
+        Ok(id)
+    }
+
+    /// Replaces a feature's definition, keeping its place, and returns the
+    /// old one.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Document::add_feature`], or [`ModelError::UnknownFeature`].
+    pub fn replace_feature(
+        &mut self,
+        id: FeatureId,
+        feature: Feature,
+    ) -> Result<Feature, ModelError> {
+        self.check_feature(&feature)?;
+        let entry = self
+            .features
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or(ModelError::UnknownFeature(id))?;
+        Ok(std::mem::replace(&mut entry.feature, feature))
+    }
+
+    /// Removes a feature, returning its timeline position and entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::UnknownFeature`].
+    pub fn remove_feature(&mut self, id: FeatureId) -> Result<(usize, FeatureEntry), ModelError> {
+        let index = self
+            .features
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or(ModelError::UnknownFeature(id))?;
+        Ok((index, self.features.remove(index)))
+    }
+
+    /// Puts a removed feature back where it was, as undo does.
+    pub fn restore_feature(&mut self, index: usize, entry: FeatureEntry) {
+        self.next_feature = self.next_feature.max(entry.id.0.saturating_add(1));
+        let index = index.min(self.features.len());
+        self.features.insert(index, entry);
+    }
+
+    fn check_feature(&self, feature: &Feature) -> Result<(), ModelError> {
+        feature.check().map_err(ModelError::InvalidFeature)?;
+        check_document_name(feature.name())?;
+        if self.sketches.contains_key(&feature.sketch()) {
+            Ok(())
+        } else {
+            Err(ModelError::UnknownSketch(feature.sketch()))
+        }
     }
 
     /// Changes a sketch's contents. The edit runs on a copy, and the
@@ -393,6 +530,16 @@ impl Document {
             }
             check_document_name(&record.name)?;
             record.sketch.validate()?;
+        }
+        let mut ids = BTreeSet::new();
+        for entry in &self.features {
+            if entry.id.0 >= self.next_feature || !ids.insert(entry.id) {
+                return Err(ModelError::InvalidFeature(format!(
+                    "{} has a damaged id",
+                    entry.feature.name()
+                )));
+            }
+            self.check_feature(&entry.feature)?;
         }
         Ok(())
     }
@@ -510,6 +657,38 @@ mod tests {
         assert_eq!(document.add_sketch("Top", Plane::Xy), Ok(SketchId(2)));
         document.restore_sketch(second, removed);
         assert_eq!(document.sketches().len(), 3);
+        assert_eq!(document.validate(), Ok(()));
+    }
+
+    #[test]
+    fn features_protect_their_sketch_and_restore_in_place() {
+        let mut document = Document::default();
+        let s = document.add_sketch("", Plane::Xy).unwrap();
+        let extrude = |name: &str| Feature::Extrude {
+            name: name.into(),
+            sketch: s,
+            profiles: vec![sketch::ProfileKey(vec![sketch::EntityId(4)])],
+            distance: 10.0,
+            operation: Operation::Join,
+        };
+        let a = document.add_feature(extrude("Extrude1")).unwrap();
+        let b = document.add_feature(extrude("Extrude2")).unwrap();
+        assert_eq!(document.next_feature_name("Extrude"), "Extrude3");
+        assert!(matches!(
+            document.remove_sketch(s),
+            Err(ModelError::SketchInUse { .. })
+        ));
+        let (index, entry) = document.remove_feature(a).unwrap();
+        document.restore_feature(index, entry);
+        assert_eq!(document.features()[0].id, a);
+        assert_eq!(document.features()[1].id, b);
+        let mut zero = extrude("Bad");
+        let Feature::Extrude { distance, .. } = &mut zero;
+        *distance = 0.0;
+        assert!(matches!(
+            document.add_feature(zero),
+            Err(ModelError::InvalidFeature(_))
+        ));
         assert_eq!(document.validate(), Ok(()));
     }
 

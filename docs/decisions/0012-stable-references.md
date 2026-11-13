@@ -39,3 +39,13 @@ Name every face and edge by its history:
 - The kernel bridge must expose OpenCascade's generated, modified and deleted history for every operation.
 - The file format will store names. That arrives with geometry in the file and bumps the schema version.
 - Safety: a toolpath never silently follows a re-guessed face. A lost reference always stops posting until a person confirms the repair.
+
+## Implementation notes (2026-11-12)
+
+First built with extrude, join and cut:
+
+- Every operation in the kernel bridge returns its face history as `(source, face)` pairs. For an extrude, the source is the profile curve that swept a side face, or the start or end cap. For a boolean, it is an input face, using OpenCascade's `Modified` and `IsDeleted` records.
+- A face's name is the feature that created it plus its origin: `f<feature>/side/e<curve>`, `f<feature>/start/<profile>` or `f<feature>/end/<profile>`, where a profile is named by its outer boundary's curve ids. Names are carried through every later boolean. A face merged from several keeps all of their names.
+- A profile that is no longer closed after a sketch edit is not re-guessed: the feature is flagged with the reason and skipped, and the rest of the timeline still builds.
+- Tests check that every name sits on exactly one face, and that the names are unchanged after a dimension edit.
+- Not yet: references *to* faces (sketch on face, fillet edges, CAM). They will resolve these names, and refuse a name that matches no face or several.

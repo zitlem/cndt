@@ -10,9 +10,11 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    Command, CommandError, CreateSketch, DeleteSketch, EditSketch, PointRef, RemoveParameter,
-    RenameDocument, SetParameter, SketchEdit,
+    AddExtrude, Command, CommandError, CreateSketch, DeleteFeature, DeleteSketch, EditExtrude,
+    EditSketch, PointRef, RemoveParameter, RenameDocument, SetParameter, SketchEdit,
 };
+use cndt_model::sketch::ProfileKey;
+use cndt_model::{FeatureId, Operation};
 
 /// The type of a command argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -36,6 +38,11 @@ pub enum ArgKind {
     /// A sketch constraint object, such as
     /// `{"type": "length", "line": 4, "value": 96}`.
     Constraint,
+    /// `join` or `cut`.
+    Operation,
+    /// A list of profiles, each the list of its outer boundary's curve ids,
+    /// such as `[[4, 5, 6, 7]]`.
+    Profiles,
 }
 
 /// One argument a command accepts.
@@ -145,6 +152,119 @@ impl Registry {
                     description: "The parameter to delete.",
                 }],
                 build: |args| Ok(Box::new(RemoveParameter::new(&text(args, "name")?))),
+            },
+            CommandSpec {
+                name: "feature.extrude",
+                description: "Extrude sketch profiles into a solid, or cut them from it.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "distance",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres along the sketch plane's normal; negative goes the other way.",
+                    },
+                    ArgSpec {
+                        name: "operation",
+                        kind: ArgKind::Operation,
+                        required: false,
+                        description: "join (default) or cut.",
+                    },
+                    ArgSpec {
+                        name: "profiles",
+                        kind: ArgKind::Profiles,
+                        required: false,
+                        description: "Which regions; by default every region that is material, so a circle inside an outline is a hole.",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next ExtrudeN.",
+                    },
+                ],
+                build: |args| {
+                    let operation = if args.contains_key("operation") {
+                        operation(args)?
+                    } else {
+                        Operation::Join
+                    };
+                    let profiles = if args.contains_key("profiles") {
+                        Some(profiles(args)?)
+                    } else {
+                        None
+                    };
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(AddExtrude::new(
+                        sketch_id(args)?,
+                        profiles,
+                        number(args, "distance")?,
+                        operation,
+                        name,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.edit_extrude",
+                description: "Change an extrusion's distance, operation or profiles.",
+                args: &[
+                    FEATURE,
+                    ArgSpec {
+                        name: "distance",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Millimetres.",
+                    },
+                    ArgSpec {
+                        name: "operation",
+                        kind: ArgKind::Operation,
+                        required: false,
+                        description: "join or cut.",
+                    },
+                    ArgSpec {
+                        name: "profiles",
+                        kind: ArgKind::Profiles,
+                        required: false,
+                        description: "Which regions.",
+                    },
+                ],
+                build: |args| {
+                    let distance = if args.contains_key("distance") {
+                        Some(number(args, "distance")?)
+                    } else {
+                        None
+                    };
+                    let op = if args.contains_key("operation") {
+                        Some(operation(args)?)
+                    } else {
+                        None
+                    };
+                    let profiles = if args.contains_key("profiles") {
+                        Some(profiles(args)?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(EditExtrude::new(
+                        FeatureId(id(args, "feature")?),
+                        distance,
+                        op,
+                        profiles,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.delete",
+                description: "Delete a feature from the timeline.",
+                args: &[FEATURE],
+                build: |args| {
+                    Ok(Box::new(DeleteFeature::new(FeatureId(id(
+                        args, "feature",
+                    )?))))
+                },
             },
             CommandSpec {
                 name: "sketch.create",
@@ -512,6 +632,28 @@ fn number(args: &Map<String, Value>, key: &str) -> Result<f64, String> {
     }
 }
 
+/// The `feature` argument of the timeline commands.
+const FEATURE: ArgSpec = ArgSpec {
+    name: "feature",
+    kind: ArgKind::Id,
+    required: true,
+    description: "The feature's id.",
+};
+
+fn operation(args: &Map<String, Value>) -> Result<Operation, String> {
+    match text(args, "operation")?.as_str() {
+        "join" => Ok(Operation::Join),
+        "cut" => Ok(Operation::Cut),
+        other => Err(format!("unknown operation {other:?}; use join or cut")),
+    }
+}
+
+fn profiles(args: &Map<String, Value>) -> Result<Vec<ProfileKey>, String> {
+    serde_json::from_value(args.get("profiles").cloned().unwrap_or_default()).map_err(|_| {
+        String::from("\"profiles\" must be a list of curve-id lists, like [[4, 5, 6, 7]]")
+    })
+}
+
 /// The `sketch` argument every sketch command takes.
 const SKETCH: ArgSpec = ArgSpec {
     name: "sketch",
@@ -616,6 +758,16 @@ mod tests {
                 "unexpected argument",
             ),
             ("sketch.create", json!({"plane": "top"}), "unknown plane"),
+            (
+                "feature.extrude",
+                json!({"sketch": 0, "distance": 1, "operation": "add"}),
+                "unknown operation",
+            ),
+            (
+                "feature.extrude",
+                json!({"sketch": 0, "distance": 1, "profiles": [1, 2]}),
+                "curve-id lists",
+            ),
             ("sketch.delete", json!({"sketch": -1}), "whole number id"),
             (
                 "sketch.add_point",
@@ -664,6 +816,12 @@ mod tests {
                 json!({"name": "x", "value": 1, "unit": "none"}),
             ),
             ("parameter.remove", json!({"name": "x"})),
+            ("feature.extrude", json!({"sketch": 0, "distance": 20})),
+            (
+                "feature.edit_extrude",
+                json!({"feature": 0, "distance": 25, "operation": "cut", "profiles": [[4, 5, 6, 7]]}),
+            ),
+            ("feature.delete", json!({"feature": 0})),
             ("sketch.create", json!({"plane": "xy"})),
             ("sketch.delete", json!({"sketch": 0})),
             (

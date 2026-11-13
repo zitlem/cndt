@@ -8,6 +8,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cndt_geom::{BoundingBox, Point3, TriangleMesh};
 use serde::Serialize;
@@ -47,6 +48,9 @@ pub enum KernelError {
     },
     /// The kernel failed while working on valid input.
     Internal(String),
+    /// A modelling operation could not make a valid solid. Says why, in
+    /// words a user can act on.
+    Modelling(String),
 }
 
 impl fmt::Display for KernelError {
@@ -57,6 +61,7 @@ impl fmt::Display for KernelError {
             }
             Self::Empty { path } => write!(f, "{} contains no geometry", path.display()),
             Self::Internal(reason) => write!(f, "geometry kernel error: {reason}"),
+            Self::Modelling(reason) => f.write_str(reason),
         }
     }
 }
@@ -84,6 +89,130 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// Returns [`KernelError`] if the file cannot be read, holds no geometry,
     /// or cannot be triangulated.
     fn mesh_step(&self, path: &Path, deflection: f64) -> Result<TriangleMesh, KernelError>;
+
+    /// Sweeps a planar region along `normal` by `distance` millimetres
+    /// (negative sweeps backwards). The first loop is the outer boundary, the
+    /// rest are holes; loops may run either way round, but each must be in
+    /// order, every curve starting where the last ended.
+    ///
+    /// History sources: curve `i`, counting through all loops, for the side
+    /// face it swept; `n` for the start cap and `n + 1` for the end cap.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] when the profile or sweep is not valid.
+    fn extrude(
+        &self,
+        loops: &[Vec<Curve>],
+        normal: [f64; 3],
+        distance: f64,
+    ) -> Result<Made, KernelError>;
+
+    /// Fuses or cuts two bodies.
+    ///
+    /// History sources: face `i` of `a` is `i`; face `j` of `b` is
+    /// `a.faces + j`.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`], for example when a cut removes everything.
+    fn boolean(&self, a: &Body, b: &Body, op: BooleanOp) -> Result<Made, KernelError>;
+
+    /// Volume, bounds and face count of a body.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Internal`] if the kernel fails.
+    fn properties(&self, body: &Body) -> Result<BodyProperties, KernelError>;
+
+    /// Triangulates a body for display. Face numbers match the history.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Internal`] if triangulation fails.
+    fn mesh(&self, body: &Body, deflection: f64) -> Result<TriangleMesh, KernelError>;
+}
+
+/// A profile curve in model coordinates, millimetres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Curve {
+    /// A straight line.
+    Line {
+        /// Start.
+        start: Point3,
+        /// End.
+        end: Point3,
+    },
+    /// An arc, counter-clockwise about the extrusion normal.
+    Arc {
+        /// Centre.
+        center: Point3,
+        /// Start; sets the radius.
+        start: Point3,
+        /// End.
+        end: Point3,
+    },
+    /// A full circle in the plane normal to the extrusion.
+    Circle {
+        /// Centre.
+        center: Point3,
+        /// Radius.
+        radius: f64,
+    },
+}
+
+/// How a boolean combines two bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BooleanOp {
+    /// Union.
+    Fuse,
+    /// The first minus the second.
+    Cut,
+}
+
+/// A solid body held by the kernel. Cheap to clone; the geometry is shared.
+#[derive(Debug, Clone)]
+pub struct Body(Arc<cndt_occt_sys::Shape>);
+
+/// The result of a modelling operation.
+#[derive(Debug, Clone)]
+pub struct Made {
+    /// The new body.
+    pub body: Body,
+    /// `(source, face)` pairs: which result face each source became. What a
+    /// source is depends on the operation.
+    pub history: Vec<(u32, u32)>,
+}
+
+/// Size and topology of a body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyProperties {
+    /// Cubic millimetres.
+    pub volume: f64,
+    /// Bounding box.
+    pub bounds: BoundingBox,
+    /// Number of faces.
+    pub faces: u32,
+    /// Number of separate solids.
+    pub solids: u32,
+}
+
+fn xyz(p: Point3) -> [f64; 3] {
+    [p.x, p.y, p.z]
+}
+
+fn modelling(error: cndt_occt_sys::OcctError) -> KernelError {
+    match error {
+        cndt_occt_sys::OcctError::ModelFailed(reason) => KernelError::Modelling(reason),
+        other => KernelError::Internal(other.to_string()),
+    }
+}
+
+fn made(made: cndt_occt_sys::Made) -> Made {
+    Made {
+        body: Body(Arc::new(made.shape)),
+        history: made.history,
+    }
 }
 
 /// The OpenCascade implementation of [`Kernel`].
@@ -121,6 +250,74 @@ impl Kernel for OpenCascade {
             face_count: mesh.face_count,
         })
     }
+
+    fn extrude(
+        &self,
+        loops: &[Vec<Curve>],
+        normal: [f64; 3],
+        distance: f64,
+    ) -> Result<Made, KernelError> {
+        use cndt_occt_sys::Curve as C;
+        let loops: Vec<Vec<C>> = loops
+            .iter()
+            .map(|curves| {
+                curves
+                    .iter()
+                    .map(|c| match *c {
+                        Curve::Line { start, end } => C::Line {
+                            start: xyz(start),
+                            end: xyz(end),
+                        },
+                        Curve::Arc { center, start, end } => C::Arc {
+                            center: xyz(center),
+                            start: xyz(start),
+                            end: xyz(end),
+                        },
+                        Curve::Circle { center, radius } => C::Circle {
+                            center: xyz(center),
+                            radius,
+                        },
+                    })
+                    .collect()
+            })
+            .collect();
+        cndt_occt_sys::extrude(&loops, normal, distance)
+            .map(made)
+            .map_err(modelling)
+    }
+
+    fn boolean(&self, a: &Body, b: &Body, op: BooleanOp) -> Result<Made, KernelError> {
+        let op = match op {
+            BooleanOp::Fuse => cndt_occt_sys::BooleanOp::Fuse,
+            BooleanOp::Cut => cndt_occt_sys::BooleanOp::Cut,
+        };
+        cndt_occt_sys::boolean(&a.0, &b.0, op)
+            .map(made)
+            .map_err(modelling)
+    }
+
+    fn properties(&self, body: &Body) -> Result<BodyProperties, KernelError> {
+        let p = cndt_occt_sys::properties(&body.0).map_err(modelling)?;
+        Ok(BodyProperties {
+            volume: p.volume,
+            bounds: BoundingBox {
+                min: Point3::new(p.min[0], p.min[1], p.min[2]),
+                max: Point3::new(p.max[0], p.max[1], p.max[2]),
+            },
+            faces: p.faces,
+            solids: p.solids,
+        })
+    }
+
+    fn mesh(&self, body: &Body, deflection: f64) -> Result<TriangleMesh, KernelError> {
+        let mesh = cndt_occt_sys::mesh(&body.0, deflection).map_err(modelling)?;
+        Ok(TriangleMesh {
+            positions: mesh.positions,
+            indices: mesh.indices,
+            triangle_faces: mesh.triangle_faces,
+            face_count: mesh.face_count,
+        })
+    }
 }
 
 fn kernel_error(path: &Path, error: cndt_occt_sys::OcctError) -> KernelError {
@@ -141,6 +338,7 @@ fn kernel_error(path: &Path, error: cndt_occt_sys::OcctError) -> KernelError {
         OcctError::MeshFailed(reason) => {
             KernelError::Internal(format!("triangulation failed: {reason}"))
         }
+        OcctError::ModelFailed(reason) => KernelError::Modelling(reason),
     }
 }
 

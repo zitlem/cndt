@@ -22,6 +22,11 @@ const CORE_LIBS: &[&str] = &[
     "TKTopAlgo",
     "TKMesh",
     "TKXSBase",
+    "TKGeomAlgo",
+    "TKPrim",
+    "TKBO",
+    "TKBool",
+    "TKShHealing",
 ];
 
 /// STEP support: one library from 7.8 on, four before.
