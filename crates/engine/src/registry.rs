@@ -11,8 +11,8 @@ use serde_json::{Map, Value};
 
 use crate::{
     AddBlend, AddExtrude, AddHole, BlendKind, Command, CommandError, CreateSketch, DeleteFeature,
-    DeleteSketch, EditBlend, EditExtrude, EditHole, EditSketch, Grid, PointRef, RemoveParameter,
-    RenameDocument, SetParameter, SetPattern, SketchEdit,
+    DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole, EditSketch, Grid, PointRef,
+    RemoveParameter, RenameDocument, SetParameter, SetPattern, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, Thread};
@@ -408,6 +408,241 @@ impl Registry {
                         FeatureId(id(args, "feature")?),
                         grid(args)?,
                     )))
+                },
+            },
+            CommandSpec {
+                name: "cam.set_stock",
+                description: "Set the raw stock: the part's box plus allowances.",
+                args: &[
+                    ArgSpec {
+                        name: "side",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres on each of the four sides.",
+                    },
+                    ArgSpec {
+                        name: "top",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres above the part.",
+                    },
+                    ArgSpec {
+                        name: "bottom",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres below the part.",
+                    },
+                ],
+                build: |args| {
+                    let stock = cndt_model::cam::Stock {
+                        side: number(args, "side")?,
+                        top: number(args, "top")?,
+                        bottom: number(args, "bottom")?,
+                    };
+                    cam("cam.set_stock", cndt_model::cam::CamEdit::SetStock(stock))
+                },
+            },
+            CommandSpec {
+                name: "cam.add_setup",
+                description: "Add a setup: which side faces the spindle, and the work offset. The first setup brings in the default tool library.",
+                args: &[
+                    ArgSpec {
+                        name: "side",
+                        kind: ArgKind::Text,
+                        required: true,
+                        description: "top, or bottom for the part flipped about X.",
+                    },
+                    ArgSpec {
+                        name: "work_offset",
+                        kind: ArgKind::Id,
+                        required: false,
+                        description: "1 (G54, the default) to 6 (G59).",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to Setup N (side).",
+                    },
+                ],
+                build: |args| {
+                    let work_offset = if args.contains_key("work_offset") {
+                        u8::try_from(id(args, "work_offset")?)
+                            .map_err(|_| String::from("\"work_offset\" must be 1 to 6"))?
+                    } else {
+                        1
+                    };
+                    let name = if args.contains_key("name") {
+                        text(args, "name")?
+                    } else {
+                        String::new()
+                    };
+                    cam(
+                        "cam.add_setup",
+                        cndt_model::cam::CamEdit::AddSetup {
+                            name,
+                            side: side(args)?,
+                            work_offset,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "cam.remove_setup",
+                description: "Delete a setup and its operations.",
+                args: &[ArgSpec {
+                    name: "setup",
+                    kind: ArgKind::Id,
+                    required: true,
+                    description: "The setup's id.",
+                }],
+                build: |args| {
+                    cam(
+                        "cam.remove_setup",
+                        cndt_model::cam::CamEdit::RemoveSetup(id(args, "setup")?),
+                    )
+                },
+            },
+            CommandSpec {
+                name: "cam.add_operation",
+                description: "Add an operation at the end of a setup. Kinds: holes (spot, drill, tap and ream every hole facing the spindle).",
+                args: &[
+                    ArgSpec {
+                        name: "setup",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The setup's id.",
+                    },
+                    ArgSpec {
+                        name: "type",
+                        kind: ArgKind::Text,
+                        required: true,
+                        description: "holes",
+                    },
+                ],
+                build: |args| {
+                    let operation = match text(args, "type")?.as_str() {
+                        "holes" => cndt_model::cam::OperationDef::Holes,
+                        other => return Err(format!("unknown operation {other:?}; use holes")),
+                    };
+                    cam(
+                        "cam.add_operation",
+                        cndt_model::cam::CamEdit::AddOperation {
+                            setup: id(args, "setup")?,
+                            operation,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "cam.remove_operation",
+                description: "Delete an operation from a setup.",
+                args: &[
+                    ArgSpec {
+                        name: "setup",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The setup's id.",
+                    },
+                    ArgSpec {
+                        name: "operation",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The operation's id.",
+                    },
+                ],
+                build: |args| {
+                    cam(
+                        "cam.remove_operation",
+                        cndt_model::cam::CamEdit::RemoveOperation {
+                            setup: id(args, "setup")?,
+                            operation: id(args, "operation")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "cam.set_tool",
+                description: "Add a tool to the library, or replace one.",
+                args: &[
+                    ArgSpec {
+                        name: "number",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "Pocket and length offset number, 1 to 999.",
+                    },
+                    ArgSpec {
+                        name: "kind",
+                        kind: ArgKind::Text,
+                        required: true,
+                        description: "spot_drill, drill, tap, reamer, end_mill, face_mill or chamfer_mill.",
+                    },
+                    ArgSpec {
+                        name: "thread",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "For a tap: its thread, such as M6x1.0.",
+                    },
+                    ArgSpec {
+                        name: "diameter",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres.",
+                    },
+                    ArgSpec {
+                        name: "rpm",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Spindle speed.",
+                    },
+                    ArgSpec {
+                        name: "feed",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres per minute.",
+                    },
+                    ArgSpec {
+                        name: "description",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Shown in the program.",
+                    },
+                ],
+                build: |args| {
+                    let tool = cndt_model::cam::Tool {
+                        kind: tool_kind(args)?,
+                        diameter: number(args, "diameter")?,
+                        rpm: number(args, "rpm")?,
+                        feed: number(args, "feed")?,
+                        description: if args.contains_key("description") {
+                            text(args, "description")?
+                        } else {
+                            String::new()
+                        },
+                    };
+                    cam(
+                        "cam.set_tool",
+                        cndt_model::cam::CamEdit::SetTool {
+                            number: id(args, "number")?,
+                            tool,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "cam.remove_tool",
+                description: "Delete a tool from the library.",
+                args: &[ArgSpec {
+                    name: "number",
+                    kind: ArgKind::Id,
+                    required: true,
+                    description: "The tool's number.",
+                }],
+                build: |args| {
+                    cam(
+                        "cam.remove_tool",
+                        cndt_model::cam::CamEdit::RemoveTool(id(args, "number")?),
+                    )
                 },
             },
             CommandSpec {
@@ -1082,6 +1317,38 @@ fn grid(args: &Map<String, Value>) -> Result<Grid, String> {
     })
 }
 
+fn side(args: &Map<String, Value>) -> Result<cndt_model::cam::Side, String> {
+    match text(args, "side")?.as_str() {
+        "top" => Ok(cndt_model::cam::Side::Top),
+        "bottom" => Ok(cndt_model::cam::Side::Bottom),
+        other => Err(format!("unknown side {other:?}; use top or bottom")),
+    }
+}
+
+fn tool_kind(args: &Map<String, Value>) -> Result<cndt_model::cam::ToolKind, String> {
+    use cndt_model::cam::ToolKind as K;
+    Ok(match text(args, "kind")?.as_str() {
+        "spot_drill" => K::SpotDrill,
+        "drill" => K::Drill,
+        "tap" => K::Tap {
+            thread: text(args, "thread")?,
+        },
+        "reamer" => K::Reamer,
+        "end_mill" => K::EndMill,
+        "face_mill" => K::FaceMill,
+        "chamfer_mill" => K::ChamferMill,
+        other => {
+            return Err(format!(
+                "unknown tool kind {other:?}; use spot_drill, drill, tap, reamer, end_mill, face_mill or chamfer_mill"
+            ));
+        }
+    })
+}
+
+fn cam(name: &'static str, edit: cndt_model::cam::CamEdit) -> Result<Box<dyn Command>, String> {
+    Ok(Box::new(EditCam::new(name, edit)))
+}
+
 /// The `feature` argument of the timeline commands.
 const FEATURE: ArgSpec = ArgSpec {
     name: "feature",
@@ -1209,6 +1476,17 @@ mod tests {
             ),
             ("sketch.create", json!({"plane": "top"}), "unknown plane"),
             ("sketch.create", json!({}), "either"),
+            ("cam.add_setup", json!({"side": "left"}), "unknown side"),
+            (
+                "cam.add_operation",
+                json!({"setup": 0, "type": "engrave"}),
+                "unknown operation",
+            ),
+            (
+                "cam.set_tool",
+                json!({"number": 1, "kind": "saw", "diameter": 1, "rpm": 1, "feed": 1}),
+                "unknown tool kind",
+            ),
             (
                 "feature.chamfer",
                 json!({"distance": 1}),
@@ -1313,6 +1591,16 @@ mod tests {
                 json!({"feature": 0, "distance": 25, "operation": "cut", "profiles": [[4, 5, 6, 7]]}),
             ),
             ("feature.delete", json!({"feature": 0})),
+            ("cam.set_stock", json!({"side": 2, "top": 2, "bottom": 3})),
+            ("cam.add_setup", json!({"side": "top"})),
+            ("cam.remove_setup", json!({"setup": 0})),
+            ("cam.add_operation", json!({"setup": 0, "type": "holes"})),
+            ("cam.remove_operation", json!({"setup": 0, "operation": 0})),
+            (
+                "cam.set_tool",
+                json!({"number": 20, "kind": "tap", "thread": "M5x0.8", "diameter": 5, "rpm": 500, "feed": 400}),
+            ),
+            ("cam.remove_tool", json!({"number": 20})),
             (
                 "feature.pattern",
                 json!({"feature": 1, "count_x": 4, "spacing_x": 20}),

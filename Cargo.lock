@@ -455,7 +455,6 @@ dependencies = [
  "cndt-geom",
  "cndt-kernel",
  "cndt-model",
- "serde",
 ]
 
 [[package]]

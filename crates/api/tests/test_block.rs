@@ -375,8 +375,35 @@ fn the_cndt_test_block() {
     s.call(json!({"method": "undo"}));
     s.call(json!({"method": "undo"}));
 
-    // Phase 2, first slice: the holes, as G-code (decision 0013).
+    // Phase 2: the holes, as G-code (decisions 0013 and 0014). Without a
+    // setup there is nothing to post, and it says so.
     let reply = s.call(json!({"method": "post", "post": "fanuc-mill"}));
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no setups"),
+        "{reply}"
+    );
+    s.exec("cam.set_stock", json!({"side": 2, "top": 2, "bottom": 3}));
+    let state = s.exec("cam.add_setup", json!({"side": "top"}));
+    assert_eq!(
+        state["document"]["cam"]["setups"][0]["setup"]["name"],
+        "Setup 1 (top)"
+    );
+    s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
+    // The bottom setup: the part flipped about X. No holes face it yet.
+    s.exec("cam.add_setup", json!({"side": "bottom", "work_offset": 2}));
+    s.exec("cam.add_operation", json!({"setup": 1, "type": "holes"}));
+    let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 1}));
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no holes"),
+        "{reply}"
+    );
+    let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 0}));
     assert_eq!(reply["ok"], true, "{reply}");
     let gcode = reply["result"]["gcode"].as_str().unwrap();
     let notes = reply["result"]["notes"].to_string();

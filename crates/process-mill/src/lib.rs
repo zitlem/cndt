@@ -18,146 +18,35 @@ use cndt_cam_core::{
     Coolant, Cycle, CycleKind, Event, Move, Operation, Program, SpindleDirection, Step,
 };
 use cndt_geom::Point3;
+use cndt_model::cam::{OperationDef, SetupDef, Side};
 use cndt_model::{Document, Feature, FrameStatus, HoleDepth, Rebuilt, threads};
-use serde::Serialize;
 
-/// What a tool is, for picking the right one.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ToolKind {
-    /// A 90° spot drill.
-    SpotDrill,
-    /// A twist drill.
-    Drill,
-    /// A machine tap for this thread size.
-    Tap {
-        /// Such as `M6x1.0`.
-        thread: String,
-    },
-    /// A reamer.
-    Reamer,
-    /// A flat end mill.
-    EndMill,
-    /// A face mill.
-    FaceMill,
-    /// A 90° chamfer mill.
-    ChamferMill,
-}
+pub use cndt_model::cam::{Tool, ToolKind};
 
-/// A tool in the library, with its cutting data.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Tool {
-    /// The pocket and length-offset number (T and H).
-    pub number: u32,
-    /// What it is.
-    pub kind: ToolKind,
-    /// Cutting diameter in millimetres.
-    pub diameter: f64,
-    /// Spindle speed.
-    pub rpm: f64,
-    /// Plunge feed in millimetres per minute (for taps, set from the pitch).
-    pub feed: f64,
-    /// Shown in the program, such as `5.0 mm drill`.
-    pub description: String,
-}
-
-/// The tools on hand.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// The tools a program may use, by number.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolLibrary {
-    /// Every tool, by number.
+    /// Every tool, by number (T and H).
     pub tools: BTreeMap<u32, Tool>,
 }
 
 impl ToolLibrary {
-    /// The default library of decision 0013, with conservative cutting data
-    /// for 6061 aluminium. A shop replaces it with its own.
+    /// The default library of decision 0013.
     #[must_use]
     pub fn default_aluminium() -> Self {
-        let mut tools = BTreeMap::new();
-        let mut add = |number, kind, diameter, rpm, feed, description: &str| {
-            tools.insert(
-                number,
-                Tool {
-                    number,
-                    kind,
-                    diameter,
-                    rpm,
-                    feed,
-                    description: description.to_owned(),
-                },
-            );
-        };
-        add(
-            1,
-            ToolKind::SpotDrill,
-            10.0,
-            3000.0,
-            200.0,
-            "10 mm 90 deg spot drill",
-        );
-        add(2, ToolKind::Drill, 5.0, 2500.0, 250.0, "5.0 mm drill");
-        add(3, ToolKind::Drill, 5.5, 2300.0, 250.0, "5.5 mm drill");
-        add(4, ToolKind::Drill, 6.6, 2000.0, 250.0, "6.6 mm drill");
-        add(5, ToolKind::Drill, 7.8, 1600.0, 220.0, "7.8 mm drill");
-        add(
-            6,
-            ToolKind::Tap {
-                thread: String::from("M6x1.0"),
-            },
-            6.0,
-            600.0,
-            600.0,
-            "M6 x 1.0 tap",
-        );
-        add(7, ToolKind::Reamer, 8.0, 400.0, 120.0, "8 mm H7 reamer");
-        add(
-            10,
-            ToolKind::FaceMill,
-            50.0,
-            6000.0,
-            1500.0,
-            "50 mm face mill",
-        );
-        add(
-            11,
-            ToolKind::EndMill,
-            10.0,
-            8000.0,
-            1200.0,
-            "10 mm 3 flute end mill",
-        );
-        add(
-            12,
-            ToolKind::EndMill,
-            6.0,
-            10000.0,
-            900.0,
-            "6 mm 3 flute end mill",
-        );
-        add(
-            13,
-            ToolKind::EndMill,
-            4.0,
-            12000.0,
-            600.0,
-            "4 mm 3 flute end mill",
-        );
-        add(
-            14,
-            ToolKind::ChamferMill,
-            6.0,
-            8000.0,
-            600.0,
-            "6 mm 90 deg chamfer mill",
-        );
-        Self { tools }
+        Self {
+            tools: cndt_model::cam::default_tools(),
+        }
     }
 
-    fn find(&self, wanted: impl Fn(&Tool) -> bool) -> Option<&Tool> {
-        self.tools.values().find(|tool| wanted(tool))
+    fn find(&self, wanted: impl Fn(&Tool) -> bool) -> Option<(u32, &Tool)> {
+        self.tools
+            .iter()
+            .find(|(_, tool)| wanted(tool))
+            .map(|(n, t)| (*n, t))
     }
 
-    fn drill(&self, diameter: f64) -> Option<&Tool> {
+    fn drill(&self, diameter: f64) -> Option<(u32, &Tool)> {
         self.find(|t| t.kind == ToolKind::Drill && (t.diameter - diameter).abs() < 1e-6)
     }
 }
@@ -165,9 +54,12 @@ impl ToolLibrary {
 /// Where the part sits on the machine for one setup.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Setup {
-    /// The work-offset origin in model coordinates. Program X, Y and Z are
-    /// model coordinates minus this; the spindle looks down model −Z.
+    /// The work-offset origin in model coordinates. For the top side,
+    /// program X, Y and Z are model coordinates minus this; for the bottom
+    /// side (flipped about X), program Y and Z are mirrored.
     pub origin: Point3,
+    /// Which side faces the spindle.
+    pub side: Side,
     /// Work offset, 1 (G54) to 6 (G59).
     pub work_offset: u8,
     /// Height above the origin for moves between holes.
@@ -184,10 +76,48 @@ impl Setup {
         let bounds = rebuilt.properties?.bounds;
         Some(Self {
             origin: Point3::new(bounds.min.x, bounds.min.y, bounds.max.z),
+            side: Side::Top,
             work_offset: 1,
             safe_z: 10.0,
             clearance: 2.0,
         })
+    }
+
+    /// A stored setup on the rebuilt part: G-offset at the front-left corner
+    /// of the side machined, Z0 on that face (decision 0014).
+    #[must_use]
+    pub fn from_def(def: &SetupDef, rebuilt: &Rebuilt) -> Option<Self> {
+        let bounds = rebuilt.properties?.bounds;
+        let origin = match def.side {
+            Side::Top => Point3::new(bounds.min.x, bounds.min.y, bounds.max.z),
+            // Flipped about X: the old back edge is now at the front.
+            Side::Bottom => Point3::new(bounds.min.x, bounds.max.y, bounds.min.z),
+        };
+        Some(Self {
+            origin,
+            side: def.side,
+            work_offset: def.work_offset,
+            safe_z: 10.0,
+            clearance: 2.0,
+        })
+    }
+
+    /// A model point in program coordinates.
+    fn program_point(&self, p: Point3) -> Point3 {
+        let o = self.origin;
+        match self.side {
+            Side::Top => Point3::new(round3(p.x - o.x), round3(p.y - o.y), round3(p.z - o.z)),
+            Side::Bottom => Point3::new(round3(p.x - o.x), round3(o.y - p.y), round3(o.z - p.z)),
+        }
+    }
+
+    /// The model direction the spindle looks along, as the normal a hole's
+    /// sketch must have to face it.
+    const fn facing(&self) -> f64 {
+        match self.side {
+            Side::Top => 1.0,
+            Side::Bottom => -1.0,
+        }
     }
 }
 
@@ -200,6 +130,10 @@ pub enum CamError {
     NoTool(String),
     /// Nothing to do.
     Nothing,
+    /// No such setup.
+    UnknownSetup(u32),
+    /// The document has no setups yet.
+    NoSetups,
 }
 
 impl fmt::Display for CamError {
@@ -208,6 +142,11 @@ impl fmt::Display for CamError {
             Self::NoPart => write!(f, "there is no part to machine yet"),
             Self::NoTool(what) => write!(f, "the tool library has no {what}; add one"),
             Self::Nothing => write!(f, "the part has no holes this setup can make"),
+            Self::UnknownSetup(id) => write!(f, "there is no setup {id}"),
+            Self::NoSetups => write!(
+                f,
+                "the document has no setups yet; add one (cam.add_setup) and give it operations"
+            ),
         }
     }
 }
@@ -258,7 +197,8 @@ pub fn hole_program(
     name: &str,
 ) -> Result<Planned, CamError> {
     let bounds = rebuilt.properties.ok_or(CamError::NoPart)?.bounds;
-    let bottom = round3(bounds.min.z - setup.origin.z);
+    // The far side of the part, in program Z.
+    let bottom = round3(-(bounds.max.z - bounds.min.z));
     let mut notes = Vec::new();
     let mut holes: Vec<Hole> = Vec::new();
     for entry in document.features() {
@@ -281,7 +221,7 @@ pub fn hole_program(
         let Some(FrameStatus::Ok { frame }) = rebuilt.frames.get(sketch) else {
             continue;
         };
-        if (frame.normal[2] - 1.0).abs() > 1e-9 {
+        if (frame.normal[2] - setup.facing()).abs() > 1e-9 {
             notes.push(format!(
                 "{name}: skipped, its holes do not face the spindle in this setup"
             ));
@@ -304,12 +244,7 @@ pub fn hole_program(
             let Some(p) = record.sketch.point(*point) else {
                 continue;
             };
-            let model = frame.at(p.x, p.y);
-            let at = Point3::new(
-                round3(model.x - setup.origin.x),
-                round3(model.y - setup.origin.y),
-                round3(model.z - setup.origin.z),
-            );
+            let at = setup.program_point(frame.at(p.x, p.y));
             let thread = spec
                 .thread
                 .as_ref()
@@ -351,7 +286,7 @@ pub fn hole_program(
     }
     let cycles = by_depth
         .into_iter()
-        .map(|(depth, at)| (CycleKind::Drill, at, -(depth as f64) / 1000.0, spot.feed))
+        .map(|(depth, at)| (CycleKind::Drill, at, -(depth as f64) / 1000.0, spot.1.feed))
         .collect();
     operations.push(operation("Spot drill", spot, setup, cycles));
 
@@ -397,7 +332,7 @@ pub fn hole_program(
                 } else {
                     CycleKind::Drill
                 };
-                (kind, at, z, tool.feed)
+                (kind, at, z, tool.1.feed)
             })
             .collect();
         operations.push(operation(
@@ -436,8 +371,8 @@ pub fn hole_program(
                 .or_default()
                 .push(hole.at);
         }
-        let mut tapping = tool.clone();
-        tapping.feed = tool.rpm * pitch;
+        let mut tapping = tool.1.clone();
+        tapping.feed = tapping.rpm * pitch;
         let cycles = by_depth
             .into_iter()
             .map(|(z, at)| {
@@ -451,7 +386,7 @@ pub fn hole_program(
             .collect();
         operations.push(operation(
             &format!("Tap {designation}"),
-            &tapping,
+            (tool.0, &tapping),
             setup,
             cycles,
         ));
@@ -483,7 +418,7 @@ pub fn hole_program(
         }
         let cycles = by_depth
             .into_iter()
-            .map(|(z, at)| (CycleKind::Ream, at, z as f64 / 1000.0, tool.feed))
+            .map(|(z, at)| (CycleKind::Ream, at, z as f64 / 1000.0, tool.1.feed))
             .collect();
         operations.push(operation(
             &format!("Ream {diameter} mm"),
@@ -502,18 +437,69 @@ pub fn hole_program(
     Ok(Planned { program, notes })
 }
 
+/// Plans every operation of a stored setup (decision 0014).
+///
+/// # Errors
+///
+/// [`CamError`] when there are no setups, no such setup, no part, or an
+/// operation cannot be planned.
+pub fn plan_setup(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    setup_id: Option<u32>,
+) -> Result<Planned, CamError> {
+    let cam = document.cam();
+    let entry = match setup_id {
+        Some(id) => cam
+            .setups
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or(CamError::UnknownSetup(id))?,
+        None => cam.setups.first().ok_or(CamError::NoSetups)?,
+    };
+    let setup = Setup::from_def(&entry.setup, rebuilt).ok_or(CamError::NoPart)?;
+    let library = ToolLibrary {
+        tools: cam.tools.clone(),
+    };
+    let name = format!("{} {}", document.name(), entry.setup.name);
+    let mut program = Program {
+        name,
+        number: 1000 + entry.id,
+        work_offset: setup.work_offset,
+        operations: Vec::new(),
+    };
+    let mut notes = Vec::new();
+    for op in &entry.setup.operations {
+        match op.operation {
+            OperationDef::Holes => {
+                let planned = hole_program(document, rebuilt, &setup, &library, &program.name)?;
+                program.operations.extend(planned.program.operations);
+                notes.extend(planned.notes);
+            }
+        }
+    }
+    if program.operations.is_empty() {
+        return Err(CamError::Nothing);
+    }
+    Ok(Planned { program, notes })
+}
+
 /// One tool's operation: change, spindle, coolant, then each cycle from
 /// the safe height.
 fn operation(
     name: &str,
-    tool: &Tool,
+    (number, tool): (u32, &Tool),
     setup: &Setup,
     cycles: Vec<(CycleKind, Vec<Point3>, f64, f64)>,
 ) -> Operation {
     let mut steps = vec![
         Step::Event(Event::ToolChange {
-            number: tool.number,
-            description: tool.description.clone(),
+            number,
+            description: if tool.description.is_empty() {
+                format!("tool {number}")
+            } else {
+                tool.description.clone()
+            },
         }),
         Step::Event(Event::SpindleOn {
             rpm: tool.rpm,
@@ -543,5 +529,132 @@ fn operation(
     Operation {
         name: name.to_owned(),
         steps,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use cndt_cam_core::Move;
+    use cndt_kernel::OpenCascade;
+    use cndt_model::cam::CamEdit;
+    use cndt_model::sketch::{EntityId, Point2};
+    use cndt_model::{HoleSpec, Operation as Join, Plane, default_profiles, rebuild};
+
+    /// A 96 × 56 × 20 block with one Ø5 through hole drilled from below at
+    /// model (10, 10).
+    fn block_with_bottom_hole() -> Document {
+        let mut d = Document::new("Block");
+        let s = d.add_sketch("", Plane::Xy).unwrap();
+        d.edit_sketch(s, |k| {
+            let p: Vec<EntityId> = [(0.0, 0.0), (96.0, 0.0), (96.0, 56.0), (0.0, 56.0)]
+                .iter()
+                .map(|&(x, y)| k.add_point(Point2::new(x, y)))
+                .collect::<Result<_, _>>()?;
+            for i in 0..4 {
+                k.add_line(p[i], p[(i + 1) % 4])?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let profiles = default_profiles(&d.sketch(s).unwrap().sketch);
+        d.add_feature(Feature::Extrude {
+            name: "Body".into(),
+            sketch: s,
+            profiles,
+            distance: 20.0,
+            distance_expression: None,
+            operation: Join::Join,
+        })
+        .unwrap();
+        let bottom = rebuild(&d, &OpenCascade)
+            .faces
+            .iter()
+            .flatten()
+            .map(ToString::to_string)
+            .find(|n| n.starts_with("f0/start/"))
+            .unwrap();
+        let under = d.add_sketch("", Plane::Face(bottom)).unwrap();
+        // On the bottom face, sketch Y is model −Y.
+        let point = d
+            .edit_sketch(under, |k| k.add_point(Point2::new(10.0, -10.0)))
+            .unwrap();
+        d.add_feature(Feature::Hole {
+            name: "Under".into(),
+            sketch: under,
+            points: vec![point],
+            spec: HoleSpec {
+                diameter: 5.0,
+                depth: HoleDepth::Through,
+                tip_angle: 118.0,
+                counterbore: None,
+                thread: None,
+                fit: None,
+            },
+        })
+        .unwrap();
+        d
+    }
+
+    fn first_cycle(planned: &Planned) -> Cycle {
+        planned
+            .program
+            .operations
+            .iter()
+            .flat_map(|op| &op.steps)
+            .find_map(|step| match step {
+                Step::Move(Move::Cycle(c)) => Some(c.clone()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn the_bottom_setup_sees_the_part_flipped() {
+        let mut d = block_with_bottom_hole();
+        let top = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+            })
+            .unwrap()
+            .unwrap();
+        d.edit_cam(CamEdit::AddOperation {
+            setup: top,
+            operation: OperationDef::Holes,
+        })
+        .unwrap();
+        let under = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Bottom,
+                work_offset: 2,
+            })
+            .unwrap()
+            .unwrap();
+        d.edit_cam(CamEdit::AddOperation {
+            setup: under,
+            operation: OperationDef::Holes,
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        // From the top the hole does not face the spindle.
+        assert_eq!(plan_setup(&d, &r, Some(top)), Err(CamError::Nothing));
+        // From below it does: flipped about X, model y = 10 is program
+        // y = 56 − 10 = 46, and the bottom face is Z0.
+        let planned = plan_setup(&d, &r, Some(under)).unwrap();
+        assert_eq!(planned.program.work_offset, 2);
+        let spot = first_cycle(&planned);
+        assert_eq!(spot.holes, vec![Point3::new(10.0, 46.0, 0.0)]);
+        assert_eq!(plan_setup(&d, &r, Some(9)), Err(CamError::UnknownSetup(9)));
+    }
+
+    #[test]
+    fn no_setups_says_so() {
+        let d = block_with_bottom_hole();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(plan_setup(&d, &r, None), Err(CamError::NoSetups));
     }
 }

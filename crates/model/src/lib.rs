@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub mod cam;
 pub mod expr;
 mod features;
 pub mod threads;
@@ -173,6 +174,8 @@ pub enum ModelError {
     Sketch(SketchError),
     /// No feature has this id.
     UnknownFeature(FeatureId),
+    /// A CAM definition is not allowed; says why.
+    InvalidCam(String),
     /// A feature's values are not allowed; says why.
     InvalidFeature(String),
     /// An expression could not be evaluated.
@@ -213,6 +216,7 @@ impl fmt::Display for ModelError {
             Self::UnknownSketch(id) => write!(f, "{id} does not exist"),
             Self::Sketch(error) => error.fmt(f),
             Self::UnknownFeature(id) => write!(f, "{id} does not exist"),
+            Self::InvalidCam(reason) => f.write_str(reason),
             Self::Expression { text, reason } => write!(f, "cannot work out {text:?}: {reason}"),
             Self::ParameterInUse { name, by } => {
                 write!(f, "{name} is used by {}; change those first", by.join(", "))
@@ -249,6 +253,9 @@ pub struct Document {
     features: Vec<FeatureEntry>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_feature: u32,
+    /// Stock, tools, setups and operations (decision 0014).
+    #[serde(default, skip_serializing_if = "cam::Cam::is_empty")]
+    cam: cam::Cam,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes fields by reference
@@ -278,6 +285,7 @@ impl Document {
             next_sketch: 0,
             features: Vec::new(),
             next_feature: 0,
+            cam: cam::Cam::default(),
         }
     }
 
@@ -558,6 +566,21 @@ impl Document {
             .ok_or(ModelError::UnknownSketch(id))
     }
 
+    /// The CAM definitions.
+    #[must_use]
+    pub const fn cam(&self) -> &cam::Cam {
+        &self.cam
+    }
+
+    /// Changes the CAM definitions. Returns the id of anything created.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::InvalidCam`] with the reason; nothing changes then.
+    pub fn edit_cam(&mut self, edit: cam::CamEdit) -> Result<Option<u32>, ModelError> {
+        self.cam.apply(edit).map_err(ModelError::InvalidCam)
+    }
+
     /// The timeline, in order.
     #[must_use]
     pub fn features(&self) -> &[FeatureEntry] {
@@ -710,6 +733,7 @@ impl Document {
                 self.evaluate(text)?;
             }
         }
+        self.cam.check().map_err(ModelError::InvalidCam)?;
         let mut ids = BTreeSet::new();
         for entry in &self.features {
             if entry.id.0 >= self.next_feature || !ids.insert(entry.id) {
