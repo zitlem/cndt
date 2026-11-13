@@ -108,6 +108,22 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         distance: f64,
     ) -> Result<Made, KernelError>;
 
+    /// Revolves a closed polygon a full turn about an axis. The polygon lies
+    /// in a plane through the axis and may touch it along an edge.
+    ///
+    /// History sources: edge `i`, from point `i` to the next, for the face it
+    /// swept; edges on the axis sweep none.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] when the profile is not valid.
+    fn revolve(
+        &self,
+        points: &[Point3],
+        axis_origin: Point3,
+        axis_dir: [f64; 3],
+    ) -> Result<Made, KernelError>;
+
     /// Fuses or cuts two bodies.
     ///
     /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -290,6 +306,18 @@ impl Kernel for OpenCascade {
             })
             .collect();
         cndt_occt_sys::extrude(&loops, normal, distance)
+            .map(made)
+            .map_err(modelling)
+    }
+
+    fn revolve(
+        &self,
+        points: &[Point3],
+        axis_origin: Point3,
+        axis_dir: [f64; 3],
+    ) -> Result<Made, KernelError> {
+        let points: Vec<[f64; 3]> = points.iter().copied().map(xyz).collect();
+        cndt_occt_sys::revolve(&points, xyz(axis_origin), axis_dir)
             .map(made)
             .map_err(modelling)
     }

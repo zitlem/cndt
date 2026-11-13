@@ -769,6 +769,88 @@ mod tests {
     }
 
     #[test]
+    fn tapped_and_counterbored_holes_through_json() {
+        let mut api = Api::new();
+        let exec = |api: &mut Api, command: &str, args: Value| {
+            call(
+                api,
+                json!({"method": "execute", "command": command, "args": args}),
+            )
+        };
+        exec(&mut api, "sketch.create", json!({"plane": "xy"}));
+        exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 96, "y": 56}}),
+        );
+        exec(
+            &mut api,
+            "feature.extrude",
+            json!({"sketch": 0, "distance": 20}),
+        );
+        let state = call(&mut api, json!({"method": "state"}));
+        let top = state["result"]["body"]["faces"].to_string();
+        let top = top
+            .split('"')
+            .find(|t| t.starts_with("f0/end/"))
+            .unwrap()
+            .to_owned();
+        exec(&mut api, "sketch.create", json!({"face": top}));
+        exec(
+            &mut api,
+            "sketch.add_point",
+            json!({"sketch": 1, "at": {"x": 20, "y": 8}}),
+        );
+        exec(
+            &mut api,
+            "sketch.add_point",
+            json!({"sketch": 1, "at": {"x": 76, "y": 8}}),
+        );
+        let reply = exec(
+            &mut api,
+            "feature.hole",
+            json!({"sketch": 1, "thread": "M6", "depth": 15, "thread_depth": 12}),
+        );
+        assert_eq!(
+            reply["result"]["feature_status"]["1"]["state"], "ok",
+            "{reply}"
+        );
+        let hole = &reply["result"]["document"]["features"][1]["feature"];
+        assert_eq!(hole["spec"]["thread"]["size"], "M6x1.0");
+        assert_eq!(hole["spec"]["diameter"], 5.0, "the tap drill");
+        assert!(
+            reply["result"]["body"]["faces"]
+                .to_string()
+                .contains("/hole/e0/tip")
+        );
+        // Make them counterbored clearance holes instead.
+        let reply = exec(
+            &mut api,
+            "feature.edit_hole",
+            json!({"feature": 1, "diameter": 5.5, "depth": "through", "counterbore_diameter": 9.5, "counterbore_depth": 5.4}),
+        );
+        assert!(
+            reply["result"]["body"]["faces"]
+                .to_string()
+                .contains("/hole/e0/counterbore_floor"),
+            "{reply}"
+        );
+        // A bad edit is refused and changes nothing.
+        let reply = exec(
+            &mut api,
+            "feature.edit_hole",
+            json!({"feature": 1, "diameter": 12, "depth": "through", "counterbore_diameter": 9.5, "counterbore_depth": 5.4}),
+        );
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("wider than the hole"),
+            "{reply}"
+        );
+    }
+
+    #[test]
     fn errors_carry_a_stable_kind() {
         let mut api = Api::new();
         let cases = [
@@ -928,7 +1010,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 19, "{names:?}");
+        assert_eq!(names.len(), 21, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

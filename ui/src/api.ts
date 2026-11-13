@@ -76,14 +76,25 @@ export interface Freedom {
   entities: { id: number; dof: number | null; status: FreedomStatus }[];
 }
 
-export interface Feature {
-  type: "extrude";
-  name: string;
-  sketch: number;
-  profiles: number[][];
-  distance: number;
-  operation: "join" | "cut";
+export interface HoleSpec {
+  diameter: number;
+  depth: { blind: number } | "through";
+  tip_angle: number;
+  counterbore?: { diameter: number; depth: number };
+  thread?: { size: string; depth: number };
+  fit?: string;
 }
+
+export type Feature =
+  | {
+      type: "extrude";
+      name: string;
+      sketch: number;
+      profiles: number[][];
+      distance: number;
+      operation: "join" | "cut";
+    }
+  | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec };
 
 export type FeatureStatus = { state: "ok" } | { state: "failed"; reason: string };
 
