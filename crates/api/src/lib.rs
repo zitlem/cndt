@@ -25,7 +25,9 @@ use cndt_format::{FormatError, Project};
 use cndt_geom::TriangleMesh;
 use cndt_kernel::{Kernel, KernelError, OpenCascade};
 use cndt_model::sketch::Freedom;
-use cndt_model::{Document, ModelError, SketchError, SketchId};
+use cndt_model::{
+    Document, FeatureId, FeatureStatus, ModelError, Rebuilt, SketchError, SketchId, rebuild,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -153,6 +155,7 @@ impl From<KernelError> for ApiError {
             KernelError::Unreadable { .. } => "unreadable",
             KernelError::Empty { .. } => "empty",
             KernelError::Internal(_) => "kernel",
+            KernelError::Modelling(_) => "modelling",
         };
         Self::new(kind, error.to_string())
     }
@@ -182,6 +185,25 @@ struct StateView<'a> {
     /// Degrees of freedom of each sketch, for colouring what is fully
     /// constrained.
     freedom: BTreeMap<SketchId, Freedom>,
+    /// How each timeline feature built.
+    feature_status: &'a BTreeMap<FeatureId, FeatureStatus>,
+    /// The rebuilt part, if any feature made one.
+    body: Option<BodyView>,
+    /// Goes up by one on every rebuild; fetch `body_mesh` again when it
+    /// changes.
+    body_revision: u64,
+}
+
+/// The part as front ends see it. Its triangles come from `body_mesh`.
+#[derive(Debug, Serialize)]
+struct BodyView {
+    /// Cubic millimetres.
+    volume: f64,
+    /// Bounding box.
+    bounds: cndt_geom::BoundingBox,
+    /// The persistent names of each face, by the face numbers `body_mesh`
+    /// uses (decision 0012).
+    faces: Vec<Vec<String>>,
 }
 
 /// One open document and everything needed to work on it.
@@ -193,6 +215,8 @@ pub struct Api {
     /// Module data from the opened file, written back unchanged on save.
     extensions: BTreeMap<String, Vec<u8>>,
     kernel: Box<dyn Kernel>,
+    rebuilt: Rebuilt,
+    revision: u64,
 }
 
 impl Default for Api {
@@ -220,7 +244,36 @@ impl Api {
             path: None,
             extensions: BTreeMap::new(),
             kernel,
+            rebuilt: Rebuilt::default(),
+            revision: 0,
         }
+    }
+
+    /// Rebuilds the part from the timeline after the document changed.
+    fn refresh(&mut self) {
+        self.rebuilt = rebuild(self.session.document(), self.kernel.as_ref());
+        self.revision += 1;
+    }
+
+    /// The rebuilt part's display mesh, in the layout documented on
+    /// [`Api::step_preview`]. Face numbers match `body.faces` in the state.
+    ///
+    /// # Errors
+    ///
+    /// `no_body` when nothing has been built yet; a kernel error if
+    /// triangulation fails.
+    pub fn body_mesh(&self) -> Result<Vec<u8>, ApiError> {
+        let body = self
+            .rebuilt
+            .body
+            .as_ref()
+            .ok_or_else(|| ApiError::new("no_body", "there is no solid yet"))?;
+        let deflection = self.rebuilt.properties.map_or(0.05, |p| {
+            let [x, y, z] = p.bounds.size();
+            (x.hypot(y).hypot(z) * 0.0005).clamp(0.005, 1.0)
+        });
+        let mesh = self.kernel.mesh(body, deflection)?;
+        encode_mesh(&mesh)
     }
 
     /// The geometry kernel's name and version, such as `OpenCascade 7.9.3`.
@@ -273,6 +326,14 @@ impl Api {
 
     /// Handles one request.
     pub fn handle(&mut self, request: Request) -> Response {
+        let changes_document = matches!(
+            request,
+            Request::NewDocument { .. }
+                | Request::Open { .. }
+                | Request::Execute { .. }
+                | Request::Undo
+                | Request::Redo
+        );
         let result = match request {
             Request::NewDocument {
                 name,
@@ -317,6 +378,9 @@ impl Api {
                 };
             }
         };
+        if result.is_ok() && changes_document {
+            self.refresh();
+        }
         match result {
             Ok(()) => match self.state() {
                 Ok(state) => success(state),
@@ -345,6 +409,18 @@ impl Api {
                 .iter()
                 .map(|(id, record)| (*id, record.sketch.freedom()))
                 .collect(),
+            feature_status: &self.rebuilt.status,
+            body: self.rebuilt.properties.map(|p| BodyView {
+                volume: p.volume,
+                bounds: p.bounds,
+                faces: self
+                    .rebuilt
+                    .faces
+                    .iter()
+                    .map(|names| names.iter().map(ToString::to_string).collect())
+                    .collect(),
+            }),
+            body_revision: self.revision,
         };
         serde_json::to_value(view).map_err(|error| ApiError::new("internal", error.to_string()))
     }
@@ -590,6 +666,73 @@ mod tests {
     }
 
     #[test]
+    fn extrude_and_cut_through_json_with_named_faces_and_a_mesh() {
+        let mut api = Api::new();
+        let exec = |api: &mut Api, command: &str, args: Value| {
+            call(
+                api,
+                json!({"method": "execute", "command": command, "args": args}),
+            )
+        };
+        exec(&mut api, "sketch.create", json!({"plane": "xy"}));
+        exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 96, "y": 56}}),
+        );
+        let reply = exec(
+            &mut api,
+            "feature.extrude",
+            json!({"sketch": 0, "distance": 20}),
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        let state = &reply["result"];
+        assert_eq!(state["feature_status"]["0"]["state"], "ok");
+        let volume = state["body"]["volume"].as_f64().unwrap();
+        assert!((volume - 96.0 * 56.0 * 20.0).abs() < 1e-6);
+        assert_eq!(state["body"]["faces"].as_array().unwrap().len(), 6);
+        assert!(state["body"]["faces"].to_string().contains("f0/side/e4"));
+        let revision = state["body_revision"].as_u64().unwrap();
+        // Reading the state does not rebuild.
+        let again = call(&mut api, json!({"method": "state"}));
+        assert_eq!(again["result"]["body_revision"].as_u64(), Some(revision));
+        let mesh = api.body_mesh().unwrap();
+        assert_eq!(&mesh[..8], MESH_MAGIC);
+
+        // A pocket cut from a second sketch.
+        exec(&mut api, "sketch.create", json!({"plane": "xy"}));
+        exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 1, "from": {"x": 28, "y": 18}, "to": {"x": 68, "y": 38}}),
+        );
+        let reply = exec(
+            &mut api,
+            "feature.extrude",
+            json!({"sketch": 1, "distance": 8, "operation": "cut"}),
+        );
+        let volume = reply["result"]["body"]["volume"].as_f64().unwrap();
+        assert!(
+            (volume - (96.0 * 56.0 * 20.0 - 40.0 * 20.0 * 8.0)).abs() < 1e-6,
+            "{volume}"
+        );
+        assert_eq!(reply["result"]["undo"], "Extrude cut");
+        // Deleting the sketch a feature uses is refused with a reason.
+        let reply = exec(&mut api, "sketch.delete", json!({"sketch": 1}));
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Extrude2"),
+            "{reply}"
+        );
+        // Undo the cut: the block is whole again.
+        let reply = call(&mut api, json!({"method": "undo"}));
+        let volume = reply["result"]["body"]["volume"].as_f64().unwrap();
+        assert!((volume - 96.0 * 56.0 * 20.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn errors_carry_a_stable_kind() {
         let mut api = Api::new();
         let cases = [
@@ -749,7 +892,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 16, "{names:?}");
+        assert_eq!(names.len(), 19, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

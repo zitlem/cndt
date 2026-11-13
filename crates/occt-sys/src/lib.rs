@@ -17,6 +17,10 @@
 //! wanted later, has to come from inside OpenCascade or from separate
 //! processes.
 
+mod solid;
+
+pub use solid::{BooleanOp, Curve, Made, Properties, Shape, boolean, extrude, mesh, properties};
+
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::fmt;
 use std::path::Path;
@@ -165,6 +169,8 @@ pub enum OcctError {
     Kernel(String),
     /// The shape could not be triangulated.
     MeshFailed(String),
+    /// A modelling operation could not produce a valid solid; says why.
+    ModelFailed(String),
 }
 
 impl fmt::Display for OcctError {
@@ -175,6 +181,7 @@ impl fmt::Display for OcctError {
             Self::NoShapes => write!(f, "the file contains no shapes"),
             Self::Kernel(reason) => write!(f, "geometry kernel error: {reason}"),
             Self::MeshFailed(reason) => write!(f, "triangulation failed: {reason}"),
+            Self::ModelFailed(reason) => f.write_str(reason),
         }
     }
 }

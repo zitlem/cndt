@@ -47,3 +47,7 @@ Sketches are stored in `design/document.json`, under `sketches`, keyed by sketch
 - **Migration:** a version 1 file reads as version 2 with no sketches. A version 1 file that does contain sketches is refused as damaged.
 - **Unknown fields** in the document, a sketch, an entity or a constraint are refused when reading, so a newer build's additions are never silently lost.
 - **Exact numbers:** JSON floats are parsed exactly (serde_json's `float_roundtrip`), so a saved project reopens bit for bit and gives the same toolpaths.
+
+## Version 3 (2026-11-12)
+
+The feature timeline is stored in `design/document.json` as `features`: an ordered list of `{id, feature}`, with `next_feature` so deleted ids are never reused. An extrude stores its sketch, its profiles (each named by its outer boundary's curve ids), its distance and whether it joins or cuts. The solid itself is not stored; it is rebuilt from the timeline on open. A version 1 or 2 file reads as having no features; one that contains features is refused as damaged.

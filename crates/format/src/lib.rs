@@ -36,7 +36,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 ///
 /// - 1: name and parameters.
 /// - 2: sketches. A version 1 file reads as a version 2 file without any.
-pub const SCHEMA_VERSION: u32 = 2;
+/// - 3: the feature timeline. Older files read as having none.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -254,6 +255,13 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             "a version 1 file cannot contain sketches",
         )));
     }
+    // Version 2 knew nothing of features.
+    if manifest.schema_version < 3 && !document.features().is_empty() {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain features",
+            manifest.schema_version
+        )));
+    }
 
     let mut project = Project::new(document);
     for (name, data) in entries {
@@ -414,9 +422,31 @@ mod tests {
                 s.add_constraint(Constraint::Horizontal { line }, &SolveOptions::default())
             })
             .unwrap();
+        document
+            .add_feature(cndt_model::Feature::Extrude {
+                name: String::from("Extrude1"),
+                sketch: id,
+                profiles: vec![cndt_model::sketch::ProfileKey(vec![
+                    cndt_model::sketch::EntityId(2),
+                ])],
+                distance: 20.0,
+                operation: cndt_model::Operation::Join,
+            })
+            .unwrap();
         let project = Project::new(document);
         let bytes = to_bytes(&project);
         assert_eq!(read(Cursor::new(bytes)).unwrap(), project);
+        let v2 = raw_zip(&[
+            (MANIFEST, &manifest(2)),
+            (
+                DOCUMENT,
+                r#"{"name":"Old","sketches":{"0":{"name":"S","plane":"xy","sketch":{"entities":{},"constraints":{},"next_entity":0,"next_constraint":0}}},"next_sketch":1,"features":[{"id":0,"feature":{"type":"extrude","name":"E","sketch":0,"profiles":[[1]],"distance":1.0,"operation":"join"}}],"next_feature":1}"#,
+            ),
+        ]);
+        assert!(matches!(
+            read(Cursor::new(v2)),
+            Err(FormatError::Corrupt(_))
+        ));
 
         let v1 = raw_zip(&[
             (MANIFEST, &manifest(1)),

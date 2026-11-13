@@ -23,8 +23,11 @@
 //! Lengths are millimetres and angles are degrees at this interface.
 
 mod equations;
+mod profiles;
 mod solver;
 mod system;
+
+pub use profiles::{Loop, LoopCurve, Profile, ProfileKey, Profiles};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
