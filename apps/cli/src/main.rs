@@ -21,6 +21,7 @@ project files:
   commands                                  list the commands exec accepts
 
 other:
+  post <file.cndt> [post]                   print G-code for the part's holes (post: fanuc-mill or grbl)
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
   version                                   show the CNDT and geometry kernel versions
@@ -40,6 +41,8 @@ fn main() -> ExitCode {
         ["exec", path, command, arguments] => exec(Path::new(path), command, arguments),
         ["commands"] => commands(),
         ["info", path] => info(Path::new(path)),
+        ["post", path] => post(Path::new(path), "fanuc-mill"),
+        ["post", path, id] => post(Path::new(path), id),
         ["api"] => serve_stdin(),
         ["version" | "--version" | "-V"] => {
             println!("cndt {}", env!("CARGO_PKG_VERSION"));
@@ -96,6 +99,21 @@ fn new(path: &Path, name: Option<&str>) -> Result<(), String> {
     call(&mut api, &json!({"method": "new_document", "name": name}))?;
     call(&mut api, &json!({"method": "save_as", "path": path}))?;
     println!("created {}", path.display());
+    Ok(())
+}
+
+/// Prints G-code to standard output and notes to standard error, so
+/// `cndt post part.cndt > part.nc` gives a clean program file.
+fn post(path: &Path, id: &str) -> Result<(), String> {
+    let mut api = Api::new();
+    open(&mut api, path)?;
+    let result = call(&mut api, &json!({"method": "post", "post": id}))?;
+    if let Some(notes) = result["notes"].as_array() {
+        for note in notes {
+            eprintln!("note: {}", note.as_str().unwrap_or_default());
+        }
+    }
+    print!("{}", result["gcode"].as_str().unwrap_or_default());
     Ok(())
 }
 

@@ -56,6 +56,47 @@ pub enum Move {
         /// How long, in seconds.
         seconds: f64,
     },
+    /// A drilling cycle over one or more holes along Z: for each hole, rapid
+    /// to its X and Y at the current height, rapid down to `clearance`, cut
+    /// to `bottom` as `kind` says, and return to the starting height (G98).
+    /// The tool ends over the last hole at the starting height.
+    Cycle(Cycle),
+}
+
+/// How a drilling cycle cuts.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CycleKind {
+    /// Feed straight to the bottom, rapid out (G81).
+    Drill,
+    /// Feed down `step` at a time, rapid fully out between pecks (G83).
+    Peck {
+        /// Millimetres per peck.
+        step: f64,
+    },
+    /// Rigid tapping (G84): feed in and reverse out at the spindle speed
+    /// times `pitch`.
+    Tap {
+        /// Thread pitch in millimetres.
+        pitch: f64,
+    },
+    /// Feed in and feed out (G85), as a reamer or boring bar does.
+    Ream,
+}
+
+/// A drilling cycle. Hole positions are X and Y; Z values are absolute.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cycle {
+    /// How it cuts.
+    pub kind: CycleKind,
+    /// Hole centres; only X and Y are used.
+    pub holes: Vec<Point3>,
+    /// The R plane: where feeding starts, a little above the hole.
+    pub clearance: f64,
+    /// The depth reached.
+    pub bottom: f64,
+    /// Feed in millimetres per minute.
+    pub feed: f64,
 }
 
 /// Which way the spindle turns.
@@ -186,6 +227,8 @@ pub enum ToolpathError {
     /// An arc's start and end are not the same distance from its centre, or
     /// its radius is zero.
     BadArc(Location),
+    /// A cycle is malformed; says how.
+    BadCycle(Location, &'static str),
 }
 
 impl fmt::Display for ToolpathError {
@@ -206,6 +249,7 @@ impl fmt::Display for ToolpathError {
             }
             Self::NoTool(at) => write!(f, "{at}: cutting before any tool is loaded"),
             Self::SpindleOff(at) => write!(f, "{at}: cutting with the spindle off"),
+            Self::BadCycle(at, reason) => write!(f, "{at}: {reason}"),
             Self::BadArc(at) => write!(
                 f,
                 "{at}: the arc's start and end are not the same distance from its centre"
@@ -234,6 +278,7 @@ impl Program {
         let mut position: Option<Point3> = None;
         let mut tool_loaded = false;
         let mut spindle_on = false;
+        let mut rpm_now = 0.0_f64;
 
         for operation in &self.operations {
             for (index, step) in operation.steps.iter().enumerate() {
@@ -255,6 +300,7 @@ impl Program {
                             return Err(ToolpathError::BadSpindleSpeed(at()));
                         }
                         spindle_on = true;
+                        rpm_now = *rpm;
                     }
                     Step::Event(Event::SpindleOff) => spindle_on = false,
                     Step::Event(_) => {}
@@ -269,6 +315,10 @@ impl Program {
                     Step::Move(Move::Rapid { to }) => {
                         check_point(to, &at)?;
                         position = Some(*to);
+                    }
+                    Step::Move(Move::Cycle(cycle)) => {
+                        let start = check_cut(cycle.feed, position, tool_loaded, spindle_on, &at)?;
+                        position = Some(check_cycle(cycle, start, rpm_now, &at)?);
                     }
                     Step::Move(Move::Linear { to, feed }) => {
                         check_cut(*feed, position, tool_loaded, spindle_on, &at)?;
@@ -295,6 +345,47 @@ impl Program {
         }
         Ok(())
     }
+}
+
+/// Checks a cycle and returns where the tool ends.
+fn check_cycle(
+    cycle: &Cycle,
+    start: Point3,
+    rpm: f64,
+    at: &impl Fn() -> Location,
+) -> Result<Point3, ToolpathError> {
+    let bad = |reason| Err(ToolpathError::BadCycle(at(), reason));
+    if !(cycle.clearance.is_finite() && cycle.bottom.is_finite()) {
+        return Err(ToolpathError::NotFinite(at()));
+    }
+    for hole in &cycle.holes {
+        check_point(hole, at)?;
+    }
+    let Some(last) = cycle.holes.last() else {
+        return bad("the cycle has no holes");
+    };
+    if cycle.bottom >= cycle.clearance {
+        return bad("the cycle's bottom is not below its clearance plane");
+    }
+    if start.z < cycle.clearance {
+        return bad("the cycle starts below its clearance plane");
+    }
+    match cycle.kind {
+        CycleKind::Peck { step } if !(step.is_finite() && step > 0.0) => {
+            return bad("a peck step must be more than zero");
+        }
+        CycleKind::Tap { pitch } => {
+            if !(pitch.is_finite() && pitch > 0.0) {
+                return bad("a tap pitch must be more than zero");
+            }
+            // Rigid tapping feeds exactly one pitch per turn.
+            if (cycle.feed - rpm * pitch).abs() > 1e-6 * cycle.feed.max(1.0) {
+                return bad("a tapping feed must be the spindle speed times the pitch");
+            }
+        }
+        _ => {}
+    }
+    Ok(Point3::new(last.x, last.y, start.z))
 }
 
 fn check_point(point: &Point3, at: &impl Fn() -> Location) -> Result<(), ToolpathError> {
@@ -369,6 +460,59 @@ mod tests {
         let mut steps = ready();
         steps.push(extra);
         program(steps)
+    }
+
+    fn cycle(kind: CycleKind, feed: f64) -> Step {
+        Step::Move(Move::Cycle(Cycle {
+            kind,
+            holes: vec![p(10.0, 10.0, 0.0), p(20.0, 10.0, 0.0)],
+            clearance: 2.0,
+            bottom: -10.0,
+            feed,
+        }))
+    }
+
+    #[test]
+    fn drilling_cycles_are_checked() {
+        let mut steps = ready();
+        steps.push(Step::Move(Move::Rapid {
+            to: p(10.0, 10.0, 25.0),
+        }));
+        steps.push(cycle(CycleKind::Peck { step: 3.0 }, 200.0));
+        assert_eq!(program(steps.clone()).validate(), Ok(()));
+        for (bad, expected) in [
+            (cycle(CycleKind::Peck { step: 0.0 }, 200.0), "peck step"),
+            (
+                cycle(CycleKind::Tap { pitch: 1.0 }, 200.0),
+                "spindle speed times the pitch",
+            ),
+            (
+                Step::Move(Move::Cycle(Cycle {
+                    kind: CycleKind::Drill,
+                    holes: vec![],
+                    clearance: 2.0,
+                    bottom: -1.0,
+                    feed: 1.0,
+                })),
+                "no holes",
+            ),
+            (
+                Step::Move(Move::Cycle(Cycle {
+                    kind: CycleKind::Drill,
+                    holes: vec![p(0.0, 0.0, 0.0)],
+                    clearance: 30.0,
+                    bottom: -1.0,
+                    feed: 1.0,
+                })),
+                "starts below",
+            ),
+        ] {
+            let mut s = steps.clone();
+            s.pop();
+            s.push(bad);
+            let error = program(s).validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

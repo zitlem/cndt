@@ -352,6 +352,8 @@ dependencies = [
  "cndt-geom",
  "cndt-kernel",
  "cndt-model",
+ "cndt-post",
+ "cndt-process-mill",
  "serde",
  "serde_json",
 ]
@@ -443,6 +445,17 @@ dependencies = [
  "cndt-geom",
  "serde",
  "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "cndt-process-mill"
+version = "0.0.0"
+dependencies = [
+ "cndt-cam-core",
+ "cndt-geom",
+ "cndt-kernel",
+ "cndt-model",
+ "serde",
 ]
 
 [[package]]

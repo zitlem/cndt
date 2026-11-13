@@ -80,6 +80,12 @@ pub enum Request {
         /// The STEP file.
         path: PathBuf,
     },
+    /// G-code for the part's holes from the top (decision 0013, first
+    /// slice), through a shipped post. Replies `{gcode, notes}`.
+    Post {
+        /// `fanuc-mill` or `grbl`.
+        post: String,
+    },
 }
 
 /// The answer to a request.
@@ -234,6 +240,12 @@ impl Default for Api {
 /// Identifies the binary mesh layout returned by [`Api::step_preview`].
 pub const MESH_MAGIC: &[u8; 8] = b"CNDTMSH1";
 
+/// The posts that ship with CNDT (`posts/` in the repository).
+const SHIPPED_POSTS: &[(&str, &str)] = &[
+    ("fanuc-mill", include_str!("../../../posts/fanuc-mill.toml")),
+    ("grbl", include_str!("../../../posts/grbl.toml")),
+];
+
 /// The first bytes of a `body_edges` buffer. Layout, little-endian: magic;
 /// u32 edge count `n`; `n` u32 point counts; then every edge's points as
 /// f32 x, y, z, edge after edge, in the order of `body.edges`.
@@ -301,6 +313,39 @@ impl Api {
             }
         }
         Ok(out)
+    }
+
+    /// Plans the hole program for the current part and posts it.
+    fn post(&self, id: &str) -> Result<Value, ApiError> {
+        let text = SHIPPED_POSTS
+            .iter()
+            .find(|(name, _)| *name == id)
+            .map(|(_, text)| *text)
+            .ok_or_else(|| {
+                let names: Vec<&str> = SHIPPED_POSTS.iter().map(|(name, _)| *name).collect();
+                ApiError::new(
+                    "unknown_post",
+                    format!("there is no post {id:?}; use one of {}", names.join(", ")),
+                )
+            })?;
+        let post = cndt_post::Post::from_toml(text)
+            .map_err(|e| ApiError::new("internal", e.to_string()))?;
+        let setup = cndt_process_mill::Setup::top_of(&self.rebuilt)
+            .ok_or_else(|| ApiError::new("no_body", "there is no part to machine yet"))?;
+        let library = cndt_process_mill::ToolLibrary::default_aluminium();
+        let name = self.session.document().name().to_owned();
+        let planned = cndt_process_mill::hole_program(
+            self.session.document(),
+            &self.rebuilt,
+            &setup,
+            &library,
+            &name,
+        )
+        .map_err(|e| ApiError::new("cam", e.to_string()))?;
+        let gcode = post
+            .run(&planned.program, env!("CARGO_PKG_VERSION"))
+            .map_err(|e| ApiError::new("post", e.to_string()))?;
+        Ok(serde_json::json!({ "gcode": gcode, "notes": planned.notes }))
     }
 
     fn deflection(&self) -> f64 {
@@ -417,6 +462,12 @@ impl Api {
                 return match serde_json::to_value(specs) {
                     Ok(value) => success(value),
                     Err(error) => failure(ApiError::new("internal", error.to_string())),
+                };
+            }
+            Request::Post { post } => {
+                return match self.post(&post) {
+                    Ok(value) => success(value),
+                    Err(error) => failure(error),
                 };
             }
             Request::StepInfo { path } => {
@@ -542,6 +593,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("state", &[]),
     ("commands", &[]),
     ("step_info", &["path"]),
+    ("post", &["post"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo

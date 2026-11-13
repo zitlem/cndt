@@ -58,3 +58,16 @@ tool_change = [
 ]
 # Applied with the first Z move after every tool change.
 tool_length_compensation = "G43 H{tool}"
+
+[cycles]
+# Back to the starting height between holes, so the tool clears clamps.
+retract = "G98"
+drill = "G81 X{x} Y{y} Z{z} R{r} F{feed}"
+peck = "G83 X{x} Y{y} Z{z} R{r} Q{peck} F{feed}"
+# Rigid tapping: M29 puts the spindle in position mode first. Haas ignores
+# M29 and taps rigidly with G84 alone.
+tap_prefix = "M29 S{rpm}"
+tap = "G84 X{x} Y{y} Z{z} R{r} F{feed}"
+ream = "G85 X{x} Y{y} Z{z} R{r} F{feed}"
+repeat = "X{x} Y{y}"
+cancel = "G80"

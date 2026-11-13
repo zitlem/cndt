@@ -12,7 +12,8 @@
 use std::path::{Path, PathBuf};
 
 use cndt_cam_core::{
-    ArcDirection, Coolant, Event, Move, Operation, Program, SpindleDirection, Step,
+    ArcDirection, Coolant, Cycle, CycleKind, Event, Move, Operation, Program, SpindleDirection,
+    Step,
 };
 use cndt_geom::Point3;
 use cndt_post::{Post, PostError};
@@ -129,9 +130,93 @@ fn sample() -> Program {
     }
 }
 
+/// Drills two holes with each kind of cycle: drill, peck, tap (when
+/// `tap` is set) and ream.
+fn cycles(tap: bool) -> Program {
+    let holes = vec![p(10.0, 10.0, 0.0), p(30.0, 10.0, 0.0)];
+    let op =
+        |name: &str, tool: u32, what: &str, rpm: f64, kind: CycleKind, bottom: f64, feed: f64| {
+            Operation {
+                name: name.to_owned(),
+                steps: vec![
+                    Step::Event(Event::ToolChange {
+                        number: tool,
+                        description: what.to_owned(),
+                    }),
+                    Step::Event(Event::SpindleOn {
+                        rpm,
+                        direction: SpindleDirection::Clockwise,
+                    }),
+                    Step::Event(Event::Coolant {
+                        mode: Coolant::Flood,
+                    }),
+                    rapid(10.0, 10.0, 10.0),
+                    Step::Move(Move::Cycle(Cycle {
+                        kind,
+                        holes: holes.clone(),
+                        clearance: 2.0,
+                        bottom,
+                        feed,
+                    })),
+                    Step::Event(Event::Coolant { mode: Coolant::Off }),
+                ],
+            }
+        };
+    let mut operations = vec![
+        op(
+            "Drill",
+            2,
+            "5 mm drill",
+            2500.0,
+            CycleKind::Drill,
+            -6.0,
+            250.0,
+        ),
+        op(
+            "Peck",
+            2,
+            "5 mm drill",
+            2500.0,
+            CycleKind::Peck { step: 5.0 },
+            -12.0,
+            250.0,
+        ),
+    ];
+    if tap {
+        operations.push(op(
+            "Tap",
+            6,
+            "M6 x 1.0 tap",
+            600.0,
+            CycleKind::Tap { pitch: 1.0 },
+            -12.0,
+            600.0,
+        ));
+    }
+    operations.push(op(
+        "Ream",
+        7,
+        "8 mm H7 reamer",
+        400.0,
+        CycleKind::Ream,
+        -12.0,
+        120.0,
+    ));
+    Program {
+        name: String::from("Cycles"),
+        number: 1002,
+        work_offset: 1,
+        operations,
+    }
+}
+
 fn check_golden(id: &str) {
-    let output = load(id).run(&sample(), APP_VERSION).unwrap();
-    let path = root().join(format!("crates/post/tests/golden/{id}.nc"));
+    compare(id, id, &sample());
+}
+
+fn compare(id: &str, file: &str, program: &Program) {
+    let output = load(id).run(program, APP_VERSION).unwrap();
+    let path = root().join(format!("crates/post/tests/golden/{file}.nc"));
     if std::env::var_os("CNDT_UPDATE_GOLDEN").is_some() {
         std::fs::write(&path, &output).unwrap();
         return;
@@ -155,6 +240,20 @@ fn fanuc_mill_matches_golden() {
 #[test]
 fn grbl_matches_golden() {
     check_golden("grbl");
+}
+
+#[test]
+fn canned_cycles_match_golden() {
+    compare("fanuc-mill", "fanuc-mill-cycles", &cycles(true));
+    // GRBL has no canned cycles: they are written out as moves.
+    compare("grbl", "grbl-cycles", &cycles(false));
+}
+
+#[test]
+fn a_post_without_rigid_tapping_refuses_to_tap() {
+    let error = load("grbl").run(&cycles(true), APP_VERSION).unwrap_err();
+    assert!(matches!(error, PostError::Unsupported(_)), "{error}");
+    assert!(error.to_string().contains("rigid tapping"), "{error}");
 }
 
 #[test]

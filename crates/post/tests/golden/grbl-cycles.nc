@@ -1,0 +1,71 @@
+(Cycles)
+(CNDT 0.0.0-golden)
+(POST grbl 0.1.0 UNVERIFIED)
+(UNVERIFIED POST - PROVE OUT CAREFULLY BEFORE RUNNING)
+(PREVIEW BUILD - NOT FOR PRODUCTION)
+G21 G17 G90 G94
+G54
+(Drill)
+(T2 5 mm drill)
+M5
+(Load tool 2, then resume)
+M0
+M3 S2500
+M8
+G0 X10 Y10 Z10
+Z2
+G1 Z-6 F250
+G0 Z10
+X30
+Z2
+G1 Z-6
+G0 Z10
+M9
+(Peck)
+(T2 5 mm drill)
+M5
+(Load tool 2, then resume)
+M0
+M3 S2500
+M8
+G0 X10 Y10 Z10
+Z2
+G1 Z-3 F250
+G0 Z2
+Z-2.5
+G1 Z-8
+G0 Z2
+Z-7.5
+G1 Z-12
+G0 Z10
+X30
+Z2
+G1 Z-3
+G0 Z2
+Z-2.5
+G1 Z-8
+G0 Z2
+Z-7.5
+G1 Z-12
+G0 Z10
+M9
+(Ream)
+(T7 8 mm H7 reamer)
+M5
+(Load tool 7, then resume)
+M0
+M3 S400
+M8
+G0 X10 Y10 Z10
+Z2
+G1 Z-12 F120
+Z2
+G0 Z10
+X30
+Z2
+G1 Z-12
+Z2
+G0 Z10
+M9
+M5
+M30

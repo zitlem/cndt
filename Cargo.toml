@@ -21,6 +21,7 @@ cndt-kernel = { path = "crates/kernel" }
 cndt-model = { path = "crates/model" }
 cndt-occt-sys = { path = "crates/occt-sys" }
 cndt-post = { path = "crates/post" }
+cndt-process-mill = { path = "crates/process-mill" }
 cndt-sketch = { path = "crates/sketch" }
 
 # External crates. Each must be AGPL-3.0 compatible; `cargo xtask licenses`
