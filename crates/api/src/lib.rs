@@ -81,13 +81,17 @@ pub enum Request {
         path: PathBuf,
     },
     /// G-code for one stored setup (decision 0014), through a shipped
-    /// post. Replies `{gcode, notes}`.
+    /// post. Replies `{gcode, notes}`; with `path`, also writes the G-code
+    /// there.
     Post {
         /// `fanuc-mill` or `grbl`.
         post: String,
         /// The setup's id; the first setup if left out.
         #[serde(default)]
         setup: Option<u32>,
+        /// A file to write the program to.
+        #[serde(default)]
+        path: Option<PathBuf>,
     },
 }
 
@@ -249,6 +253,9 @@ const SHIPPED_POSTS: &[(&str, &str)] = &[
     ("grbl", include_str!("../../../posts/grbl.toml")),
 ];
 
+/// The first bytes of a toolpath preview buffer.
+pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH1";
+
 /// The first bytes of a `body_edges` buffer. Layout, little-endian: magic;
 /// u32 edge count `n`; `n` u32 point counts; then every edge's points as
 /// f32 x, y, z, edge after edge, in the order of `body.edges`.
@@ -319,7 +326,7 @@ impl Api {
     }
 
     /// Plans the hole program for the current part and posts it.
-    fn post(&self, id: &str, setup: Option<u32>) -> Result<Value, ApiError> {
+    fn post(&self, id: &str, setup: Option<u32>, path: Option<&Path>) -> Result<Value, ApiError> {
         let text = SHIPPED_POSTS
             .iter()
             .find(|(name, _)| *name == id)
@@ -343,7 +350,48 @@ impl Api {
         let gcode = post
             .run(&planned.program, env!("CARGO_PKG_VERSION"))
             .map_err(|e| ApiError::new("post", e.to_string()))?;
+        if let Some(path) = path {
+            std::fs::write(path, &gcode).map_err(|e| {
+                ApiError::new("io", format!("cannot write {}: {e}", path.display()))
+            })?;
+        }
         Ok(serde_json::json!({ "gcode": gcode, "notes": planned.notes }))
+    }
+
+    /// A setup's toolpath for drawing, in model coordinates. Layout,
+    /// little-endian: [`TOOLPATH_MAGIC`]; u32 segment count; then per
+    /// segment u8 kind (0 rapid, 1 cut) and f32 x, y, z from, x, y, z to.
+    ///
+    /// # Errors
+    ///
+    /// `cam` when the setup cannot be planned.
+    pub fn toolpath_preview(&self, setup: Option<u32>) -> Result<Vec<u8>, ApiError> {
+        let planned = cndt_process_mill::plan_setup(
+            self.session.document(),
+            &self.rebuilt,
+            self.kernel.as_ref(),
+            setup,
+        )
+        .map_err(|e| ApiError::new("cam", e.to_string()))?;
+        let Some(placed) = planned.setup else {
+            return Err(ApiError::new("cam", "the setup has no placement"));
+        };
+        let segments = cndt_process_mill::preview(&planned.program, &placed);
+        let mut out = Vec::with_capacity(12 + segments.len() * 25);
+        out.extend_from_slice(TOOLPATH_MAGIC);
+        out.extend_from_slice(
+            &u32::try_from(segments.len())
+                .map_err(|_| ApiError::new("internal", "toolpath too long"))?
+                .to_le_bytes(),
+        );
+        for s in segments {
+            out.push(u8::from(!s.rapid));
+            for v in [s.from.x, s.from.y, s.from.z, s.to.x, s.to.y, s.to.z] {
+                #[allow(clippy::cast_possible_truncation)]
+                out.extend_from_slice(&(v as f32).to_le_bytes());
+            }
+        }
+        Ok(out)
     }
 
     fn deflection(&self) -> f64 {
@@ -462,8 +510,8 @@ impl Api {
                     Err(error) => failure(ApiError::new("internal", error.to_string())),
                 };
             }
-            Request::Post { post, setup } => {
-                return match self.post(&post, setup) {
+            Request::Post { post, setup, path } => {
+                return match self.post(&post, setup, path.as_deref()) {
                     Ok(value) => success(value),
                     Err(error) => failure(error),
                 };
@@ -591,7 +639,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("state", &[]),
     ("commands", &[]),
     ("step_info", &["path"]),
-    ("post", &["post", "setup"]),
+    ("post", &["post", "setup", "path"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo

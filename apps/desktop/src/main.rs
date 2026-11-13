@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The CNDT desktop app: a Tauri window around the CNDT API.
 //!
-//! The frontend (in `ui/`) reaches the core through exactly four commands,
+//! The frontend (in `ui/`) reaches the core through exactly five commands,
 //! and nothing else (architecture rules 5 and 12):
 //!
 //! - `api`: one JSON request in, one JSON response out, exactly as
@@ -11,6 +11,8 @@
 //! - `body_mesh`: the rebuilt part's display mesh, in the same layout.
 //! - `body_edges`: the rebuilt part's edges as polylines, in the layout
 //!   documented on `cndt_api::EDGES_MAGIC`.
+//! - `toolpath_preview`: a setup's toolpath for the 3D view, in the layout
+//!   documented on `cndt_api::Api::toolpath_preview`.
 //!
 //! Both run off the main thread, so a slow import never freezes the window.
 
@@ -75,6 +77,15 @@ fn body_edges(state: State<'_, AppState>) -> Result<Response, String> {
         .map_err(|error| error.message)
 }
 
+#[tauri::command(async)]
+fn toolpath_preview(setup: Option<u32>, state: State<'_, AppState>) -> Result<Response, String> {
+    state
+        .api()
+        .toolpath_preview(setup)
+        .map(Response::new)
+        .map_err(|error| error.message)
+}
+
 /// Tauri's generated startup context uses `HashMap` internally. It is
 /// configuration loading, not anything that reaches a toolpath or a file, so
 /// the determinism rule (architecture rule 11) does not apply to it.
@@ -91,7 +102,8 @@ fn main() {
             api,
             step_preview,
             body_mesh,
-            body_edges
+            body_edges,
+            toolpath_preview
         ])
         .run(context());
     if let Err(error) = result {

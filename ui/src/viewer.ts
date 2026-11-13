@@ -72,6 +72,7 @@ export class Viewer {
   private highlight: THREE.Group | null = null;
   private edgeLines: Float32Array[] = [];
   private edgeHighlight: THREE.Group | null = null;
+  private toolpath: THREE.Group | null = null;
   private readonly raycaster = new THREE.Raycaster();
   private sketches = new THREE.Group();
 
@@ -283,6 +284,37 @@ export class Viewer {
     if (hover !== null && !edges.includes(hover)) draw(hover, 0xffe0b0);
     if (group.children.length > 0) {
       this.edgeHighlight = group;
+      this.scene.add(group);
+    }
+    this.render();
+  }
+
+  /** Draws a toolpath: cuts solid, rapids dashed; `null` hides it. */
+  setToolpath(path: { rapids: Float32Array; cuts: Float32Array } | null): void {
+    if (this.toolpath) {
+      this.scene.remove(this.toolpath);
+      this.toolpath.traverse((o) => {
+        if (o instanceof THREE.LineSegments) {
+          o.geometry.dispose();
+          (o.material as THREE.Material).dispose();
+        }
+      });
+      this.toolpath = null;
+    }
+    if (path) {
+      const group = new THREE.Group();
+      const add = (points: Float32Array, material: THREE.LineBasicMaterial | THREE.LineDashedMaterial) => {
+        if (points.length === 0) return;
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(points, 3));
+        const lines = new THREE.LineSegments(geometry, material);
+        lines.computeLineDistances();
+        lines.renderOrder = 5;
+        group.add(lines);
+      };
+      add(path.cuts, new THREE.LineBasicMaterial({ color: 0x4fd1c5, depthTest: false, transparent: true, opacity: 0.9 }));
+      add(path.rapids, new THREE.LineDashedMaterial({ color: 0xf6c343, dashSize: 2, gapSize: 2, depthTest: false, transparent: true, opacity: 0.8 }));
+      this.toolpath = group;
       this.scene.add(group);
     }
     this.render();

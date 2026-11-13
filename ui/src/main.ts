@@ -12,6 +12,8 @@ import {
   bodyMesh,
   type DocumentState,
   planeLabel,
+  toolpathPreview,
+  type CamOperation,
   execute,
   type Parameter,
   request,
@@ -53,6 +55,8 @@ const ui = {
   sketchTools: element<HTMLDivElement>("sketch-tools"),
   featureList: element<HTMLOListElement>("feature-list"),
   noFeatures: element<HTMLParagraphElement>("no-features"),
+  setupList: element<HTMLOListElement>("setup-list"),
+  noSetups: element<HTMLParagraphElement>("no-setups"),
   extrudeButton: element<HTMLButtonElement>("extrude"),
   extrudeDialog: element<HTMLFormElement>("extrude-dialog"),
   extrudeTitle: element<HTMLHeadingElement>("extrude-title"),
@@ -204,6 +208,7 @@ function render(next: DocumentState): void {
 
   renderSketches(next);
   renderFeatures(next);
+  renderSetups(next);
   void showBody(next);
   editor.update(next);
   updateSketchUi();
@@ -332,6 +337,8 @@ async function showBody(state: DocumentState): Promise<void> {
     // Keep the camera where it is once a part is on screen.
     viewer.show(mesh, bodyShown);
     bodyShown = true;
+    // A drawn toolpath follows the part.
+    if (shownSetup !== null) await showToolpath(shownSetup).catch(() => showToolpath(null));
     renderBodyInfo(state);
   } catch (error) {
     showError(error);
@@ -408,6 +415,158 @@ function renderFeatures(state: DocumentState): void {
     });
     item.append(name, detail, remove);
     ui.featureList.append(item);
+  }
+}
+
+/** The setup whose toolpath is drawn, if any. */
+let shownSetup: number | null = null;
+
+function operationText(op: CamOperation): string {
+  switch (op.type) {
+    case "face":
+      return "Face the stock";
+    case "contour":
+      return "Contour the outline";
+    case "pocket":
+      return "Pocket to a floor";
+    case "holes":
+      return "Holes: spot, drill, tap, ream";
+    case "chamfer":
+      return `Chamfer ${formatNumber(op.width)} mm`;
+  }
+}
+
+/** Faces for CAM operations are picked on the part: what to say while picking. */
+const pickPrompts: Record<string, string> = {
+  contour: "Click the face whose outline the contour follows (usually the bottom). Esc cancels.",
+  pocket: "Click the pocket's floor. Esc cancels.",
+  chamfer: "Click the face whose edges get the chamfer (usually the top). Esc cancels.",
+};
+
+/** A CAM operation waiting for its face to be picked. */
+let camPick: { setup: number; type: string } | null = null;
+
+async function showToolpath(setup: number | null): Promise<void> {
+  shownSetup = setup;
+  if (setup === null) {
+    viewer.setToolpath(null);
+  } else {
+    try {
+      viewer.setToolpath(await toolpathPreview(setup));
+    } catch (error) {
+      viewer.setToolpath(null);
+      shownSetup = null;
+      throw error;
+    }
+  }
+  if (current) renderSetups(current);
+}
+
+async function postSetup(setup: number, name: string): Promise<void> {
+  const choice = await ask("Which controller? Fanuc-style (Haas reads it too), or GRBL?", {
+    title: "Post",
+    kind: "info",
+    okLabel: "Fanuc",
+    cancelLabel: "GRBL",
+  });
+  const post = choice ? "fanuc-mill" : "grbl";
+  const path = await save({
+    title: "Save G-code",
+    defaultPath: `${name}.nc`,
+    filters: [{ name: "G-code", extensions: ["nc", "tap", "ngc"] }],
+  });
+  if (!path) return;
+  const result = await request<{ gcode: string; notes: string[] }>({ method: "post", post, setup, path });
+  const lines = result.gcode.split("\n").length;
+  const notes = result.notes.length > 0 ? ` Notes: ${result.notes.join(" ")}` : "";
+  showError(new Error(`Saved ${lines} lines of UNVERIFIED G-code. Prove it out carefully.${notes}`));
+}
+
+function renderSetups(state: DocumentState): void {
+  const setups = state.document.cam?.setups ?? [];
+  ui.setupList.replaceChildren();
+  ui.noSetups.hidden = setups.length > 0;
+  for (const { id, setup } of setups) {
+    const item = globalThis.document.createElement("li");
+    item.classList.toggle("showing", shownSetup === id);
+    const head = globalThis.document.createElement("div");
+    head.className = "head";
+    const name = globalThis.document.createElement("span");
+    name.className = "name";
+    name.textContent = `${setup.name} · G${53 + setup.work_offset}`;
+    const show = globalThis.document.createElement("button");
+    show.type = "button";
+    show.className = "secondary";
+    show.textContent = shownSetup === id ? "Hide" : "Show";
+    show.addEventListener("click", guarded(() => showToolpath(shownSetup === id ? null : id)));
+    const post = globalThis.document.createElement("button");
+    post.type = "button";
+    post.className = "secondary";
+    post.textContent = "Post…";
+    post.addEventListener("click", guarded(() => postSetup(id, `${state.document.name} ${setup.name}`)));
+    const remove = globalThis.document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "×";
+    remove.title = "Delete this setup";
+    remove.addEventListener(
+      "click",
+      guarded(async () => {
+        if (shownSetup === id) await showToolpath(null);
+        render(await execute("cam.remove_setup", { setup: id }));
+      }),
+    );
+    head.append(name, show, post, remove);
+    const ops = globalThis.document.createElement("ol");
+    ops.className = "ops";
+    for (const op of setup.operations) {
+      const li = globalThis.document.createElement("li");
+      li.textContent = operationText(op.operation);
+      li.title = "Double-click to delete";
+      li.addEventListener(
+        "dblclick",
+        guarded(async () => render(await execute("cam.remove_operation", { setup: id, operation: op.id }))),
+      );
+      ops.append(li);
+    }
+    const row = globalThis.document.createElement("div");
+    row.className = "row";
+    const kind = globalThis.document.createElement("select");
+    for (const [value, label] of [
+      ["face", "Face"],
+      ["contour", "Contour…"],
+      ["pocket", "Pocket…"],
+      ["holes", "Holes"],
+      ["chamfer", "Chamfer 0.5…"],
+    ]) {
+      const option = globalThis.document.createElement("option");
+      option.value = value ?? "";
+      option.textContent = label ?? "";
+      kind.append(option);
+    }
+    const add = globalThis.document.createElement("button");
+    add.type = "button";
+    add.className = "secondary";
+    add.textContent = "Add";
+    add.addEventListener(
+      "click",
+      guarded(async () => {
+        const type = kind.value;
+        const prompt = pickPrompts[type];
+        if (prompt) {
+          camPick = { setup: id, type };
+          viewer.canvas.style.cursor = "pointer";
+          ui.viewportHint.textContent = prompt;
+          ui.viewportHint.hidden = false;
+          return;
+        }
+        render(await execute("cam.add_operation", { setup: id, type }));
+        if (shownSetup === id) await showToolpath(id);
+      }),
+    );
+    row.append(kind, add);
+    item.append(head, ops, row);
+    ui.setupList.append(item);
   }
 }
 
@@ -963,6 +1122,53 @@ viewer.canvas.addEventListener("click", (event) => {
 });
 
 ui.chamferButton.addEventListener("click", () => openBlend("chamfer", null));
+element("cam-add-top").addEventListener(
+  "click",
+  guarded(async () => {
+    // The first setup also brings the test block's stock allowances.
+    if (!current?.document.cam?.stock) render(await execute("cam.set_stock", { side: 2, top: 2, bottom: 3 }));
+    render(await execute("cam.add_setup", { side: "top" }));
+  }),
+);
+element("cam-add-bottom").addEventListener(
+  "click",
+  guarded(async () => {
+    if (!current?.document.cam?.stock) render(await execute("cam.set_stock", { side: 2, top: 2, bottom: 3 }));
+    const setups = current?.document.cam?.setups?.length ?? 0;
+    render(await execute("cam.add_setup", { side: "bottom", work_offset: Math.min(setups + 1, 6) }));
+  }),
+);
+viewer.canvas.addEventListener("pointermove", (event) => {
+  if (camPick) viewer.highlightFace(viewer.faceAt(event.clientX, event.clientY));
+});
+viewer.canvas.addEventListener("click", (event) => {
+  if (!camPick) return;
+  const face = viewer.faceAt(event.clientX, event.clientY);
+  if (face === null) return;
+  const pick = camPick;
+  camPick = null;
+  viewer.canvas.style.cursor = "";
+  viewer.highlightFace(null);
+  ui.viewportHint.hidden = true;
+  guarded(async () => {
+    const name = uniqueFaceName(face);
+    if (!name) throw new Error("That face has no name of its own yet.");
+    const args: Record<string, unknown> = { setup: pick.setup, type: pick.type };
+    if (pick.type === "pocket") args["floor"] = name;
+    else args["face"] = name;
+    if (pick.type === "chamfer") args["width"] = 0.5;
+    render(await execute("cam.add_operation", args));
+    if (shownSetup === pick.setup) await showToolpath(pick.setup);
+  })();
+});
+window.addEventListener("keydown", (event) => {
+  if (camPick && event.key === "Escape") {
+    camPick = null;
+    viewer.canvas.style.cursor = "";
+    viewer.highlightFace(null);
+    ui.viewportHint.hidden = true;
+  }
+});
 ui.patternButton.addEventListener("click", () => openPattern(null));
 element("pattern-cancel").addEventListener("click", closePattern);
 ui.patternDialog.addEventListener("keydown", (event) => {
