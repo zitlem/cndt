@@ -15,6 +15,7 @@ pub struct AddExtrude {
     sketch: SketchId,
     profiles: Option<Vec<ProfileKey>>,
     distance: f64,
+    expression: Option<String>,
     operation: Operation,
     name: Option<String>,
     created: Option<FeatureId>,
@@ -36,11 +37,22 @@ impl AddExtrude {
             sketch,
             profiles,
             distance,
+            expression: None,
             operation,
             name,
             created: None,
             undone: None,
         }
+    }
+}
+
+impl AddExtrude {
+    /// Makes the distance follow an expression of the parameters, such as
+    /// `thickness`, instead of the plain number.
+    #[must_use]
+    pub fn with_expression(mut self, expression: Option<String>) -> Self {
+        self.expression = expression;
+        self
     }
 }
 
@@ -79,11 +91,16 @@ impl Command for AddExtrude {
             Some(name) => name.clone(),
             None => document.next_feature_name("Extrude"),
         };
+        let distance = match &self.expression {
+            Some(text) => document.evaluate(text)?,
+            None => self.distance,
+        };
         let feature = Feature::Extrude {
             name,
             sketch: self.sketch,
             profiles,
-            distance: self.distance,
+            distance,
+            distance_expression: self.expression.clone(),
             operation: self.operation,
         };
         self.created = Some(document.add_feature(feature)?);
@@ -102,6 +119,7 @@ impl Command for AddExtrude {
 pub struct EditExtrude {
     id: FeatureId,
     distance: Option<f64>,
+    expression: Option<String>,
     operation: Option<Operation>,
     profiles: Option<Vec<ProfileKey>>,
     previous: Option<Feature>,
@@ -119,10 +137,20 @@ impl EditExtrude {
         Self {
             id,
             distance,
+            expression: None,
             operation,
             profiles,
             previous: None,
         }
+    }
+}
+
+impl EditExtrude {
+    /// Makes the distance follow an expression instead.
+    #[must_use]
+    pub fn with_expression(mut self, expression: Option<String>) -> Self {
+        self.expression = expression;
+        self
     }
 }
 
@@ -142,6 +170,7 @@ impl Command for EditExtrude {
             .ok_or(ModelError::UnknownFeature(self.id))?;
         let Feature::Extrude {
             distance,
+            distance_expression,
             operation,
             profiles,
             ..
@@ -151,8 +180,13 @@ impl Command for EditExtrude {
                 ModelError::InvalidFeature(String::from("that feature is not an extrude")).into(),
             );
         };
-        if let Some(d) = self.distance {
+        // A plain number replaces an expression; an expression sets both.
+        if let Some(text) = &self.expression {
+            *distance = document.evaluate(text)?;
+            *distance_expression = Some(text.clone());
+        } else if let Some(d) = self.distance {
             *distance = d;
+            *distance_expression = None;
         }
         if let Some(o) = self.operation {
             *operation = o;

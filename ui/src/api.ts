@@ -65,6 +65,8 @@ export interface SketchRecord {
   name: string;
   plane: Plane;
   sketch: Sketch;
+  /** Dimensions driven by an expression, by constraint id. */
+  expressions?: Record<string, string>;
 }
 
 export type FreedomStatus = "under" | "fully" | "over" | "unknown";
@@ -92,6 +94,7 @@ export type Feature =
       sketch: number;
       profiles: number[][];
       distance: number;
+      distance_expression?: string;
       operation: "join" | "cut";
     }
   | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec }

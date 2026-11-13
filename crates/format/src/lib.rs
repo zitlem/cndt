@@ -40,7 +40,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 4: sketches on faces of the part.
 /// - 5: hole features.
 /// - 6: chamfer and fillet features.
-pub const SCHEMA_VERSION: u32 = 6;
+/// - 7: expressions driving dimensions and extrude distances.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -258,6 +259,26 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             "a version 1 file cannot contain sketches",
         )));
     }
+    // Version 6 knew nothing of expressions.
+    let has_expressions = document
+        .sketches()
+        .values()
+        .any(|r| !r.expressions.is_empty())
+        || document.features().iter().any(|e| {
+            matches!(
+                &e.feature,
+                cndt_model::Feature::Extrude {
+                    distance_expression: Some(_),
+                    ..
+                }
+            )
+        });
+    if manifest.schema_version < 7 && has_expressions {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain expressions",
+            manifest.schema_version
+        )));
+    }
     // Version 5 knew nothing of chamfers and fillets.
     if manifest.schema_version < 6
         && document.features().iter().any(|entry| {
@@ -471,6 +492,7 @@ mod tests {
                     cndt_model::sketch::EntityId(2),
                 ])],
                 distance: 20.0,
+                distance_expression: None,
                 operation: cndt_model::Operation::Join,
             })
             .unwrap();

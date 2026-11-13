@@ -400,7 +400,8 @@ function renderFeatures(state: DocumentState): void {
 /** One line about a feature for the timeline. */
 function featureDetail(feature: import("./api").Feature): string {
   if (feature.type === "extrude") {
-    return `${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
+    const fx = feature.distance_expression ? "ƒ " : "";
+    return `${fx}${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
   }
   if (feature.type === "chamfer") return `${formatNumber(feature.distance)} × 45°`;
   if (feature.type === "fillet") return `R${formatNumber(feature.radius)}`;
@@ -586,7 +587,7 @@ function openExtrude(feature: number | null): void {
     ui.extrudeTitle.textContent = `Edit ${existing.name}`;
     ui.extrudeSketch.value = String(existing.sketch);
     ui.extrudeSketch.disabled = true;
-    ui.extrudeDistance.value = String(existing.distance);
+    ui.extrudeDistance.value = existing.distance_expression ?? String(existing.distance);
     ui.extrudeOperation.value = existing.operation;
   } else {
     ui.extrudeTitle.textContent = "Extrude";
@@ -784,7 +785,9 @@ element("extrude-cancel").addEventListener("click", closeExtrude);
 ui.extrudeOperation.addEventListener("change", () => {
   const plane = current?.document.sketches?.[ui.extrudeSketch.value]?.plane;
   if (typeof plane === "string") return;
-  const distance = Math.abs(Number(ui.extrudeDistance.value) || 0);
+  const value = Number(ui.extrudeDistance.value);
+  if (!Number.isFinite(value)) return; // an expression: leave it as typed
+  const distance = Math.abs(value);
   ui.extrudeDistance.value = String(ui.extrudeOperation.value === "cut" ? -distance : distance);
 });
 ui.extrudeDialog.addEventListener("keydown", (event) => {
@@ -793,7 +796,9 @@ ui.extrudeDialog.addEventListener("keydown", (event) => {
 ui.extrudeDialog.addEventListener("submit", (event) => {
   event.preventDefault();
   guarded(async () => {
-    const distance = Number(ui.extrudeDistance.value);
+    // A number, or an expression of the parameters.
+    const text = ui.extrudeDistance.value.trim();
+    const distance = Number.isFinite(Number(text)) && text !== "" ? Number(text) : text;
     const operation = ui.extrudeOperation.value;
     const next =
       editingFeature === null

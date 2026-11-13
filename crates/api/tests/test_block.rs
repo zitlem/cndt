@@ -292,6 +292,47 @@ fn the_cndt_test_block() {
     }
     assert!((state["body"]["bounds"]["max"]["z"].as_f64().unwrap() - 22.0).abs() < 1e-6);
 
+    // Drive the thickness from a parameter: everything follows, and undo
+    // puts it all back.
+    s.exec(
+        "parameter.set",
+        json!({"name": "thickness", "value": 20, "unit": "mm"}),
+    );
+    s.exec(
+        "feature.edit_extrude",
+        json!({"feature": 0, "distance": "thickness"}),
+    );
+    let state = s.exec(
+        "parameter.set",
+        json!({"name": "thickness", "value": 25, "unit": "mm"}),
+    );
+    assert!((state["body"]["bounds"]["max"]["z"].as_f64().unwrap() - 25.0).abs() < 1e-6);
+    for (id, outcome) in state["feature_status"].as_object().unwrap() {
+        assert_eq!(
+            outcome["state"], "ok",
+            "at 25 thick, feature {id}: {outcome}"
+        );
+    }
+    let reply = s.call(
+        json!({"method": "execute", "command": "parameter.remove", "args": {"name": "thickness"}}),
+    );
+    assert!(
+        reply["error"]["message"].as_str().unwrap().contains("Body"),
+        "{reply}"
+    );
+    let state = s.call(json!({"method": "undo"}))["result"].clone();
+    assert!((state["body"]["bounds"]["max"]["z"].as_f64().unwrap() - 20.0).abs() < 1e-6);
+    // The outline's sketch dimension from a parameter too.
+    s.exec(
+        "parameter.set",
+        json!({"name": "pocket_depth", "value": 8, "unit": "mm"}),
+    );
+    let state = s.exec(
+        "feature.edit_extrude",
+        json!({"feature": 1, "distance": "-pocket_depth"}),
+    );
+    assert_eq!(state["feature_status"]["1"]["state"], "ok");
+
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
     s.call(json!({"method": "save_as", "path": path}));

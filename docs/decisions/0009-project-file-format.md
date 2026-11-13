@@ -63,3 +63,7 @@ Hole features: `{"type": "hole", "name", "sketch", "points": [point ids], "spec"
 ## Version 6 (2026-11-12)
 
 Chamfer and fillet features: `{"type": "chamfer", "name", "edges": [...], "distance"}` and `{"type": "fillet", "name", "edges": [...], "radius"}`. Each edge target is `{"face": "<face name>"}` (every edge around that face) or `{"between": ["<face name>", "<face name>"]}` (the one edge where two faces meet). Older builds refuse these files with the update message.
+
+## Version 7 (2026-11-13)
+
+Expressions: a sketch may hold `expressions`, a map from dimension constraint id to an expression of the document's parameters (such as `"width / 2"`), and an extrude may hold `distance_expression`. The stored values are the evaluated ones, so the geometry reads the same without re-evaluating. Older builds refuse these files with the update message.
