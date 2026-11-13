@@ -80,11 +80,14 @@ pub enum Request {
         /// The STEP file.
         path: PathBuf,
     },
-    /// G-code for the part's holes from the top (decision 0013, first
-    /// slice), through a shipped post. Replies `{gcode, notes}`.
+    /// G-code for one stored setup (decision 0014), through a shipped
+    /// post. Replies `{gcode, notes}`.
     Post {
         /// `fanuc-mill` or `grbl`.
         post: String,
+        /// The setup's id; the first setup if left out.
+        #[serde(default)]
+        setup: Option<u32>,
     },
 }
 
@@ -316,7 +319,7 @@ impl Api {
     }
 
     /// Plans the hole program for the current part and posts it.
-    fn post(&self, id: &str) -> Result<Value, ApiError> {
+    fn post(&self, id: &str, setup: Option<u32>) -> Result<Value, ApiError> {
         let text = SHIPPED_POSTS
             .iter()
             .find(|(name, _)| *name == id)
@@ -330,18 +333,8 @@ impl Api {
             })?;
         let post = cndt_post::Post::from_toml(text)
             .map_err(|e| ApiError::new("internal", e.to_string()))?;
-        let setup = cndt_process_mill::Setup::top_of(&self.rebuilt)
-            .ok_or_else(|| ApiError::new("no_body", "there is no part to machine yet"))?;
-        let library = cndt_process_mill::ToolLibrary::default_aluminium();
-        let name = self.session.document().name().to_owned();
-        let planned = cndt_process_mill::hole_program(
-            self.session.document(),
-            &self.rebuilt,
-            &setup,
-            &library,
-            &name,
-        )
-        .map_err(|e| ApiError::new("cam", e.to_string()))?;
+        let planned = cndt_process_mill::plan_setup(self.session.document(), &self.rebuilt, setup)
+            .map_err(|e| ApiError::new("cam", e.to_string()))?;
         let gcode = post
             .run(&planned.program, env!("CARGO_PKG_VERSION"))
             .map_err(|e| ApiError::new("post", e.to_string()))?;
@@ -464,8 +457,8 @@ impl Api {
                     Err(error) => failure(ApiError::new("internal", error.to_string())),
                 };
             }
-            Request::Post { post } => {
-                return match self.post(&post) {
+            Request::Post { post, setup } => {
+                return match self.post(&post, setup) {
                     Ok(value) => success(value),
                     Err(error) => failure(error),
                 };
@@ -593,7 +586,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("state", &[]),
     ("commands", &[]),
     ("step_info", &["path"]),
-    ("post", &["post"]),
+    ("post", &["post", "setup"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo
@@ -1215,7 +1208,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 26, "{names:?}");
+        assert_eq!(names.len(), 33, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

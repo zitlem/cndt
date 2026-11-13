@@ -21,7 +21,7 @@ project files:
   commands                                  list the commands exec accepts
 
 other:
-  post <file.cndt> [post]                   print G-code for the part's holes (post: fanuc-mill or grbl)
+  post <file.cndt> [post] [setup]           print G-code for a setup (post: fanuc-mill or grbl; setup id)
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
   version                                   show the CNDT and geometry kernel versions
@@ -41,8 +41,12 @@ fn main() -> ExitCode {
         ["exec", path, command, arguments] => exec(Path::new(path), command, arguments),
         ["commands"] => commands(),
         ["info", path] => info(Path::new(path)),
-        ["post", path] => post(Path::new(path), "fanuc-mill"),
-        ["post", path, id] => post(Path::new(path), id),
+        ["post", path] => post(Path::new(path), "fanuc-mill", None),
+        ["post", path, id] => post(Path::new(path), id, None),
+        ["post", path, id, setup] => match setup.parse::<u32>() {
+            Ok(setup) => post(Path::new(path), id, Some(setup)),
+            Err(_) => Err(format!("{setup:?} is not a setup id")),
+        },
         ["api"] => serve_stdin(),
         ["version" | "--version" | "-V"] => {
             println!("cndt {}", env!("CARGO_PKG_VERSION"));
@@ -104,10 +108,14 @@ fn new(path: &Path, name: Option<&str>) -> Result<(), String> {
 
 /// Prints G-code to standard output and notes to standard error, so
 /// `cndt post part.cndt > part.nc` gives a clean program file.
-fn post(path: &Path, id: &str) -> Result<(), String> {
+fn post(path: &Path, id: &str, setup: Option<u32>) -> Result<(), String> {
     let mut api = Api::new();
     open(&mut api, path)?;
-    let result = call(&mut api, &json!({"method": "post", "post": id}))?;
+    let mut request = json!({"method": "post", "post": id});
+    if let Some(setup) = setup {
+        request["setup"] = json!(setup);
+    }
+    let result = call(&mut api, &request)?;
     if let Some(notes) = result["notes"].as_array() {
         for note in notes {
             eprintln!("note: {}", note.as_str().unwrap_or_default());

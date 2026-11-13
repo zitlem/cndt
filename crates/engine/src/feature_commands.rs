@@ -808,3 +808,56 @@ mod tests {
         assert!(session.execute(Box::new(bad)).is_err());
     }
 }
+
+/// Changes the CAM definitions (decision 0014). Undo restores the document
+/// exactly.
+#[derive(Debug, Clone)]
+pub struct EditCam {
+    name: &'static str,
+    edit: cndt_model::cam::CamEdit,
+    before: Option<Box<Document>>,
+}
+
+impl EditCam {
+    /// A command registered as `name` that applies `edit`.
+    #[must_use]
+    pub const fn new(name: &'static str, edit: cndt_model::cam::CamEdit) -> Self {
+        Self {
+            name,
+            edit,
+            before: None,
+        }
+    }
+}
+
+impl Command for EditCam {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn label(&self) -> String {
+        use cndt_model::cam::CamEdit as E;
+        String::from(match self.edit {
+            E::SetStock(_) => "Set stock",
+            E::AddSetup { .. } => "Add setup",
+            E::RemoveSetup(_) => "Delete setup",
+            E::AddOperation { .. } => "Add operation",
+            E::RemoveOperation { .. } => "Delete operation",
+            E::SetTool { .. } => "Set tool",
+            E::RemoveTool(_) => "Delete tool",
+        })
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = document.clone();
+        document.edit_cam(self.edit.clone())?;
+        self.before = Some(Box::new(before));
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = self.before.take().ok_or(CommandError::NotApplied)?;
+        *document = *before;
+        Ok(())
+    }
+}

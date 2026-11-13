@@ -42,7 +42,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 6: chamfer and fillet features.
 /// - 7: expressions driving dimensions and extrude distances.
 /// - 8: pattern features.
-pub const SCHEMA_VERSION: u32 = 8;
+/// - 9: CAM definitions: stock, tools, setups, operations (decision 0014).
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -258,6 +259,13 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 8 knew nothing of CAM definitions.
+    if manifest.schema_version < 9 && !document.cam().is_empty() {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain CAM setups or tools",
+            manifest.schema_version
         )));
     }
     // Version 7 knew nothing of patterns.
