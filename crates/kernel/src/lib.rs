@@ -133,6 +133,14 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// [`KernelError::Internal`] if the kernel fails.
     fn edges(&self, body: &Body) -> Result<Vec<(u32, u32)>, KernelError>;
 
+    /// Every edge of a body as a polyline (x, y, z per point) within
+    /// `deflection` of the curve, in the order [`Kernel::edges`] uses.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Internal`] if the kernel fails.
+    fn edge_polylines(&self, body: &Body, deflection: f64) -> Result<Vec<Vec<f32>>, KernelError>;
+
     /// Chamfers or fillets edges of a body.
     ///
     /// History sources: input face `i` is `i`; the face made from the `k`-th
@@ -363,6 +371,10 @@ impl Kernel for OpenCascade {
         cndt_occt_sys::translate(&body.0, offset)
             .map(|s| Body(Arc::new(s)))
             .map_err(modelling)
+    }
+
+    fn edge_polylines(&self, body: &Body, deflection: f64) -> Result<Vec<Vec<f32>>, KernelError> {
+        cndt_occt_sys::edge_polylines(&body.0, deflection).map_err(modelling)
     }
 
     fn edges(&self, body: &Body) -> Result<Vec<(u32, u32)>, KernelError> {

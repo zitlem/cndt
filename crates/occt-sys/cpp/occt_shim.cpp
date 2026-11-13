@@ -12,7 +12,9 @@
 // OpenCascade's data exchange code is not thread-safe; the Rust side holds a
 // process-wide lock around every call (see src/lib.rs).
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <GCPnts_QuasiUniformDeflection.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
@@ -1039,6 +1041,78 @@ int cndt_occt_translate(
             return kModelFailed;
         }
         *out = made.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// Owned edge polylines. Opaque to Rust; free with `cndt_occt_free_polylines`.
+struct cndt_polylines {
+    std::vector<std::uint32_t> counts;  // points per edge, in edge-map order
+    std::vector<float> points;          // x, y, z per point, edge after edge
+};
+
+void cndt_occt_free_polylines(cndt_polylines* lines) {
+    delete lines;
+}
+
+void cndt_occt_polylines_view(
+    const cndt_polylines* lines,
+    const std::uint32_t** counts,
+    std::size_t* counts_len,
+    const float** points,
+    std::size_t* points_len) {
+    if (lines == nullptr || counts == nullptr || counts_len == nullptr || points == nullptr || points_len == nullptr) {
+        return;
+    }
+    *counts = lines->counts.data();
+    *counts_len = lines->counts.size();
+    *points = lines->points.data();
+    *points_len = lines->points.size();
+}
+
+// Every edge of `shape` as a polyline within `deflection` of the true curve,
+// in edge-map order (the order `cndt_occt_edges` uses). A degenerate edge
+// has no points.
+int cndt_occt_edge_polylines(
+    const cndt_shape* shape,
+    double deflection,
+    cndt_polylines** out,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || out == nullptr || !(deflection > 0.0)) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(shape->shape, TopAbs_EDGE, edges);
+        auto lines = std::make_unique<cndt_polylines>();
+        for (int e = 1; e <= edges.Extent(); ++e) {
+            const TopoDS_Edge& edge = TopoDS::Edge(edges(e));
+            std::uint32_t count = 0;
+            if (!BRep_Tool::Degenerated(edge)) {
+                const BRepAdaptor_Curve curve(edge);
+                GCPnts_QuasiUniformDeflection sample(curve, deflection);
+                if (sample.IsDone() && sample.NbPoints() >= 2) {
+                    for (int k = 1; k <= sample.NbPoints(); ++k) {
+                        const gp_Pnt p = sample.Value(k);
+                        lines->points.push_back(static_cast<float>(p.X()));
+                        lines->points.push_back(static_cast<float>(p.Y()));
+                        lines->points.push_back(static_cast<float>(p.Z()));
+                        ++count;
+                    }
+                }
+            }
+            lines->counts.push_back(count);
+        }
+        *out = lines.release();
         return kOk;
     } catch (const Standard_Failure& failure) {
         set_error(err, err_len, failure.GetMessageString());

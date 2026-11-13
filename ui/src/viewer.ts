@@ -70,6 +70,8 @@ export class Viewer {
   private surface: THREE.Mesh | null = null;
   private triangleFaces: Uint32Array | null = null;
   private highlight: THREE.Group | null = null;
+  private edgeLines: Float32Array[] = [];
+  private edgeHighlight: THREE.Group | null = null;
   private readonly raycaster = new THREE.Raycaster();
   private sketches = new THREE.Group();
 
@@ -204,6 +206,83 @@ export class Viewer {
       tint(new Set(faces), 0xffb454, 0.55);
       if (hover !== null && !faces.includes(hover)) tint(new Set([hover]), 0xffb454, 0.3);
       this.highlight = group;
+      this.scene.add(group);
+    }
+    this.render();
+  }
+
+  /** Keeps the part's edges, for picking. */
+  setEdges(lines: Float32Array[]): void {
+    this.edgeLines = lines;
+    this.highlightEdges([]);
+  }
+
+  /** The edge near a point of the canvas (within 7 px, not hidden behind
+   * the part), or null. */
+  edgeAt(clientX: number, clientY: number): number | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    const toScreen = (v: THREE.Vector3) => {
+      const p = v.clone().project(this.camera);
+      return { x: ((p.x + 1) / 2) * rect.width, y: ((1 - p.y) / 2) * rect.height, z: p.z };
+    };
+    let best: { edge: number; distance: number; point: THREE.Vector3 } | null = null;
+    this.edgeLines.forEach((line, edge) => {
+      for (let k = 0; k + 5 < line.length; k += 3) {
+        const a = new THREE.Vector3(line[k], line[k + 1], line[k + 2]);
+        const b = new THREE.Vector3(line[k + 3], line[k + 4], line[k + 5]);
+        const sa = toScreen(a);
+        const sb = toScreen(b);
+        if (sa.z > 1 || sb.z > 1) continue;
+        const dx = sb.x - sa.x;
+        const dy = sb.y - sa.y;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - sa.x) * dx + (py - sa.y) * dy) / len2)) : 0;
+        const d = Math.hypot(px - (sa.x + t * dx), py - (sa.y + t * dy));
+        if (d < 7 && (!best || d < best.distance)) best = { edge, distance: d, point: a.clone().lerp(b, t) };
+      }
+    });
+    if (!best) return null;
+    const found: { edge: number; distance: number; point: THREE.Vector3 } = best;
+    // Hidden behind the part? Compare with the surface under the pointer.
+    if (this.surface) {
+      const pointer = new THREE.Vector2((px / rect.width) * 2 - 1, -(py / rect.height) * 2 + 1);
+      this.raycaster.setFromCamera(pointer, this.camera);
+      const hit = this.raycaster.intersectObject(this.surface)[0];
+      const edgeDistance = this.camera.position.distanceTo(found.point);
+      if (hit && edgeDistance > hit.distance * 1.01 + 0.05) return null;
+    }
+    return found.edge;
+  }
+
+  /** Draws picked edges, and more faintly the one under the pointer. */
+  highlightEdges(edges: number[], hover: number | null = null): void {
+    if (this.edgeHighlight) {
+      this.scene.remove(this.edgeHighlight);
+      this.edgeHighlight.traverse((o) => {
+        if (o instanceof THREE.Line) {
+          o.geometry.dispose();
+          (o.material as THREE.Material).dispose();
+        }
+      });
+      this.edgeHighlight = null;
+    }
+    const group = new THREE.Group();
+    const draw = (edge: number, color: number) => {
+      const line = this.edgeLines[edge];
+      if (!line || line.length < 6) return;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(line, 3));
+      const material = new THREE.LineBasicMaterial({ color, depthTest: false });
+      const drawn = new THREE.Line(geometry, material);
+      drawn.renderOrder = 10;
+      group.add(drawn);
+    };
+    for (const edge of edges) draw(edge, 0xffb454);
+    if (hover !== null && !edges.includes(hover)) draw(hover, 0xffe0b0);
+    if (group.children.length > 0) {
+      this.edgeHighlight = group;
       this.scene.add(group);
     }
     this.render();
