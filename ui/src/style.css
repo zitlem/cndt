@@ -848,3 +848,9 @@ button:disabled {
 .dialog [hidden] {
   display: none;
 }
+
+/* Long sketch and timeline lists keep their full height; the panel
+   scrolls instead of the lists being squashed. */
+.panel > * {
+  flex-shrink: 0;
+}
