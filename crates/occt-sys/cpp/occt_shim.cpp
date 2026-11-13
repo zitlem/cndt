@@ -12,6 +12,7 @@
 // OpenCascade's data exchange code is not thread-safe; the Rust side holds a
 // process-wide lock around every call (see src/lib.rs).
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
@@ -25,6 +26,7 @@
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Wire.hxx>
+#include <GeomAbs_SurfaceType.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
@@ -667,6 +669,56 @@ int cndt_occt_mesh_shape(
     *handle = nullptr;
     try {
         return mesh_shape(shape->shape, deflection, handle, view, err, err_len);
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// The plane of face `face` (0-based, in the face-map order the history
+// uses): a point on it and its outward normal. Fails with kModelFailed if
+// the face is not flat.
+int cndt_occt_face_plane(
+    const cndt_shape* shape,
+    std::uint32_t face,
+    double point_out[3],
+    double normal_out[3],
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || point_out == nullptr || normal_out == nullptr) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    try {
+        TopTools_IndexedMapOfShape map;
+        TopExp::MapShapes(shape->shape, TopAbs_FACE, map);
+        const int index = static_cast<int>(face) + 1;
+        if (index < 1 || index > map.Extent()) {
+            set_error(err, err_len, "no such face");
+            return kBadArgument;
+        }
+        const TopoDS_Face& f = TopoDS::Face(map(index));
+        const BRepAdaptor_Surface surface(f);
+        if (surface.GetType() != GeomAbs_Plane) {
+            set_error(err, err_len, "the face is not flat");
+            return kModelFailed;
+        }
+        const gp_Pln plane = surface.Plane();
+        gp_Dir normal = plane.Axis().Direction();
+        if (f.Orientation() == TopAbs_REVERSED) {
+            normal.Reverse();
+        }
+        const gp_Pnt origin = plane.Location();
+        point_out[0] = origin.X();
+        point_out[1] = origin.Y();
+        point_out[2] = origin.Z();
+        normal_out[0] = normal.X();
+        normal_out[1] = normal.Y();
+        normal_out[2] = normal.Z();
+        return kOk;
     } catch (const Standard_Failure& failure) {
         set_error(err, err_len, failure.GetMessageString());
         return kKernelError;

@@ -268,13 +268,19 @@ impl Registry {
             },
             CommandSpec {
                 name: "sketch.create",
-                description: "Create an empty sketch on an origin plane.",
+                description: "Create an empty sketch on an origin plane or on a flat face of the part.",
                 args: &[
                     ArgSpec {
                         name: "plane",
                         kind: ArgKind::Plane,
-                        required: true,
-                        description: "xy, xz or yz.",
+                        required: false,
+                        description: "xy, xz or yz. Give this or face.",
+                    },
+                    ArgSpec {
+                        name: "face",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "A flat face's persistent name, such as f0/end/4-5-6-7. Give this or plane.",
                     },
                     ArgSpec {
                         name: "name",
@@ -289,7 +295,12 @@ impl Registry {
                     } else {
                         String::new()
                     };
-                    Ok(Box::new(CreateSketch::new(&name, plane(args, "plane")?)))
+                    let plane = match (args.contains_key("plane"), args.contains_key("face")) {
+                        (true, false) => plane(args, "plane")?,
+                        (false, true) => Plane::Face(text(args, "face")?),
+                        _ => return Err(String::from("give either \"plane\" or \"face\"")),
+                    };
+                    Ok(Box::new(CreateSketch::new(&name, plane)))
                 },
             },
             CommandSpec {
@@ -758,6 +769,12 @@ mod tests {
                 "unexpected argument",
             ),
             ("sketch.create", json!({"plane": "top"}), "unknown plane"),
+            ("sketch.create", json!({}), "either"),
+            (
+                "sketch.create",
+                json!({"plane": "xy", "face": "f0/end/1"}),
+                "either",
+            ),
             (
                 "feature.extrude",
                 json!({"sketch": 0, "distance": 1, "operation": "add"}),
@@ -822,7 +839,7 @@ mod tests {
                 json!({"feature": 0, "distance": 25, "operation": "cut", "profiles": [[4, 5, 6, 7]]}),
             ),
             ("feature.delete", json!({"feature": 0})),
-            ("sketch.create", json!({"plane": "xy"})),
+            ("sketch.create", json!({"face": "f0/end/4-5-6-7"})),
             ("sketch.delete", json!({"sketch": 0})),
             (
                 "sketch.add_point",

@@ -51,3 +51,7 @@ Sketches are stored in `design/document.json`, under `sketches`, keyed by sketch
 ## Version 3 (2026-11-12)
 
 The feature timeline is stored in `design/document.json` as `features`: an ordered list of `{id, feature}`, with `next_feature` so deleted ids are never reused. An extrude stores its sketch, its profiles (each named by its outer boundary's curve ids), its distance and whether it joins or cuts. The solid itself is not stored; it is rebuilt from the timeline on open. A version 1 or 2 file reads as having no features; one that contains features is refused as damaged.
+
+## Version 4 (2026-11-12)
+
+A sketch's `plane` may be `{"face": "<face name>"}` instead of `xy`, `xz` or `yz`: a flat face of the part by its persistent name (decision 0012). Older builds refuse such files with the update message instead of failing to read them. A version 3 or older file that contains one is refused as damaged.

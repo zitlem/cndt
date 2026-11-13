@@ -828,3 +828,11 @@ button:disabled {
   height: auto;
   padding: 7px 16px;
 }
+
+/* The face a sketch is on, shown faintly under it. */
+.sketch-surface .reference {
+  fill: #2a3a52;
+  stroke: #2a3a52;
+  stroke-width: 0.5;
+  pointer-events: none;
+}

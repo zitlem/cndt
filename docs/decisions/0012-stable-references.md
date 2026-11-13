@@ -49,3 +49,5 @@ First built with extrude, join and cut:
 - A profile that is no longer closed after a sketch edit is not re-guessed: the feature is flagged with the reason and skipped, and the rest of the timeline still builds.
 - Tests check that every name sits on exactly one face, and that the names are unchanged after a dimension edit.
 - Not yet: references *to* faces (sketch on face, fillet edges, CAM). They will resolve these names, and refuse a name that matches no face or several.
+
+Sketches on faces (2026-11-12): the first reference *to* a face. A sketch stores the face's name. At rebuild it is looked up on the part as it is just before each feature that uses the sketch (on the finished part if none does). It must match exactly one face, and that face must be flat; otherwise the sketch and its features are flagged with the reason. The sketch's axes are the model's projected onto the face, with the normal pointing out of the part, so a top-face sketch uses the model's X and Y. Test: the test block's pocket sketched on the top face still cuts correctly after the block is made taller.

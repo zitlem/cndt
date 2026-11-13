@@ -26,7 +26,8 @@ use cndt_geom::TriangleMesh;
 use cndt_kernel::{Kernel, KernelError, OpenCascade};
 use cndt_model::sketch::Freedom;
 use cndt_model::{
-    Document, FeatureId, FeatureStatus, ModelError, Rebuilt, SketchError, SketchId, rebuild,
+    Document, FeatureId, FeatureStatus, FrameStatus, ModelError, Rebuilt, SketchError, SketchId,
+    rebuild,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -187,6 +188,8 @@ struct StateView<'a> {
     freedom: BTreeMap<SketchId, Freedom>,
     /// How each timeline feature built.
     feature_status: &'a BTreeMap<FeatureId, FeatureStatus>,
+    /// Where each sketch sits in the model, for drawing it in 3D.
+    sketch_frames: &'a BTreeMap<SketchId, FrameStatus>,
     /// The rebuilt part, if any feature made one.
     body: Option<BodyView>,
     /// Goes up by one on every rebuild; fetch `body_mesh` again when it
@@ -410,6 +413,7 @@ impl Api {
                 .map(|(id, record)| (*id, record.sketch.freedom()))
                 .collect(),
             feature_status: &self.rebuilt.status,
+            sketch_frames: &self.rebuilt.frames,
             body: self.rebuilt.properties.map(|p| BodyView {
                 volume: p.volume,
                 bounds: p.bounds,
@@ -717,8 +721,40 @@ mod tests {
             "{volume}"
         );
         assert_eq!(reply["result"]["undo"], "Extrude cut");
+        // The same pocket, sketched on the top face and cut down into it.
+        call(&mut api, json!({"method": "undo"}));
+        let top = reply["result"]["body"]["faces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|names| names.as_array().unwrap().iter())
+            .filter_map(Value::as_str)
+            .find(|name| name.starts_with("f0/end/"))
+            .unwrap()
+            .to_owned();
+        let reply = exec(&mut api, "sketch.create", json!({"face": top}));
+        assert_eq!(
+            reply["result"]["sketch_frames"]["2"]["frame"]["origin"]["z"], 20.0,
+            "{reply}"
+        );
+        exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 2, "from": {"x": 28, "y": 18}, "to": {"x": 68, "y": 38}}),
+        );
+        let reply = exec(
+            &mut api,
+            "feature.extrude",
+            json!({"sketch": 2, "distance": -8, "operation": "cut"}),
+        );
+        assert_eq!(reply["result"]["body"]["bounds"]["max"]["z"], 20.0);
+        let volume = reply["result"]["body"]["volume"].as_f64().unwrap();
+        assert!(
+            (volume - (96.0 * 56.0 * 20.0 - 40.0 * 20.0 * 8.0)).abs() < 1e-6,
+            "{volume}"
+        );
         // Deleting the sketch a feature uses is refused with a reason.
-        let reply = exec(&mut api, "sketch.delete", json!({"sketch": 1}));
+        let reply = exec(&mut api, "sketch.delete", json!({"sketch": 2}));
         assert!(
             reply["error"]["message"]
                 .as_str()

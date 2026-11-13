@@ -19,7 +19,9 @@
 
 mod solid;
 
-pub use solid::{BooleanOp, Curve, Made, Properties, Shape, boolean, extrude, mesh, properties};
+pub use solid::{
+    BooleanOp, Curve, Made, Properties, Shape, boolean, extrude, face_plane, mesh, properties,
+};
 
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::fmt;

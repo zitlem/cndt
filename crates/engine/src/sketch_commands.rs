@@ -47,7 +47,7 @@ impl Command for CreateSketch {
     fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
         match (self.created, self.undone.take()) {
             (Some(id), Some(record)) => document.restore_sketch(id, record),
-            _ => self.created = Some(document.add_sketch(&self.name, self.plane)?),
+            _ => self.created = Some(document.add_sketch(&self.name, self.plane.clone())?),
         }
         Ok(())
     }

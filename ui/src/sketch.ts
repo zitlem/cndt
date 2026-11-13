@@ -108,6 +108,9 @@ const GLYPH: Record<string, string> = {
 export class SketchEditor {
   readonly element: SVGSVGElement;
   private readonly grid = svg("g");
+  private readonly reference = svg("path", { class: "reference" });
+  /** Triangles of the face the sketch is on, in sketch coordinates. */
+  private referenceTriangles: XY[] = [];
   private readonly shapes = svg("g");
   private readonly marks = svg("g");
   private readonly preview = svg("g");
@@ -137,7 +140,7 @@ export class SketchEditor {
     private readonly app: SketchHost,
   ) {
     this.element = svg("svg", { class: "sketch-surface", tabindex: 0 });
-    this.element.append(this.grid, this.shapes, this.marks, this.preview);
+    this.element.append(this.grid, this.reference, this.shapes, this.marks, this.preview);
     this.element.toggleAttribute("hidden", true);
     host.append(this.element);
 
@@ -174,6 +177,7 @@ export class SketchEditor {
 
   close(): void {
     this.id = null;
+    this.referenceTriangles = [];
     this.record = null;
     this.element.toggleAttribute("hidden", true);
     this.hideInput();
@@ -191,6 +195,13 @@ export class SketchEditor {
     this.record = record;
     this.freedom = state.freedom[String(this.id)] ?? null;
     this.selection = this.selection.filter((key) => this.exists(key));
+    this.draw();
+  }
+
+  /** Shows the face the sketch is on, as triangles in sketch coordinates
+   * (three points each), or nothing. */
+  setReference(triangles: XY[]): void {
+    this.referenceTriangles = triangles;
     this.draw();
   }
 
@@ -222,8 +233,14 @@ export class SketchEditor {
     const { clientWidth: width, clientHeight: height } = this.host;
     const points = this.points();
     let box = { minX: -50, minY: -50, maxX: 50, maxY: 50 };
-    if (points.length > 0) {
+    if (points.length > 0 || this.referenceTriangles.length > 0) {
       box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      for (const p of this.referenceTriangles) {
+        box.minX = Math.min(box.minX, p.x);
+        box.maxX = Math.max(box.maxX, p.x);
+        box.minY = Math.min(box.minY, p.y);
+        box.maxY = Math.max(box.maxY, p.y);
+      }
       for (const p of points) {
         const r = this.extent(p.id);
         box.minX = Math.min(box.minX, p.at.x - r);
@@ -794,6 +811,12 @@ export class SketchEditor {
     const { clientWidth: width, clientHeight: height } = this.host;
     this.element.setAttribute("viewBox", `0 0 ${width} ${height}`);
     this.drawGrid(width, height);
+    let d = "";
+    for (let i = 0; i + 2 < this.referenceTriangles.length; i += 3) {
+      const [a, b, c] = [0, 1, 2].map((k) => this.toScreen(this.referenceTriangles[i + k] ?? { x: 0, y: 0 }));
+      if (a && b && c) d += `M${a.x} ${a.y}L${b.x} ${b.y}L${c.x} ${c.y}Z`;
+    }
+    this.reference.setAttribute("d", d);
     this.drawShapes();
     this.drawMarks();
     this.drawPreview();

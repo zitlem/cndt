@@ -37,7 +37,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 1: name and parameters.
 /// - 2: sketches. A version 1 file reads as a version 2 file without any.
 /// - 3: the feature timeline. Older files read as having none.
-pub const SCHEMA_VERSION: u32 = 3;
+/// - 4: sketches on faces of the part.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -253,6 +254,18 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 3 knew nothing of sketches on faces.
+    if manifest.schema_version < 4
+        && document
+            .sketches()
+            .values()
+            .any(|record| matches!(record.plane, cndt_model::Plane::Face(_)))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain sketches on faces",
+            manifest.schema_version
         )));
     }
     // Version 2 knew nothing of features.

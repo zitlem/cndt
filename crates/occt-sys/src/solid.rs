@@ -82,6 +82,14 @@ unsafe extern "C" {
         err_len: usize,
     ) -> c_int;
     fn cndt_occt_free_mesh(handle: *mut MeshHandle);
+    fn cndt_occt_face_plane(
+        shape: *const ShapeHandle,
+        face: u32,
+        point: *mut f64,
+        normal: *mut f64,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
 }
 
 const MODEL_FAILED: i32 = 6;
@@ -401,6 +409,36 @@ pub fn mesh(shape: &Shape, deflection: f64) -> Result<Mesh, OcctError> {
     Ok(mesh)
 }
 
+/// A point on a flat face, and its outward normal.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] if the face is not flat; [`OcctError::Kernel`]
+/// if there is no such face.
+pub fn face_plane(shape: &Shape, face: u32) -> Result<([f64; 3], [f64; 3]), OcctError> {
+    let mut point = [0.0; 3];
+    let mut normal = [0.0; 3];
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `point` and `normal` are writable arrays of
+    // three doubles; `err` is writable for `err.len()` bytes; the shim
+    // catches every C++ exception.
+    let code = unsafe {
+        cndt_occt_face_plane(
+            shape.ptr.as_ptr(),
+            face,
+            point.as_mut_ptr(),
+            normal.as_mut_ptr(),
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    Ok((point, normal))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::float_cmp)]
@@ -504,6 +542,30 @@ mod tests {
         let mesh = mesh(&cut.shape, 0.1).unwrap();
         assert_eq!(mesh.face_count, 11);
         assert!(!mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn face_planes_point_outwards() {
+        let made = extrude(&[rectangle(10.0, 10.0)], Z, 5.0).unwrap();
+        let (_, end) = *made.history.iter().find(|p| p.0 == 5).unwrap();
+        let (point, normal) = face_plane(&made.shape, end).unwrap();
+        assert!(
+            (point[2] - 5.0).abs() < 1e-9 && (normal[2] - 1.0).abs() < 1e-12,
+            "{point:?} {normal:?}"
+        );
+        let (_, start) = *made.history.iter().find(|p| p.0 == 4).unwrap();
+        let (_, normal) = face_plane(&made.shape, start).unwrap();
+        assert!(
+            (normal[2] + 1.0).abs() < 1e-12,
+            "the bottom faces down: {normal:?}"
+        );
+        let disc = extrude(&[circle(0.0, 0.0, 3.0)], Z, 2.0).unwrap();
+        let (_, side) = *disc.history.iter().find(|p| p.0 == 0).unwrap();
+        assert!(matches!(
+            face_plane(&disc.shape, side),
+            Err(OcctError::ModelFailed(_))
+        ));
+        assert!(face_plane(&disc.shape, 99).is_err());
     }
 
     #[test]
