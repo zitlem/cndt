@@ -456,10 +456,9 @@ fn the_cndt_test_block() {
     assert_eq!(reply["ok"], true, "{reply}");
     let gcode = reply["result"]["gcode"].as_str().unwrap();
     let notes = reply["result"]["notes"].to_string();
-    assert!(
-        notes.contains("Counterbored M5") && notes.contains("milling"),
-        "{notes}"
-    );
+    // The counterbores are milled now, not left as a note.
+    assert!(!notes.contains("Counterbored M5"), "{notes}");
+    assert!(gcode.contains("(COUNTERBORE 9.5 MM X 5.4 MM)"), "{gcode}");
     check_golden("test-block-setup-1-fanuc-mill", gcode);
     // GRBL cannot rigid-tap, and says so.
     let reply = s.call(json!({"method": "post", "post": "grbl"}));
