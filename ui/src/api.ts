@@ -61,17 +61,38 @@ export interface Freedom {
   entities: { id: number; dof: number | null; status: FreedomStatus }[];
 }
 
+export interface Feature {
+  type: "extrude";
+  name: string;
+  sketch: number;
+  profiles: number[][];
+  distance: number;
+  operation: "join" | "cut";
+}
+
+export type FeatureStatus = { state: "ok" } | { state: "failed"; reason: string };
+
+export interface BodyView {
+  volume: number;
+  bounds: { min: Point3; max: Point3 };
+  faces: string[][];
+}
+
 export interface DocumentState {
   document: {
     name: string;
     parameters: Record<string, Parameter>;
     sketches?: Record<string, SketchRecord>;
+    features?: { id: number; feature: Feature }[];
   };
   path: string | null;
   dirty: boolean;
   undo: string | null;
   redo: string | null;
   freedom: Record<string, Freedom>;
+  feature_status: Record<string, FeatureStatus>;
+  body: BodyView | null;
+  body_revision: number;
 }
 
 export interface Point3 {
@@ -163,6 +184,16 @@ export async function stepPreview(path: string): Promise<Mesh> {
   try {
     const buffer = await invoke<ArrayBuffer>("step_preview", { path });
     return decodeMesh(buffer);
+  } catch (error) {
+    if (error instanceof ApiFailure) throw error;
+    throw new ApiFailure("kernel", String(error));
+  }
+}
+
+/** Triangulates the rebuilt part in the core and returns the mesh. */
+export async function bodyMesh(): Promise<Mesh> {
+  try {
+    return decodeMesh(await invoke<ArrayBuffer>("body_mesh"));
   } catch (error) {
     if (error instanceof ApiFailure) throw error;
     throw new ApiFailure("kernel", String(error));

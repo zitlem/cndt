@@ -101,8 +101,9 @@ export class Viewer {
     this.loop();
   }
 
-  /** Shows a mesh, replacing anything shown before, and frames it. */
-  show(mesh: Mesh): void {
+  /** Shows a mesh, replacing anything shown before, and frames it unless
+   * `keepView` is set (for a rebuild while the user is looking). */
+  show(mesh: Mesh, keepView = false): void {
     this.clear();
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
@@ -130,7 +131,13 @@ export class Viewer {
     this.model = new THREE.Group();
     this.model.add(surface, edges);
     this.scene.add(this.model);
-    this.fit();
+    if (keepView) this.render();
+    else this.fit();
+  }
+
+  /** Whether a model is shown. */
+  get hasModel(): boolean {
+    return this.model !== null;
   }
 
   /** Draws the document's sketches on their planes. */
