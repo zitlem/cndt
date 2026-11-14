@@ -580,7 +580,29 @@ function renderSetups(state: DocumentState): void {
         if (shownSetup === id) await showToolpath(id);
       }),
     );
-    row.append(kind, add);
+    const detect = globalThis.document.createElement("button");
+    detect.type = "button";
+    detect.className = "secondary";
+    detect.textContent = "Detect";
+    detect.title = "Add operations for the holes, pockets and outside profile this setup can reach";
+    detect.addEventListener(
+      "click",
+      guarded(async () => {
+        const found = await request<{ operations: unknown[]; notes: string[] }>({ method: "detect", setup: id });
+        if (found.operations.length > 0) {
+          render(await execute("cam.add_operations", { setup: id, operations: found.operations }));
+          if (shownSetup === id) await showToolpath(id);
+        }
+        const added =
+          found.operations.length === 0
+            ? "Nothing new to add: the setup already has everything detection finds."
+            : `Added ${found.operations.length} operation${found.operations.length === 1 ? "" : "s"}.`;
+        if (found.notes.length > 0 || found.operations.length === 0) {
+          showError(new Error(`${added} ${found.notes.join(" ")}`.trim()));
+        }
+      }),
+    );
+    row.append(kind, add, detect);
     item.append(head, ops, row);
     ui.setupList.append(item);
   }

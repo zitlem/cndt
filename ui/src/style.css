@@ -892,13 +892,20 @@ button:disabled {
 
 .setup-list .head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
 
+/* The name gets its own line; the buttons wrap beneath it. */
 .setup-list .head .name {
-  flex: 1;
+  flex: 1 0 100%;
   font-weight: 600;
+}
+
+.setup-list .head select {
+  flex: 1;
+  min-width: 0;
 }
 
 .setup-list .ops {

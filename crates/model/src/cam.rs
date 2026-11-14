@@ -284,6 +284,14 @@ pub enum CamEdit {
         /// The operation.
         operation: OperationDef,
     },
+    /// Adds several operations at the end of a setup, in order, as one
+    /// edit (such as those found by feature detection).
+    AddOperations {
+        /// The setup.
+        setup: u32,
+        /// The operations.
+        operations: Vec<OperationDef>,
+    },
     /// Removes an operation.
     RemoveOperation {
         /// The setup.
@@ -381,6 +389,24 @@ impl Cam {
                     .operations
                     .push(OperationEntry { id, operation });
                 return Ok(Some(id));
+            }
+            CamEdit::AddOperations { setup, operations } => {
+                let entry = self
+                    .setups
+                    .iter_mut()
+                    .find(|e| e.id == setup)
+                    .ok_or_else(|| format!("there is no setup {setup}"))?;
+                if operations.is_empty() {
+                    return Err(String::from("there are no operations to add"));
+                }
+                for operation in operations {
+                    let id = self.next_operation;
+                    self.next_operation = self.next_operation.saturating_add(1);
+                    entry
+                        .setup
+                        .operations
+                        .push(OperationEntry { id, operation });
+                }
             }
             CamEdit::RemoveOperation { setup, operation } => {
                 let entry = self

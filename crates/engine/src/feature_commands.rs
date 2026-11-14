@@ -842,6 +842,7 @@ impl Command for EditCam {
             E::AddSetup { .. } => "Add setup",
             E::RemoveSetup(_) => "Delete setup",
             E::AddOperation { .. } => "Add operation",
+            E::AddOperations { .. } => "Add operations",
             E::RemoveOperation { .. } => "Delete operation",
             E::SetTool { .. } => "Set tool",
             E::RemoveTool(_) => "Delete tool",

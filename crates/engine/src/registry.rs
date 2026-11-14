@@ -54,6 +54,9 @@ pub enum ArgKind {
     /// A list of edges, each the names of its two faces, such as
     /// `[["f0/side/e4", "f0/side/e5"]]`.
     Edges,
+    /// A list of CAM operations as the document stores them, such as
+    /// `[{"type": "face"}, {"type": "pocket", "floor": "f1/end/e0"}]`.
+    Operations,
 }
 
 /// One argument a command accepts.
@@ -604,6 +607,41 @@ impl Registry {
                         cndt_model::cam::CamEdit::AddOperation {
                             setup: id(args, "setup")?,
                             operation,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "cam.add_operations",
+                description: "Add several operations at the end of a setup as one step, such as those the detect request suggests.",
+                args: &[
+                    ArgSpec {
+                        name: "setup",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The setup's id.",
+                    },
+                    ArgSpec {
+                        name: "operations",
+                        kind: ArgKind::Operations,
+                        required: true,
+                        description: "The operations, as the document stores them.",
+                    },
+                ],
+                build: |args| {
+                    let operations = args
+                        .get("operations")
+                        .cloned()
+                        .ok_or_else(|| String::from("missing argument operations"))
+                        .and_then(|value| {
+                            serde_json::from_value::<Vec<cndt_model::cam::OperationDef>>(value)
+                                .map_err(|e| format!("operations: {e}"))
+                        })?;
+                    cam(
+                        "cam.add_operations",
+                        cndt_model::cam::CamEdit::AddOperations {
+                            setup: id(args, "setup")?,
+                            operations,
                         },
                     )
                 },
@@ -1702,6 +1740,10 @@ mod tests {
             (
                 "feature.edit_hole",
                 json!({"feature": 0, "diameter": 5.5, "depth": "through", "counterbore_diameter": 9.5, "counterbore_depth": 5.4}),
+            ),
+            (
+                "cam.add_operations",
+                json!({"setup": 0, "operations": [{"type": "face"}, {"type": "pocket", "floor": "f1/end/e0", "finish": 0.2}]}),
             ),
             ("sketch.create", json!({"face": "f0/end/4-5-6-7"})),
             ("sketch.delete", json!({"sketch": 0})),
