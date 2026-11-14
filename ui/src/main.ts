@@ -393,13 +393,19 @@ function renderFeatures(state: DocumentState): void {
     const item = globalThis.document.createElement("li");
     const failed = status?.state === "failed";
     item.classList.toggle("failed", failed);
-    item.title = failed ? status.reason : "Click to edit";
+    item.title = failed
+      ? `${feature.name}: needs repair. ${status.reason}`
+      : `${feature.name}: ${featureDetail(feature)}. Click to edit.`;
+    item.tabIndex = 0;
+    // The same icon as the tool that made it.
+    const icon = globalThis.document.createElement("span");
+    icon.className = "icon";
+    const tool = feature.type === "extrude" ? ui.extrudeButton : globalThis.document.getElementById(feature.type);
+    const svg = tool?.querySelector("svg");
+    if (svg) icon.append(svg.cloneNode(true));
     const name = globalThis.document.createElement("span");
     name.className = "name";
-    name.textContent = feature.name;
-    const detail = globalThis.document.createElement("span");
-    detail.className = failed ? "detail flag" : "detail";
-    detail.textContent = failed ? "⚠ needs repair" : featureDetail(feature);
+    name.textContent = failed ? `⚠ ${feature.name}` : feature.name;
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
     remove.setAttribute("aria-label", `Delete ${feature.name}`);
@@ -415,7 +421,10 @@ function renderFeatures(state: DocumentState): void {
       else if (feature.type === "extrude") openExtrude(id);
       else openBlend(feature.type, id);
     });
-    item.append(name, detail, remove);
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") item.click();
+    });
+    item.append(icon, name, remove);
     ui.featureList.append(item);
   }
 }

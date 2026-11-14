@@ -1,6 +1,8 @@
 # CNDT
 
-> Working name. Not yet usable: the project is in planning and no code has been written.
+Say it "sent it".
+
+> Working name. Early development: it designs and programs a test part end to end, but nothing it produces has been proven on a machine yet. Do not run its G-code on a machine.
 
 CNDT is an open-source CAD/CAM application for designing parts and machining them from the same model. The goal is a simple, single-window workflow with professional machining depth.
 
@@ -19,8 +21,8 @@ CNDT is an open-source CAD/CAM application for designing parts and machining the
 | --- | --- | --- |
 | 0 | Foundations: workspace, CI, geometry kernel build, command engine, desktop shell | Done |
 | 1 | CAD core: sketcher, solid features, timeline | Done for the test block: sketches, extrude, cut, holes, chamfer, fillet, patterns, parameters |
-| 2 | 2.5D milling and first posts | In progress: the test block programs end to end (face, contour, pocket, holes, counterbore, chamfer; two setups); unverified until cut |
-| 3 | Simulation and verification (v1.0) | Not started |
+| 2 | 2.5D milling and first posts | Built: face, contour, pocket, holes, counterbore and chamfer milling, feature detection, both sides in one program (by hand or on a B table), machine definitions, and Fanuc, Haas, LinuxCNC, Mazak SmoothG and GRBL posts. Unverified until it cuts a real part |
+| 3 | Simulation and verification (v1.0) | In progress: stock simulation of a setup, with collisions, gouges and material left |
 
 ## Building
 
