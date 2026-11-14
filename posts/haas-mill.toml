@@ -1,0 +1,75 @@
+# Haas-style milling post for CNDT (Haas mills read Fanuc-style G-code).
+#
+# UNVERIFIED: this post has not been run on a real controller. Do not set
+# `verified = true` until its output has cut a test part on the named
+# controller, and record that run as docs/safety.md describes.
+#
+# Written from the general Fanuc-style dialect and Haas behaviour as
+# described in public operator documentation; not derived from any vendor
+# post.
+
+[post]
+id = "haas-mill"
+name = "Haas milling"
+version = "0.1.0"
+verified = false
+
+[format]
+decimals = 3
+feed_decimals = 1
+trim_zeros = true
+# As on Fanuc, a coordinate without a point may be read in thousandths.
+keep_decimal_point = true
+line_numbers = { start = 10, step = 10 }
+comment = { open = "(", close = ")", uppercase = true }
+percent_wrapped = true
+program_number_digits = 5
+
+[program]
+first_line = "O{program_number} ({program_name})"
+start = [
+    "{header}",
+    "G0 G17 G21 G40 G49 G80 G90",
+    "{work_offset}",
+]
+end = [
+    "M9",
+    "M5",
+    # Spindle up in machine coordinates, then the table to the front.
+    "G53 G49 Z0.",
+    "G53 Y0.",
+    "M30",
+]
+
+[codes]
+rapid = "G0"
+linear = "G1"
+arc_cw = "G2"
+arc_ccw = "G3"
+spindle_cw = "M3 S{rpm}"
+spindle_ccw = "M4 S{rpm}"
+spindle_off = "M5"
+coolant_flood = "M8"
+coolant_mist = "M7"
+coolant_off = "M9"
+stop = "M0"
+optional_stop = "M1"
+# Without a decimal point, P is in milliseconds.
+dwell = "G4 P{milliseconds}"
+tool_change = [
+    "M5",
+    "G53 G49 Z0.",
+    "T{tool} M6",
+]
+# Applied with the first Z move after every tool change.
+tool_length_compensation = "G43 H{tool}"
+
+[cycles]
+retract = "G98"
+drill = "G81 X{x} Y{y} Z{z} R{r} F{feed}"
+peck = "G83 X{x} Y{y} Z{z} R{r} Q{peck} F{feed}"
+# Haas taps rigidly with G84 alone; no M29.
+tap = "G84 X{x} Y{y} Z{z} R{r} F{feed}"
+ream = "G85 X{x} Y{y} Z{z} R{r} F{feed}"
+repeat = "X{x} Y{y}"
+cancel = "G80"

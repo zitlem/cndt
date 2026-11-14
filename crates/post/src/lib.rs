@@ -45,7 +45,8 @@ pub struct PostDefinition {
 
 /// Canned-cycle templates. Placeholders: `{x}`, `{y}`, `{z}` (bottom),
 /// `{r}` (clearance plane), `{feed}`, `{peck}` (peck only), `{rpm}`
-/// (`tap_prefix` only).
+/// (`tap_prefix` only), and with `tap_each_hole`, `{pitch}` and `{rpm}` in
+/// `tap`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cycles {
@@ -61,6 +62,12 @@ pub struct Cycles {
     /// A line before a tapping cycle, such as Fanuc's `M29 S{rpm}`.
     #[serde(default)]
     pub tap_prefix: Option<String>,
+    /// Tapping is not a canned cycle but one synchronised move per hole,
+    /// such as LinuxCNC's `G33.1 Z{z} K{pitch}`, which taps from where the
+    /// tool is and comes back. Each hole is then written as: rapid over it,
+    /// rapid to the clearance plane, the `tap` line, rapid back up.
+    #[serde(default)]
+    pub tap_each_hole: bool,
     /// Feed in, feed out, such as `G85 X{x} Y{y} Z{z} R{r} F{feed}`.
     pub ream: String,
     /// Each further hole, such as `X{x} Y{y}`.
@@ -411,7 +418,15 @@ fn check_definition(def: &PostDefinition) -> Result<(), PostError> {
             ("cycles.retract", cycles.retract.as_str(), &[][..]),
             ("cycles.drill", cycles.drill.as_str(), hole),
             ("cycles.peck", cycles.peck.as_str(), peck),
-            ("cycles.tap", cycles.tap.as_str(), hole),
+            (
+                "cycles.tap",
+                cycles.tap.as_str(),
+                if cycles.tap_each_hole {
+                    &["x", "y", "z", "r", "feed", "pitch", "rpm"][..]
+                } else {
+                    hole
+                },
+            ),
             ("cycles.ream", cycles.ream.as_str(), hole),
             ("cycles.repeat", cycles.repeat.as_str(), &["x", "y"][..]),
             ("cycles.cancel", cycles.cancel.as_str(), &[][..]),
@@ -726,6 +741,9 @@ impl<'a> Output<'a> {
         let Some(cycles) = self.def.cycles.clone() else {
             return self.expanded_cycle(cycle, start);
         };
+        if let (CycleKind::Tap { pitch }, true) = (cycle.kind, cycles.tap_each_hole) {
+            return self.tap_each_hole(cycle, start, pitch, &cycles.tap);
+        }
         let (template, peck) = match cycle.kind {
             CycleKind::Drill => (&cycles.drill, None),
             CycleKind::Peck { step } => (&cycles.peck, Some(step)),
@@ -772,6 +790,49 @@ impl<'a> Output<'a> {
             .last()
             .map_or(start, |h| Point3::new(h.x, h.y, start.z));
         self.position = Some(end);
+        Ok(())
+    }
+
+    /// Tapping as one synchronised move per hole (`tap_each_hole`).
+    fn tap_each_hole(
+        &mut self,
+        cycle: &Cycle,
+        start: Point3,
+        pitch: f64,
+        template: &str,
+    ) -> Result<(), String> {
+        let rapid = self.def.codes.rapid.clone();
+        let format = &self.def.format;
+        let feed = number(
+            cycle.feed,
+            format.feed_decimals,
+            format.trim_zeros,
+            format.keep_decimal_point,
+        );
+        let rpm = number(self.rpm, 0, true, false);
+        for hole in &cycle.holes {
+            let at = |z: f64| Point3::new(hole.x, hole.y, z);
+            self.linear_block(&rapid, at(start.z), None);
+            self.linear_block(&rapid, at(cycle.clearance), None);
+            let line = fill(
+                template,
+                &[
+                    ("x", &self.coordinate(hole.x)),
+                    ("y", &self.coordinate(hole.y)),
+                    ("z", &self.coordinate(cycle.bottom)),
+                    ("r", &self.coordinate(cycle.clearance)),
+                    ("feed", &feed),
+                    ("pitch", &self.coordinate(pitch)),
+                    ("rpm", &rpm),
+                ],
+            );
+            self.block(&line);
+            // The tap line changes the modal motion and comes back to where
+            // it started; state nothing about what the control now holds.
+            self.reset_modal();
+            self.position = Some(at(cycle.clearance));
+            self.linear_block(&rapid, at(start.z), None);
+        }
         Ok(())
     }
 

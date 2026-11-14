@@ -251,6 +251,11 @@ pub const MESH_MAGIC: &[u8; 8] = b"CNDTMSH1";
 const SHIPPED_POSTS: &[(&str, &str)] = &[
     ("fanuc-mill", include_str!("../../../posts/fanuc-mill.toml")),
     ("grbl", include_str!("../../../posts/grbl.toml")),
+    ("haas-mill", include_str!("../../../posts/haas-mill.toml")),
+    (
+        "linuxcnc-mill",
+        include_str!("../../../posts/linuxcnc-mill.toml"),
+    ),
 ];
 
 /// The first bytes of a toolpath preview buffer.

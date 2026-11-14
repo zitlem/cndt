@@ -243,8 +243,21 @@ fn grbl_matches_golden() {
 }
 
 #[test]
+fn haas_mill_matches_golden() {
+    check_golden("haas-mill");
+}
+
+#[test]
+fn linuxcnc_mill_matches_golden() {
+    check_golden("linuxcnc-mill");
+}
+
+#[test]
 fn canned_cycles_match_golden() {
     compare("fanuc-mill", "fanuc-mill-cycles", &cycles(true));
+    compare("haas-mill", "haas-mill-cycles", &cycles(true));
+    // LinuxCNC taps with G33.1, one hole at a time.
+    compare("linuxcnc-mill", "linuxcnc-mill-cycles", &cycles(true));
     // GRBL has no canned cycles: they are written out as moves.
     compare("grbl", "grbl-cycles", &cycles(false));
 }
@@ -270,7 +283,7 @@ fn every_shipped_post_loads() {
             count += 1;
         }
     }
-    assert!(count >= 2);
+    assert!(count >= 4);
 }
 
 #[test]
@@ -284,7 +297,7 @@ fn output_is_deterministic() {
 
 #[test]
 fn every_program_carries_the_safety_header() {
-    for id in ["fanuc-mill", "grbl"] {
+    for id in ["fanuc-mill", "grbl", "haas-mill", "linuxcnc-mill"] {
         let output = load(id).run(&sample(), "0.1.0").unwrap();
         let upper = output.to_ascii_uppercase();
         assert!(upper.contains("CNDT 0.1.0"), "{id}");
@@ -317,6 +330,8 @@ fn bad_post_definitions_fail_on_load() {
     let good = std::fs::read_to_string(root().join("posts/fanuc-mill.toml")).unwrap();
     let cases = [
         (good.replace("\"{header}\",\n", ""), "{header}"),
+        // {pitch} is only there when each hole is tapped on its own.
+        (good.replace("G84 X{x}", "G84 K{pitch} X{x}"), "pitch"),
         (good.replace("M3 S{rpm}", "M3 S{rmp}"), "{rmp}"),
         (good.replace("T{tool} M6", "T{tool M6"), "unclosed"),
         (

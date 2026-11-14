@@ -1,0 +1,75 @@
+# LinuxCNC milling post for CNDT.
+#
+# UNVERIFIED: this post has not been run on a real controller. Do not set
+# `verified = true` until its output has cut a test part on the named
+# controller, and record that run as docs/safety.md describes.
+#
+# Per the LinuxCNC G-code reference (linuxcnc.org/docs). LinuxCNC's G84
+# is not spindle-synchronised, so rigid tapping uses G33.1, one hole at a
+# time; it needs a spindle encoder.
+
+[post]
+id = "linuxcnc-mill"
+name = "LinuxCNC milling"
+version = "0.1.0"
+verified = false
+
+[format]
+decimals = 3
+feed_decimals = 1
+trim_zeros = true
+keep_decimal_point = false
+comment = { open = "(", close = ")", uppercase = false }
+percent_wrapped = true
+# O words are subroutines in LinuxCNC, never a program number.
+program_number_digits = 0
+
+[program]
+first_line = "({program_name})"
+start = [
+    "{header}",
+    "G21 G17 G40 G49 G80 G90 G94",
+    # Blend corners, but stay within 0.01 mm of the programmed path.
+    "G64 P0.01",
+    "{work_offset}",
+]
+end = [
+    "M9",
+    "M5",
+    "G53 G0 Z0",
+    "M2",
+]
+
+[codes]
+rapid = "G0"
+linear = "G1"
+arc_cw = "G2"
+arc_ccw = "G3"
+spindle_cw = "M3 S{rpm}"
+spindle_ccw = "M4 S{rpm}"
+spindle_off = "M5"
+coolant_flood = "M8"
+coolant_mist = "M7"
+coolant_off = "M9"
+stop = "M0"
+optional_stop = "M1"
+# P is in seconds.
+dwell = "G4 P{seconds}"
+tool_change = [
+    "M5",
+    # Spindle to the top of travel (machine Z0 on most mills) first.
+    "G53 G0 Z0",
+    "T{tool} M6",
+]
+tool_length_compensation = "G43 H{tool}"
+
+[cycles]
+retract = "G98"
+drill = "G81 X{x} Y{y} Z{z} R{r} F{feed}"
+peck = "G83 X{x} Y{y} Z{z} R{r} Q{peck} F{feed}"
+# Synchronised: down to Z at one pitch per turn, reverse, back out.
+tap = "G33.1 Z{z} K{pitch}"
+tap_each_hole = true
+ream = "G85 X{x} Y{y} Z{z} R{r} F{feed}"
+repeat = "X{x} Y{y}"
+cancel = "G80"

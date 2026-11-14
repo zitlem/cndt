@@ -507,6 +507,19 @@ fn the_cndt_test_block() {
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(std::fs::read_to_string(&nc).unwrap(), gcode);
     let _ = std::fs::remove_file(nc);
+    // The other shipped posts with rigid tapping take the whole setup too.
+    for post in ["haas-mill", "linuxcnc-mill"] {
+        let reply = s.call(json!({"method": "post", "post": post, "setup": 0}));
+        assert_eq!(reply["ok"], true, "{post}: {reply}");
+    }
+    let linuxcnc = s.call(json!({"method": "post", "post": "linuxcnc-mill", "setup": 0}));
+    let taps = linuxcnc["result"]["gcode"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with("G33.1 "))
+        .count();
+    assert_eq!(taps, 4, "one synchronised move per M6 hole");
     // GRBL cannot rigid-tap, and says so.
     let reply = s.call(json!({"method": "post", "post": "grbl"}));
     assert!(
