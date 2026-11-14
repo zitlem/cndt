@@ -1002,3 +1002,541 @@ button:disabled {
   border-radius: 6px;
   background: var(--panel-raised);
 }
+
+/* ------------------------------------------------------------------ */
+/* Window layout: app bar, workspace and ribbon, browser, view, timeline */
+
+.app {
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.appbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+}
+
+.appbar .brand {
+  margin-right: 8px;
+}
+
+.appbar .icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.icon-button svg,
+.appbar-button svg,
+.menu button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+
+.icon-button.small {
+  width: 26px;
+  height: 26px;
+}
+
+.icon-button.small svg {
+  width: 14px;
+  height: 14px;
+}
+
+.icon-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.menu-anchor {
+  position: relative;
+}
+
+.appbar-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.appbar-button:hover,
+.appbar-button[aria-expanded="true"] {
+  background: var(--panel-raised);
+  color: var(--text);
+}
+
+.caret {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+#file-menu {
+  top: 36px;
+  min-width: 200px;
+}
+
+.menu button {
+  align-items: center;
+  justify-content: flex-start;
+  color: var(--text-secondary);
+}
+
+.menu button:disabled {
+  opacity: 0.4;
+}
+
+.menu hr {
+  width: 100%;
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.popup-menu {
+  position: fixed;
+  top: auto;
+}
+
+.doc-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 auto;
+}
+
+.doc-title .doc-name input {
+  width: 300px;
+  height: 30px;
+  text-align: center;
+}
+
+/* The workspace switch and the ribbon share one bar. */
+.command-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.workspace-switch {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-right: 1px solid var(--border);
+}
+
+.workspace-switch select {
+  height: 44px;
+  padding: 0 28px 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--panel-raised);
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.ribbon-area {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ribbon-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px 0;
+}
+
+.ribbon-tab {
+  padding: 3px 12px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.ribbon-tab:hover {
+  color: var(--text);
+}
+
+.ribbon-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.ribbon-tab[hidden] {
+  display: none;
+}
+
+.ribbon {
+  padding: 2px 6px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow-x: auto;
+}
+
+.ribbon-pane {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+.ribbon-pane[hidden] {
+  display: none;
+}
+
+.ribbon-pane > .ribbon-group {
+  padding: 0 8px;
+  border-right: 1px solid var(--border);
+}
+
+.ribbon-pane > .ribbon-group:last-child {
+  border-right: 0;
+}
+
+.ribbon-pane .ribbon-divider {
+  display: none;
+}
+
+.tool {
+  min-width: 56px;
+  height: 52px;
+}
+
+.tool svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+
+.ribbon-label {
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.ribbon-label:hover {
+  background: var(--panel-raised);
+  color: var(--text);
+}
+
+span.ribbon-label {
+  cursor: default;
+}
+
+.ribbon-field {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.ribbon-field select {
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-raised);
+  font-size: 12px;
+}
+
+/* The stage: the view fills it; the browser docks on the left, floats over
+   the view, or hides. */
+.stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+
+.stage.browser-floating,
+.stage.browser-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.stage.browser-floating .browser {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  bottom: 10px;
+  z-index: 7;
+  width: 280px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  opacity: 0.97;
+}
+
+.stage.browser-hidden .browser {
+  display: none;
+}
+
+.stage.browser-floating .viewport,
+.stage.browser-hidden .viewport {
+  grid-column: 1;
+}
+
+.browser {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.browser-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.browser-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.browser-show {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 7;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.browser-show[hidden] {
+  display: none;
+}
+
+.tree {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 6px 12px;
+  overflow: auto;
+}
+
+.tree details {
+  margin: 0;
+}
+
+.tree details details {
+  margin-left: 14px;
+}
+
+.tree details[hidden] {
+  display: none;
+}
+
+.tree summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.tree summary::-webkit-details-marker {
+  display: none;
+}
+
+.tree summary::before {
+  content: "▸";
+  width: 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.tree details[open] > summary::before {
+  content: "▾";
+}
+
+.tree summary:hover {
+  background: var(--panel-raised);
+}
+
+.tree .node-name {
+  font-weight: 600;
+}
+
+.tree .leaf {
+  margin: 2px 0 8px 22px;
+}
+
+.tree .sketch-list,
+.tree .setup-list {
+  margin: 2px 0 8px 16px;
+}
+
+.eye {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.eye svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+
+.eye[aria-pressed="false"] {
+  opacity: 0.35;
+}
+
+.viewport {
+  border: 1px solid var(--border);
+}
+
+.view-cube {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  width: 104px !important;
+  height: 104px !important;
+  cursor: pointer;
+}
+
+/* Command dialogs sit under the view cube. */
+.dialog {
+  top: 124px;
+}
+
+.nav-bar {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  transform: translateX(-50%);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+}
+
+.nav-bar .icon-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+}
+
+.nav-text {
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.nav-text:hover {
+  background: var(--panel-raised);
+  color: var(--text);
+}
+
+.nav-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border-strong);
+}
+
+/* The timeline: playback buttons, the features, and the history marker. */
+.timeline-bar {
+  gap: 8px;
+}
+
+.playback {
+  display: flex;
+  flex: none;
+  gap: 1px;
+  padding-right: 8px;
+  border-right: 1px solid var(--border);
+}
+
+.feature-list li.rolled {
+  opacity: 0.35;
+}
+
+.feature-list li.rollback-marker {
+  flex: none;
+  width: 12px;
+  height: 30px;
+  margin: 0 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: linear-gradient(var(--accent), var(--accent)) center / 3px 100% no-repeat;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.feature-list li.rollback-marker::before {
+  display: none;
+}
+
+.feature-list li.rollback-marker:hover,
+.feature-list li.rollback-marker.dragging {
+  background-color: var(--accent-soft);
+}

@@ -807,6 +807,32 @@ fn the_cndt_test_block() {
     );
     s.call(json!({"method": "undo"}));
 
+    // The history marker: rolled back to the first feature, the part is
+    // the plain body; the document is untouched, and any change rolls
+    // forward again.
+    let full = s.state()["body"]["volume"].as_f64().unwrap();
+    let back = s.call(json!({"method": "rollback", "to": 1}));
+    assert_eq!(back["result"]["rollback"], 1, "{back}");
+    let plain = back["result"]["body"]["volume"].as_f64().unwrap();
+    assert!(plain > full + 1000.0, "{plain} {full}");
+    assert_eq!(back["result"]["dirty"], s.state()["dirty"]);
+    assert_eq!(
+        back["result"]["feature_status"].as_object().unwrap().len(),
+        1
+    );
+    s.exec(
+        "parameter.set",
+        json!({"name": "spare", "value": 1, "unit": "mm"}),
+    );
+    let state = s.state();
+    assert_eq!(state["rollback"], Value::Null);
+    assert!((state["body"]["volume"].as_f64().unwrap() - full).abs() < 1e-6);
+    s.call(json!({"method": "undo"}));
+    // Back to the end by leaving out `to`.
+    s.call(json!({"method": "rollback", "to": 3}));
+    let end = s.call(json!({"method": "rollback"}));
+    assert_eq!(end["result"]["rollback"], Value::Null);
+
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
     s.call(json!({"method": "save_as", "path": path}));

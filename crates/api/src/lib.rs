@@ -29,7 +29,7 @@ use cndt_kernel::{Kernel, KernelError, OpenCascade};
 use cndt_model::sketch::Freedom;
 use cndt_model::{
     Document, FeatureId, FeatureStatus, FrameStatus, ModelError, Rebuilt, SketchError, SketchId,
-    rebuild,
+    rebuild_to,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -119,6 +119,16 @@ pub enum Request {
         /// The cell size in millimetres; 0.25 if left out.
         #[serde(default)]
         cell: Option<f64>,
+    },
+    /// Moves the history marker: the part is rebuilt from the first `to`
+    /// features only, as it was at that point, or from all of them when
+    /// `to` is left out. A view, not a change: the document is untouched,
+    /// and any change to it brings the marker back to the end. Replies with
+    /// the state, whose `rollback` says where the marker is.
+    Rollback {
+        /// How many features to build; all of them if left out.
+        #[serde(default)]
+        to: Option<usize>,
     },
     /// Feature detection: the operations suggested for a setup from the
     /// part's holes, pockets and outside profile. Changes nothing; replies
@@ -243,6 +253,9 @@ struct StateView<'a> {
     /// Goes up by one on every rebuild; fetch `body_mesh` again when it
     /// changes.
     body_revision: u64,
+    /// How many timeline features are built, when the history is rolled
+    /// back; `null` for all of them.
+    rollback: Option<usize>,
 }
 
 /// The part as front ends see it. Its triangles come from `body_mesh`.
@@ -273,6 +286,10 @@ pub struct Api {
     revision: u64,
     /// The last stock simulation, for drawing it.
     simulated: Option<simulate::Simulated>,
+    /// The history marker: how many features are built, or all of them.
+    /// A view of the past, not part of the document; any change to the
+    /// document brings it back to the end.
+    rollback: Option<usize>,
 }
 
 impl Default for Api {
@@ -351,12 +368,13 @@ impl Api {
             rebuilt: Rebuilt::default(),
             revision: 0,
             simulated: None,
+            rollback: None,
         }
     }
 
     /// Rebuilds the part from the timeline after the document changed.
     fn refresh(&mut self) {
-        self.rebuilt = rebuild(self.session.document(), self.kernel.as_ref());
+        self.rebuilt = rebuild_to(self.session.document(), self.kernel.as_ref(), self.rollback);
         self.revision += 1;
     }
 
@@ -593,7 +611,16 @@ impl Api {
                 | Request::Undo
                 | Request::Redo
         );
+        if changes_document {
+            self.rollback = None;
+        }
+        let rolls_back = matches!(request, Request::Rollback { .. });
         let result = match request {
+            Request::Rollback { to } => {
+                let count = self.session.document().features().len();
+                self.rollback = to.filter(|n| *n < count);
+                Ok(())
+            }
             Request::NewDocument {
                 name,
                 discard_changes,
@@ -688,7 +715,7 @@ impl Api {
                 };
             }
         };
-        if result.is_ok() && changes_document {
+        if result.is_ok() && (changes_document || rolls_back) {
             self.refresh();
         }
         match result {
@@ -738,6 +765,7 @@ impl Api {
                     .unwrap_or_default(),
             }),
             body_revision: self.revision,
+            rollback: self.rollback,
         };
         serde_json::to_value(view).map_err(|error| ApiError::new("internal", error.to_string()))
     }
@@ -804,6 +832,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("post", &["post", "machine", "setup", "setups", "path"]),
     ("detect", &["setup"]),
     ("simulate", &["setup", "cell"]),
+    ("rollback", &["to"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo

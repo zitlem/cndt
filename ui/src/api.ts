@@ -162,6 +162,8 @@ export interface DocumentState {
   sketch_frames: Record<string, FrameStatus>;
   body: BodyView | null;
   body_revision: number;
+  /** How many timeline features are built while the history is rolled back. */
+  rollback: number | null;
 }
 
 export interface Point3 {
