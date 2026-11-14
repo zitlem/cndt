@@ -183,7 +183,15 @@ impl Grid {
         out
     }
 
-    fn len(&self) -> usize {
+    /// Whether there are no cells.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// How many cells there are.
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.nx * self.ny
     }
 }
@@ -193,13 +201,28 @@ impl Grid {
 pub struct Setup {
     /// The cells.
     pub grid: Grid,
-    /// The stock's top before cutting.
-    pub top: f64,
-    /// The stock's bottom: nothing is removed below it.
-    pub bottom: f64,
+    /// The stock's top in each cell before this setup cuts: a fresh block,
+    /// or what earlier setups left.
+    pub heights: Vec<f64>,
+    /// The stock's bottom in each cell, seen from this side: nothing is
+    /// removed below it. Where it equals the height, there is no stock.
+    pub floors: Vec<f64>,
     /// The finished part's top in each cell, seen along the spindle;
     /// `None` where there is no part.
     pub part: Vec<Option<f64>>,
+}
+
+impl Setup {
+    /// A fresh rectangular block from `bottom` to `top` over the grid.
+    #[must_use]
+    pub fn block(grid: Grid, top: f64, bottom: f64, part: Vec<Option<f64>>) -> Self {
+        Self {
+            grid,
+            heights: vec![top; grid.len()],
+            floors: vec![bottom; grid.len()],
+            part,
+        }
+    }
 }
 
 /// Something wrong, where it happened.
@@ -290,22 +313,30 @@ pub fn simulate(
     if !(grid.cell.is_finite() && grid.cell > 0.0 && grid.x0.is_finite() && grid.y0.is_finite()) {
         return bad("the grid's cells must be more than zero");
     }
-    if grid.len() == 0 || grid.len() > MAX_CELLS {
+    if grid.is_empty() || grid.len() > MAX_CELLS {
         return bad("the grid has no cells or too many");
     }
     if setup.part.len() != grid.len() {
         return bad("the part heights do not match the grid");
     }
-    if !(setup.top.is_finite() && setup.bottom.is_finite() && setup.bottom < setup.top) {
-        return bad("the stock's bottom must be below its top");
+    if setup.heights.len() != grid.len() || setup.floors.len() != grid.len() {
+        return bad("the stock heights do not match the grid");
+    }
+    let sound = setup
+        .heights
+        .iter()
+        .zip(&setup.floors)
+        .all(|(h, f)| h.is_finite() && f.is_finite() && f <= h);
+    if !sound {
+        return bad("the stock's bottom must not be above its top");
     }
     if let Some((number, _)) = tools.iter().find(|(_, tool)| !tool.check()) {
         return bad(&format!("tool {number}'s shape or assembly"));
     }
     let mut sim = Sim {
         setup,
-        heights: vec![setup.top; grid.len()],
-        highest: setup.top,
+        heights: setup.heights.clone(),
+        highest: setup.heights.iter().copied().fold(f64::MIN, f64::max),
         tool: None,
         position: None,
         moved: false,
@@ -562,7 +593,7 @@ impl Sim<'_> {
                         continue;
                     }
                     let c = j * grid.nx + i;
-                    let z = (p.z + tool.lift(d)).max(self.setup.bottom);
+                    let z = (p.z + tool.lift(d)).max(self.setup.floors[c]);
                     let before = self.heights[c];
                     if z >= before {
                         continue;
@@ -699,12 +730,7 @@ mod tests {
                 Some(if inside { -5.0 } else { -1.0 })
             })
             .collect();
-        Setup {
-            grid,
-            top: 0.0,
-            bottom: -10.0,
-            part,
-        }
+        Setup::block(grid, 0.0, -10.0, part)
     }
 
     fn tools(shape: ToolShape) -> BTreeMap<u32, Tool> {
@@ -911,5 +937,53 @@ mod tests {
         let plunge = program(vec![rapid(10.0, 10.0, 2.0), cut(10.0, 10.0, -5.0)]);
         let report = simulate(&plunge, &mill(3.0, 30.0), &setup).unwrap();
         assert!(report.collisions.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn stock_left_by_an_earlier_side() {
+        // The left half was already cut down to −3 from the other side's
+        // point of view; a rapid at −2 over it touches nothing there, but
+        // over the right half it hits the stock.
+        let mut setup = block();
+        let grid = setup.grid;
+        for (c, [x, _]) in grid.centres().iter().enumerate() {
+            if *x < 10.0 {
+                setup.heights[c] = -3.0;
+            }
+        }
+        let over_left = program(vec![
+            rapid(2.0, 10.0, 5.0),
+            rapid(2.0, 10.0, -2.0),
+            rapid(7.0, 10.0, -2.0),
+        ]);
+        let report = simulate(
+            &over_left,
+            &tools(ToolShape::Flat { diameter: 2.0 }),
+            &setup,
+        )
+        .unwrap();
+        assert!(report.collisions.is_empty(), "{report:?}");
+        let over_right = program(vec![rapid(15.0, 10.0, 5.0), rapid(15.0, 10.0, -2.0)]);
+        let report = simulate(
+            &over_right,
+            &tools(ToolShape::Flat { diameter: 2.0 }),
+            &setup,
+        )
+        .unwrap();
+        assert_eq!(report.collisions.len(), 1, "{report:?}");
+        // An empty column (cut through from the other side) has nothing to
+        // remove even below its old floor.
+        for (h, f) in setup.heights.iter_mut().zip(&mut setup.floors) {
+            *f = *h;
+        }
+        let deep = program(vec![rapid(15.0, 10.0, 5.0), rapid(15.0, 10.0, -20.0)]);
+        let report = simulate(&deep, &tools(ToolShape::Flat { diameter: 2.0 }), &setup).unwrap();
+        assert!(
+            report.collisions.is_empty() && report.removed.abs() < 1e-12,
+            "{report:?}"
+        );
+        // A floor above its height is refused.
+        setup.floors[0] = setup.heights[0] + 1.0;
+        assert!(simulate(&deep, &tools(ToolShape::Flat { diameter: 2.0 }), &setup).is_err());
     }
 }

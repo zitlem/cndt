@@ -93,8 +93,13 @@ impl Api {
             }
         };
 
-        // Each setup in turn: its tools, operations and simulation.
+        // Each setup in turn: its tools, operations and simulation, each
+        // simulated on the stock the ones before it left.
+        let mut sims = self.simulate_chain(&ids, cell.or(Some(0.5)))?.into_iter();
         for id in &ids {
+            let simulated = sims
+                .next()
+                .unwrap_or_else(|| Err(ApiError::new("internal", "not simulated")));
             let Some(entry) = cam.setups.iter().find(|s| s.id == *id) else {
                 problems.push(format!("There is no setup {id}."));
                 continue;
@@ -168,7 +173,7 @@ impl Api {
                 }
                 Err(error) => problems.push(format!("{name}: {error}")),
             }
-            match self.simulate_setup(Some(*id), cell.or(Some(0.5))) {
+            match simulated {
                 Ok(sim) => {
                     let report = &sim.report;
                     minutes += report.cut_minutes;

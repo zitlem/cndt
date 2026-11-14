@@ -790,6 +790,18 @@ fn the_cndt_test_block() {
     assert_eq!(report["gouges"], json!([]), "{reply}");
     assert!(report["left"].as_f64().unwrap() < 0.05, "{reply}");
     let count = classes(&s.api.simulation_mesh(Some(1)).unwrap());
+    let carried = count[3];
+    // Fresh, side 2 would still have the stock that side 1's contour cut
+    // away round the outline.
+    s.call(json!({"method": "simulate", "setup": 1, "cell": 0.5, "after": []}));
+    let fresh = classes(&s.api.simulation_mesh(Some(1)).unwrap())[3];
+    // Carried, what is left off the part is little more than the edge
+    // round the outline and the holes (about 1700 triangles against about
+    // 6900 fresh).
+    assert!(carried * 3 < fresh, "carried {carried}, fresh {fresh}");
+    // A setup cannot come after itself.
+    let reply = s.call(json!({"method": "simulate", "setup": 1, "after": [1]}));
+    assert_eq!(reply["error"]["kind"], "bad_request", "{reply}");
     assert_eq!((count[1], count[2]), (0, 0), "{count:?}");
     // The verification report over both setups, for the Mazak: nothing
     // blocks the program; the three model differences, the dowel note,
