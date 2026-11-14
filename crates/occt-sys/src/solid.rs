@@ -170,6 +170,14 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_section_outline(
+        shape: *const ShapeHandle,
+        z: f64,
+        distance: f64,
+        out: *mut *mut SegmentsHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_segments_view(
         segments: *const SegmentsHandle,
         items: *mut *const RawSegment,
@@ -687,6 +695,58 @@ pub fn face_outline(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Segme
         .collect())
 }
 
+/// The outline of the solid cut through at height `z`: the section's outer
+/// loop, offset outwards by `distance`, as lines and arcs in running order.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] if there is no closed outline there, or it
+/// cannot be offset.
+pub fn section_outline(shape: &Shape, z: f64, distance: f64) -> Result<Vec<Segment>, OcctError> {
+    let mut out: *mut SegmentsHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `out` is a valid out-pointer; `err` is
+    // writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_section_outline(
+            shape.ptr.as_ptr(),
+            z,
+            distance,
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK || out.is_null() {
+        return Err(status_error(code, &err));
+    }
+    let mut items: *const RawSegment = std::ptr::null();
+    let mut len = 0_usize;
+    // SAFETY: `out` is a live handle; the out-pointers are valid locals.
+    unsafe { cndt_occt_segments_view(out, &mut items, &mut len) };
+    // SAFETY: the view points into `out`'s vector of `len` segments, which is
+    // freed only after this copy.
+    let raw = unsafe { copy_array(items, len) };
+    // SAFETY: `out` is owned here and freed exactly once.
+    unsafe { cndt_occt_free_segments(out) };
+    Ok(raw
+        .into_iter()
+        .map(|s| match s.kind {
+            1 => Segment::Arc {
+                start: s.start,
+                end: s.end,
+                center: s.center,
+                ccw: s.ccw != 0,
+            },
+            _ => Segment::Line {
+                start: s.start,
+                end: s.end,
+            },
+        })
+        .collect())
+}
+
 /// Every boundary loop of a flat face parallel to XY, offset with the face
 /// by `distance`: positive grows the face (the outer loop outwards, holes
 /// inwards). Each loop's segments are in running order.
@@ -1147,6 +1207,40 @@ mod tests {
         assert!(radii.iter().any(|r| (r - 4.0).abs() < 1e-7), "{radii:?}");
         assert!(radii.iter().all(|r| *r < 5.0), "a hole grew: {radii:?}");
         assert!(radii.iter().any(|r| (r - 1.0).abs() < 1e-7), "{radii:?}");
+    }
+
+    #[test]
+    fn a_section_ignores_chamfered_edges() {
+        let block = extrude(&[rectangle(20.0, 10.0)], Z, 5.0).unwrap();
+        let (_, top) = *block.history.iter().find(|p| p.0 == 5).unwrap();
+        let joins = edges(&block.shape).unwrap();
+        let around: Vec<u32> = joins
+            .iter()
+            .enumerate()
+            .filter(|(_, (a, b))| *a == top || *b == top)
+            .map(|(i, _)| u32::try_from(i).unwrap())
+            .collect();
+        let chamfered = blend(&block.shape, &around, Blend::Chamfer(0.5)).unwrap();
+        // The top face is inset by the chamfer; the wall at mid-height is not.
+        let top_now = chamfered.history.iter().find(|p| p.0 == top).unwrap().1;
+        let face = face_outline(&chamfered.shape, top_now, 0.0).unwrap();
+        let xs = |loop_: &[Segment]| {
+            loop_
+                .iter()
+                .map(|s| match s {
+                    Segment::Line { start, .. } | Segment::Arc { start, .. } => start[0],
+                })
+                .fold(f64::MIN, f64::max)
+        };
+        assert!((xs(&face) - 19.5).abs() < 1e-7);
+        let wall = section_outline(&chamfered.shape, 2.5, 0.0).unwrap();
+        assert!((xs(&wall) - 20.0).abs() < 1e-7, "{wall:?}");
+        let offset = section_outline(&chamfered.shape, 2.5, 3.0).unwrap();
+        assert!((xs(&offset) - 23.0).abs() < 1e-7);
+        assert!(matches!(
+            section_outline(&chamfered.shape, 50.0, 0.0),
+            Err(OcctError::ModelFailed(_))
+        ));
     }
 
     #[test]

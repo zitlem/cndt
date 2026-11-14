@@ -47,7 +47,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 11: contour operations.
 /// - 12: pocket operations.
 /// - 13: chamfer milling operations.
-pub const SCHEMA_VERSION: u32 = 13;
+/// - 14: finishing allowances on pockets.
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -263,6 +264,28 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 13 knew nothing of pocket finishing allowances.
+    if manifest.schema_version < 14
+        && document
+            .cam()
+            .setups
+            .iter()
+            .flat_map(|s| &s.setup.operations)
+            .any(|o| {
+                matches!(
+                    o.operation,
+                    cndt_model::cam::OperationDef::Pocket {
+                        finish: Some(_),
+                        ..
+                    }
+                )
+            })
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain pocket finishing allowances",
+            manifest.schema_version
         )));
     }
     // Version 12 knew nothing of chamfer milling.
@@ -608,6 +631,36 @@ mod tests {
             read(Cursor::new(forged)),
             Err(FormatError::Corrupt(_))
         ));
+    }
+
+    #[test]
+    fn a_pocket_finish_needs_version_14() {
+        use cndt_model::cam::{CamEdit, OperationDef, Side};
+        let mut document = Document::new("Finish");
+        document
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+            })
+            .unwrap();
+        let setup = document.cam().setups[0].id;
+        document
+            .edit_cam(CamEdit::AddOperation {
+                setup,
+                operation: OperationDef::Pocket {
+                    floor: String::from("f1/end/e0"),
+                    tool: None,
+                    finish: Some(0.2),
+                },
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        let v13 = raw_zip(&[(MANIFEST, &manifest(13)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v13)).unwrap_err();
+        assert!(error.to_string().contains("finishing"), "{error}");
     }
 
     #[test]

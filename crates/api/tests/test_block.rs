@@ -231,9 +231,25 @@ fn the_cndt_test_block() {
         json!({"sketch": keyway, "distance": -3.5, "operation": "cut", "name": "Keyway"}),
     );
 
+    // 12. 0.5 × 45° round the bottom: outline, slot, keyway and the exits
+    // of the through holes.
+    let underside = s.state()["body"]["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|names| names.as_array().unwrap().iter())
+        .filter_map(Value::as_str)
+        .find(|name| name.starts_with("f0/start/"))
+        .unwrap()
+        .to_owned();
+    s.exec(
+        "feature.chamfer",
+        json!({"faces": [underside], "distance": 0.5, "name": "Bottom chamfer"}),
+    );
+
     let state = s.state();
     let status = state["feature_status"].as_object().unwrap();
-    assert_eq!(status.len(), 10);
+    assert_eq!(status.len(), 11);
     for (id, outcome) in status {
         assert_eq!(outcome["state"], "ok", "feature {id}: {outcome}");
     }
@@ -282,7 +298,13 @@ fn the_cndt_test_block() {
     // Filleting "that" chamfer face's edges is refused as ambiguous.
     let reply = s.call(json!({"method": "execute", "command": "feature.fillet", "args": {"faces": [split], "radius": 0.2}}));
     let state = s.state();
-    let flagged = &state["feature_status"]["10"];
+    let last = state["document"]["features"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["id"]
+        .to_string();
+    let flagged = &state["feature_status"][&last];
     assert_eq!(flagged["state"], "failed", "{reply}");
     assert!(
         flagged["reason"]
@@ -442,6 +464,8 @@ fn the_cndt_test_block() {
     s.exec("cam.add_setup", json!({"side": "bottom", "work_offset": 2}));
     s.exec("cam.add_operation", json!({"setup": 1, "type": "face"}));
     // The closed slot (feature 8) and the keyway (feature 9), from below.
+    // The keyway's P9 fit wants its walls finished: 0.2 mm left by the
+    // roughing, taken off by one full-depth lap.
     let slot_floor = floor(&mut s, 8);
     s.exec(
         "cam.add_operation",
@@ -450,7 +474,12 @@ fn the_cndt_test_block() {
     let keyway_floor = floor(&mut s, 9);
     s.exec(
         "cam.add_operation",
-        json!({"setup": 1, "type": "pocket", "floor": keyway_floor}),
+        json!({"setup": 1, "type": "pocket", "floor": keyway_floor, "finish": 0.2}),
+    );
+    // The 0.5 mm chamfers round the bottom: outline, closed slot, keyway.
+    s.exec(
+        "cam.add_operation",
+        json!({"setup": 1, "type": "chamfer", "face": underside, "width": 0.5}),
     );
     let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 1}));
     assert_eq!(reply["ok"], true, "{reply}");

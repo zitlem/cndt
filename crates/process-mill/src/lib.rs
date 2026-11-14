@@ -747,8 +747,19 @@ fn contour(
             "the face is not square to the spindle",
         )));
     }
+    let face_z = setup.program_point(point).z;
+    let total = depth.unwrap_or(-face_z);
+    if !(total.is_finite() && total > 0.0) {
+        return Err(CamError::Contour(format!(
+            "the depth must be more than zero, not {total}"
+        )));
+    }
+    // The cut runs from Z0 down to -total. Follow the wall half-way down it,
+    // not the face's own edges: a chamfer or fillet along them would pull
+    // the path into the part.
+    let section = setup.model_point(Point3::new(0.0, 0.0, -total / 2.0)).z;
     let outline = kernel
-        .face_outline(body, index, r)
+        .section_outline(body, section, r)
         .map_err(|e| CamError::Contour(e.to_string()))?;
     let flip = setup.side == Side::Bottom;
     let mut path: Vec<Piece> = outline
@@ -788,11 +799,21 @@ fn contour(
         .iter()
         .enumerate()
         .filter_map(|(i, p)| match *p {
-            Piece::Line { start, end } => Some((i, (end.x - start.x).hypot(end.y - start.y))),
+            Piece::Line { start, end } => Some((
+                i,
+                round3((end.x - start.x).hypot(end.y - start.y)),
+                (start.y + end.y, -(start.x + end.x)),
+            )),
             Piece::Arc { .. } => None,
         })
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(i, _)| i)
+        // Equal sides tie-break to the back, then the left, so the start
+        // does not depend on where the kernel happens to begin the loop.
+        .max_by(|a, b| {
+            a.1.total_cmp(&b.1)
+                .then(a.2.0.total_cmp(&b.2.0))
+                .then(a.2.1.total_cmp(&b.2.1))
+        })
+        .map(|(i, _, _)| i)
         .ok_or_else(|| {
             CamError::Contour(String::from(
                 "the outline has no straight side to start from",
@@ -818,13 +839,6 @@ fn contour(
     let lead = document.cam().stock.map_or(0.0, |s| s.side) + 2.0;
     let entry = Point3::new(round3(mid.x - uy * lead), round3(mid.y + ux * lead), 0.0);
 
-    let face_z = setup.program_point(point).z;
-    let total = depth.unwrap_or(-face_z);
-    if !(total.is_finite() && total > 0.0) {
-        return Err(CamError::Contour(format!(
-            "the depth must be more than zero, not {total}"
-        )));
-    }
     let passes = ((total / (cutter.diameter * CONTOUR_DEPTH_PER_PASS)).ceil() as usize).max(1);
     let levels: Vec<f64> = (1..=passes)
         .map(|k| round3(-total * k as f64 / passes as f64))
@@ -1022,8 +1036,14 @@ fn pocket(
     library: &ToolLibrary,
     floor: &str,
     tool: Option<u32>,
+    finish: f64,
 ) -> Result<Operation, CamError> {
     let bad = |reason: String| CamError::Contour(reason);
+    if !(finish.is_finite() && finish >= 0.0) {
+        return Err(bad(format!(
+            "the finishing allowance must be zero or more, not {finish}"
+        )));
+    }
     let body = rebuilt.body.as_ref().ok_or(CamError::NoPart)?;
     let index = unique_face(rebuilt, floor)?;
     let (point, normal) = kernel
@@ -1053,7 +1073,7 @@ fn pocket(
         .fold(f64::INFINITY, f64::min);
     let fits = |t: &Tool| {
         t.diameter / 2.0 <= tightest + 1e-9
-            && inner_loop(kernel, body, setup, index, t.diameter / 2.0).is_some()
+            && inner_loop(kernel, body, setup, index, t.diameter / 2.0 + finish).is_some()
     };
     let (number, cutter) = match tool {
         Some(n) => {
@@ -1080,9 +1100,18 @@ fn pocket(
             })?,
     };
     let r = cutter.diameter / 2.0;
-    // Loops from the wall inwards, then cut from the middle outwards.
+    // Loops from the wall (less the finishing allowance) inwards, then cut
+    // from the middle outwards.
+    let wall = if finish > 0.0 {
+        Some(
+            inner_loop(kernel, body, setup, index, r)
+                .ok_or_else(|| bad(String::from("the finishing lap cannot be made")))?,
+        )
+    } else {
+        None
+    };
     let mut loops = Vec::new();
-    let mut offset = r;
+    let mut offset = r + finish;
     while let Some(path) = inner_loop(kernel, body, setup, index, offset) {
         loops.push(path);
         offset += cutter.diameter * POCKET_STEPOVER;
@@ -1175,12 +1204,44 @@ fn pocket(
         }));
         above = z;
     }
+    // The finishing lap: from the middle, out to the wall at full depth and
+    // once round it, climbing, then back off the wall to the middle.
+    if let Some(wall) = wall {
+        let bottom = round3(-depth);
+        let s = start(&wall);
+        steps.push(Step::Move(Move::Linear {
+            to: Point3::new(entry.x, entry.y, bottom),
+            feed: ramp_feed,
+        }));
+        steps.push(Step::Move(Move::Linear {
+            to: Point3::new(round3(s.x), round3(s.y), bottom),
+            feed: cutter.feed,
+        }));
+        for piece in &wall {
+            steps.push(Step::Move(piece_move(piece, bottom, cutter.feed)));
+        }
+        steps.push(Step::Move(Move::Linear {
+            to: Point3::new(entry.x, entry.y, bottom),
+            feed: cutter.feed,
+        }));
+        steps.push(Step::Move(Move::Rapid {
+            to: Point3::new(entry.x, entry.y, round3(bottom + 0.5)),
+        }));
+    }
     steps.push(Step::Move(Move::Rapid {
         to: Point3::new(entry.x, entry.y, safe),
     }));
     steps.push(Step::Event(Event::Coolant { mode: Coolant::Off }));
     Ok(Operation {
-        name: format!("Pocket {} mm deep", round3(depth)),
+        name: if finish > 0.0 {
+            format!(
+                "Pocket {} mm deep, {} mm finish",
+                round3(depth),
+                round3(finish)
+            )
+        } else {
+            format!("Pocket {} mm deep", round3(depth))
+        },
         steps,
     })
 }
@@ -1511,6 +1572,7 @@ pub fn plan_setup(
         operations: Vec::new(),
     };
     let mut notes = Vec::new();
+    let mut taps = Vec::new();
     for op in &entry.setup.operations {
         match op.operation {
             OperationDef::Chamfer {
@@ -1522,10 +1584,20 @@ pub fn plan_setup(
                     rebuilt, kernel, &setup, &library, face, width, tool,
                 )?);
             }
-            OperationDef::Pocket { ref floor, tool } => {
-                program
-                    .operations
-                    .push(pocket(rebuilt, kernel, &setup, &library, floor, tool)?);
+            OperationDef::Pocket {
+                ref floor,
+                tool,
+                finish,
+            } => {
+                program.operations.push(pocket(
+                    rebuilt,
+                    kernel,
+                    &setup,
+                    &library,
+                    floor,
+                    tool,
+                    finish.unwrap_or(0.0),
+                )?);
             }
             OperationDef::Contour {
                 ref face,
@@ -1543,11 +1615,20 @@ pub fn plan_setup(
             }
             OperationDef::Holes => {
                 let planned = hole_program(document, rebuilt, &setup, &library, &program.name)?;
-                program.operations.extend(planned.program.operations);
+                // Tapping waits until the end of the setup, after any
+                // chamfering, so burrs are not pushed into fresh threads.
+                for op in planned.program.operations {
+                    if op.name.starts_with("Tap ") {
+                        taps.push(op);
+                    } else {
+                        program.operations.push(op);
+                    }
+                }
                 notes.extend(planned.notes);
             }
         }
     }
+    program.operations.extend(taps);
     if program.operations.is_empty() {
         return Err(CamError::Nothing);
     }

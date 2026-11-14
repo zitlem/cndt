@@ -184,6 +184,10 @@ pub enum OperationDef {
         /// The tool; by default the largest end mill that fits.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<u32>,
+        /// Millimetres the roughing leaves on the walls, taken off after by
+        /// one full-depth finishing lap; none by default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish: Option<f64>,
     },
     /// Mills the 45° chamfers round every edge of a flat face (its outline
     /// and every hole and opening in it) with a 90° chamfer mill.
