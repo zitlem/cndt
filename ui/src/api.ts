@@ -301,6 +301,16 @@ export interface Toolpath {
   cuts: Float32Array;
 }
 
+/** A setup's simulated stock, from the last `simulate` of it (decision 0016). */
+export async function simulationMesh(setup: number): Promise<Mesh> {
+  try {
+    return decodeMesh(await invoke<ArrayBuffer>("simulation_mesh", { setup }));
+  } catch (error) {
+    if (error instanceof ApiFailure) throw error;
+    throw new ApiFailure("simulation", String(error));
+  }
+}
+
 export async function toolpathPreview(setup: number): Promise<Toolpath> {
   let buffer: ArrayBuffer;
   try {

@@ -73,6 +73,7 @@ export class Viewer {
   private edgeLines: Float32Array[] = [];
   private edgeHighlight: THREE.Group | null = null;
   private toolpath: THREE.Group | null = null;
+  private stock: THREE.Mesh | null = null;
   private readonly raycaster = new THREE.Raycaster();
   private sketches = new THREE.Group();
 
@@ -114,6 +115,7 @@ export class Viewer {
    * `keepView` is set (for a rebuild while the user is looking). */
   show(mesh: Mesh, keepView = false): void {
     this.clear();
+    this.setStock(null);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
     geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
@@ -285,6 +287,45 @@ export class Viewer {
     if (group.children.length > 0) {
       this.edgeHighlight = group;
       this.scene.add(group);
+    }
+    this.render();
+  }
+
+  /**
+   * Draws simulated stock in place of the part, coloured by each triangle's
+   * class: 0 machined to size, 1 material left, 2 gouged, 3 off the part.
+   * `null` hides it and shows the part again.
+   */
+  setStock(mesh: Mesh | null): void {
+    if (this.stock) {
+      this.scene.remove(this.stock);
+      this.stock.geometry.dispose();
+      (this.stock.material as THREE.Material).dispose();
+      this.stock = null;
+    }
+    if (this.model) this.model.visible = mesh === null;
+    if (mesh) {
+      const colors = [0x9fb0c2, 0xf6c343, 0xe5484d, 0x5b6b7c].map((c) => new THREE.Color(c));
+      const count = mesh.triangleFaces.length;
+      const positions = new Float32Array(count * 9);
+      const tints = new Float32Array(count * 9);
+      for (let t = 0; t < count; t++) {
+        const color = colors[mesh.triangleFaces[t] ?? 3] ?? colors[3]!;
+        for (let k = 0; k < 3; k++) {
+          const v = mesh.indices[3 * t + k] ?? 0;
+          for (let a = 0; a < 3; a++) positions[9 * t + 3 * k + a] = mesh.positions[3 * v + a] ?? 0;
+          tints.set([color.r, color.g, color.b], 9 * t + 3 * k);
+        }
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(tints, 3));
+      geometry.computeVertexNormals();
+      this.stock = new THREE.Mesh(
+        geometry,
+        new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.2, roughness: 0.6, side: THREE.DoubleSide }),
+      );
+      this.scene.add(this.stock);
     }
     this.render();
   }

@@ -150,6 +150,40 @@ impl Setup {
     }
 }
 
+/// The raw stock of a setup in its program coordinates: a box from
+/// `min` to `max`, with Z0 on the finished face being machined.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StockBox {
+    /// The low corner.
+    pub min: Point3,
+    /// The high corner.
+    pub max: Point3,
+}
+
+/// Where the raw stock is in a setup's program coordinates (decision 0013's
+/// allowances round the part's bounding box).
+///
+/// # Errors
+///
+/// [`CamError::NoStock`] or [`CamError::NoPart`].
+pub fn stock_box(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    setup: &Setup,
+) -> Result<StockBox, CamError> {
+    let stock = document.cam().stock.ok_or(CamError::NoStock)?;
+    let bounds = rebuilt.properties.ok_or(CamError::NoPart)?.bounds;
+    let [length, width, height] = bounds.size();
+    let (near, far) = match setup.side {
+        Side::Top => (stock.top, stock.bottom),
+        Side::Bottom => (stock.bottom, stock.top),
+    };
+    Ok(StockBox {
+        min: Point3::new(-stock.side, -stock.side, -height - far),
+        max: Point3::new(length + stock.side, width + stock.side, near),
+    })
+}
+
 /// Why a program could not be made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CamError {

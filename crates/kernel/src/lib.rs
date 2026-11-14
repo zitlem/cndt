@@ -172,6 +172,21 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         distance: f64,
     ) -> Result<Vec<OutlineSegment>, KernelError>;
 
+    /// Where a line along Z through each `(x, y)` first meets the solid:
+    /// coming down from above when `from_above`, else up from below. `None`
+    /// where the line misses. Exact, from the B-rep, so simulation can
+    /// compare stock with the part without tessellation error.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] for an empty body; a kernel error.
+    fn heights(
+        &self,
+        body: &Body,
+        points: &[[f64; 2]],
+        from_above: bool,
+    ) -> Result<Vec<Option<f64>>, KernelError>;
+
     /// Every boundary loop of flat face `face` (parallel to XY), offset with
     /// the face by `distance`: positive grows the face, so the outer loop
     /// moves outwards and holes shrink.
@@ -465,6 +480,15 @@ impl Kernel for OpenCascade {
         Ok(outline_segments(
             cndt_occt_sys::section_outline(&body.0, z, distance).map_err(modelling)?,
         ))
+    }
+
+    fn heights(
+        &self,
+        body: &Body,
+        points: &[[f64; 2]],
+        from_above: bool,
+    ) -> Result<Vec<Option<f64>>, KernelError> {
+        cndt_occt_sys::heights(&body.0, points, from_above).map_err(modelling)
     }
     fn face_loops(
         &self,

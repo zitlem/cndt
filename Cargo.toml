@@ -22,6 +22,7 @@ cndt-model = { path = "crates/model" }
 cndt-occt-sys = { path = "crates/occt-sys" }
 cndt-post = { path = "crates/post" }
 cndt-process-mill = { path = "crates/process-mill" }
+cndt-sim = { path = "crates/sim" }
 cndt-sketch = { path = "crates/sketch" }
 
 # External crates. Each must be AGPL-3.0 compatible; `cargo xtask licenses`
@@ -51,3 +52,9 @@ float_cmp = "deny"
 # HashMap, HashSet and wall-clock time are blocked in clippy.toml (rule 11).
 disallowed_types = "deny"
 disallowed_methods = "deny"
+
+# Stock simulation sweeps millions of cells; optimise it even in debug builds
+# so the tests that simulate whole setups stay quick. Floating-point results
+# do not depend on the optimisation level.
+[profile.dev.package.cndt-sim]
+opt-level = 3

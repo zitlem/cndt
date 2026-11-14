@@ -17,6 +17,8 @@
 //! {"ok": true, "result": {"document": {...}, "dirty": true, ...}}
 //! ```
 
+mod simulate;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -104,6 +106,19 @@ pub enum Request {
         /// A file to write the program to.
         #[serde(default)]
         path: Option<PathBuf>,
+    },
+    /// Stock simulation of one setup (decision 0016): its program swept
+    /// through the raw stock and checked against the exact part. Changes
+    /// nothing; replies `{collisions, gouges, left, left_at, removed, cut_length,
+    /// rapid_length, cut_minutes, grid}`. A collision is a rapid move into
+    /// material; a gouge, a cut below the finished part.
+    Simulate {
+        /// The setup's id; the first setup if left out.
+        #[serde(default)]
+        setup: Option<u32>,
+        /// The cell size in millimetres; 0.25 if left out.
+        #[serde(default)]
+        cell: Option<f64>,
     },
     /// Feature detection: the operations suggested for a setup from the
     /// part's holes, pockets and outside profile. Changes nothing; replies
@@ -256,6 +271,8 @@ pub struct Api {
     kernel: Box<dyn Kernel>,
     rebuilt: Rebuilt,
     revision: u64,
+    /// The last stock simulation, for drawing it.
+    simulated: Option<simulate::Simulated>,
 }
 
 impl Default for Api {
@@ -333,6 +350,7 @@ impl Api {
             kernel,
             rebuilt: Rebuilt::default(),
             revision: 0,
+            simulated: None,
         }
     }
 
@@ -627,6 +645,25 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::Simulate { setup, cell } => {
+                return match self.simulate_setup(setup, cell) {
+                    Ok(sim) => {
+                        let report = self.keep_simulation(sim);
+                        success(serde_json::json!({
+                        "collisions": report.collisions,
+                        "gouges": report.gouges,
+                        "left": report.left,
+                        "left_at": report.left_at,
+                        "removed": report.removed,
+                        "cut_length": report.cut_length,
+                        "rapid_length": report.rapid_length,
+                        "cut_minutes": report.cut_minutes,
+                        "grid": report.grid,
+                        }))
+                    }
+                    Err(error) => failure(error),
+                };
+            }
             Request::Detect { setup } => {
                 return match cndt_process_mill::detect(
                     self.session.document(),
@@ -766,6 +803,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("step_info", &["path"]),
     ("post", &["post", "machine", "setup", "setups", "path"]),
     ("detect", &["setup"]),
+    ("simulate", &["setup", "cell"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo

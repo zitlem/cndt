@@ -20,6 +20,7 @@ import {
   state,
   type StepInfo,
   stepPreview,
+  simulationMesh,
 } from "./api";
 import { SketchEditor, type Tool } from "./sketch";
 import { Viewer } from "./viewer";
@@ -336,6 +337,7 @@ async function showBody(state: DocumentState): Promise<void> {
     viewer.setEdges(edges);
     // Keep the camera where it is once a part is on screen.
     viewer.show(mesh, bodyShown);
+    simulatedSetup = null;
     bodyShown = true;
     // A drawn toolpath follows the part.
     if (shownSetup !== null) await showToolpath(shownSetup).catch(() => showToolpath(null));
@@ -420,6 +422,47 @@ function renderFeatures(state: DocumentState): void {
 
 /** The setup whose toolpath is drawn, if any. */
 let shownSetup: number | null = null;
+/** The setup whose simulated stock is drawn, if any. */
+let simulatedSetup: number | null = null;
+
+interface Finding {
+  operation: string;
+  step: number;
+  depth: number;
+}
+interface SimReport {
+  collisions: Finding[];
+  gouges: Finding[];
+  left: number;
+  cut_minutes: number;
+}
+
+/** What a stock simulation found, in a sentence or two. */
+function simulationText(report: SimReport): string {
+  const mm = (v: number) => `${formatNumber(Math.round(v * 100) / 100)} mm`;
+  const list = (items: Finding[]) => items.map((f) => `${f.operation} (${mm(f.depth)})`).join(", ");
+  const parts = [
+    report.collisions.length === 0
+      ? "No rapid touches the stock."
+      : `RAPIDS INTO THE STOCK: ${list(report.collisions)}.`,
+    report.gouges.length === 0 ? "Nothing cuts below the part." : `Cuts below the model (red): ${list(report.gouges)}.`,
+    report.left > 0.05 ? `Up to ${mm(report.left)} left on the part (yellow).` : "The part is machined to size.",
+    `Cutting time ${formatNumber(Math.round(report.cut_minutes * 10) / 10)} min.`,
+  ];
+  return `Simulated (UNVERIFIED): ${parts.join(" ")}`;
+}
+
+async function simulateSetup(setup: number | null): Promise<void> {
+  simulatedSetup = null;
+  viewer.setStock(null);
+  if (setup !== null) {
+    const report = await request<SimReport>({ method: "simulate", setup, cell: 0.5 });
+    viewer.setStock(await simulationMesh(setup));
+    simulatedSetup = setup;
+    showError(new Error(simulationText(report)));
+  }
+  if (current) renderSetups(current);
+}
 
 function operationText(op: CamOperation): string {
   switch (op.type) {
@@ -623,7 +666,16 @@ function renderSetups(state: DocumentState): void {
         }
       }),
     );
-    row.append(kind, add, detect);
+    const simulate = globalThis.document.createElement("button");
+    simulate.type = "button";
+    simulate.className = "secondary";
+    simulate.textContent = simulatedSetup === id ? "Hide stock" : "Simulate";
+    simulate.title = "Cut the stock in simulation: rapids into material, cuts below the part, material left";
+    simulate.addEventListener(
+      "click",
+      guarded(() => simulateSetup(simulatedSetup === id ? null : id)),
+    );
+    row.append(kind, add, detect, simulate);
     item.append(head, ops, row);
     ui.setupList.append(item);
   }

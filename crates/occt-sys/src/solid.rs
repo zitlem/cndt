@@ -170,6 +170,15 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_heights(
+        shape: *const ShapeHandle,
+        xy: *const f64,
+        n: usize,
+        from_above: c_int,
+        out: *mut f64,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_section_outline(
         shape: *const ShapeHandle,
         z: f64,
@@ -695,6 +704,45 @@ pub fn face_outline(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Segme
         .collect())
 }
 
+/// Where lines along Z through each `(x, y)` first meet the solid: coming
+/// down from above when `from_above`, else up from below. `None` where a
+/// line misses it. Exact, from the B-rep, not a mesh.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] for an empty shape; a kernel error.
+pub fn heights(
+    shape: &Shape,
+    points: &[[f64; 2]],
+    from_above: bool,
+) -> Result<Vec<Option<f64>>, OcctError> {
+    let xy: Vec<f64> = points.iter().flatten().copied().collect();
+    let mut out = vec![0.0_f64; points.len()];
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `xy` holds 2 * len values and `out` len
+    // values, both live for the call; `err` is writable for its length; the
+    // shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_heights(
+            shape.ptr.as_ptr(),
+            xy.as_ptr(),
+            points.len(),
+            c_int::from(from_above),
+            out.as_mut_ptr(),
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    Ok(out
+        .into_iter()
+        .map(|z| if z.is_finite() { Some(z) } else { None })
+        .collect())
+}
+
 /// The outline of the solid cut through at height `z`: the section's outer
 /// loop, offset outwards by `distance`, as lines and arcs in running order.
 ///
@@ -1207,6 +1255,28 @@ mod tests {
         assert!(radii.iter().any(|r| (r - 4.0).abs() < 1e-7), "{radii:?}");
         assert!(radii.iter().all(|r| *r < 5.0), "a hole grew: {radii:?}");
         assert!(radii.iter().any(|r| (r - 1.0).abs() < 1e-7), "{radii:?}");
+    }
+
+    #[test]
+    fn heights_follow_the_exact_solid() {
+        let block = extrude(&[rectangle(20.0, 10.0)], Z, 5.0).unwrap();
+        let (_, top) = *block.history.iter().find(|p| p.0 == 5).unwrap();
+        let joins = edges(&block.shape).unwrap();
+        let around: Vec<u32> = joins
+            .iter()
+            .enumerate()
+            .filter(|(_, (a, b))| *a == top || *b == top)
+            .map(|(i, _)| u32::try_from(i).unwrap())
+            .collect();
+        let chamfered = blend(&block.shape, &around, Blend::Chamfer(0.5)).unwrap();
+        let points = [[10.0, 5.0], [0.2, 5.0], [25.0, 5.0]];
+        let above = heights(&chamfered.shape, &points, true).unwrap();
+        assert!((above[0].unwrap() - 5.0).abs() < 1e-7, "{above:?}");
+        // On the chamfer, 0.2 mm in from the edge: 0.5 − 0.2 mm below the top.
+        assert!((above[1].unwrap() - 4.7).abs() < 1e-7, "{above:?}");
+        assert_eq!(above[2], None);
+        let below = heights(&chamfered.shape, &points, false).unwrap();
+        assert!(below[0].unwrap().abs() < 1e-7, "{below:?}");
     }
 
     #[test]
