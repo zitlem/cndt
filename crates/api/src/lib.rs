@@ -18,6 +18,7 @@
 //! ```
 
 mod simulate;
+mod verify;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -103,6 +104,11 @@ pub enum Request {
         /// others.
         #[serde(default)]
         setups: Option<Vec<u32>>,
+        /// Post even though verification found problems (a rapid into the
+        /// stock, say). The program's header then lists every problem
+        /// overridden. Without it, such a program is refused.
+        #[serde(default, rename = "override")]
+        override_problems: bool,
         /// A file to write the program to.
         #[serde(default)]
         path: Option<PathBuf>,
@@ -119,6 +125,29 @@ pub enum Request {
         /// The cell size in millimetres; 0.25 if left out.
         #[serde(default)]
         cell: Option<f64>,
+    },
+    /// The verification report (decision 0016): the setups (all, in
+    /// order, if left out) as one program through `post`, on `machine` if
+    /// given, checked every way CNDT can: plans, machine limits, posting,
+    /// and a stock simulation of each setup. Changes nothing; replies
+    /// `{verdict, problems, review, text}`, the verdict being `problems`
+    /// (do not run), `review` or `clear`. With `path`, also writes `text`
+    /// there.
+    Verify {
+        /// A shipped post, as for `post`.
+        post: String,
+        /// A shipped machine, as for `post`.
+        #[serde(default)]
+        machine: Option<String>,
+        /// The setups, in machining order.
+        #[serde(default)]
+        setups: Option<Vec<u32>>,
+        /// The simulation's cell size in millimetres; 0.5 if left out.
+        #[serde(default)]
+        cell: Option<f64>,
+        /// A file to write the report to.
+        #[serde(default)]
+        path: Option<PathBuf>,
     },
     /// Moves the history marker: the part is rebuilt from the first `to`
     /// features only, as it was at that point, or from all of them when
@@ -286,6 +315,9 @@ pub struct Api {
     revision: u64,
     /// The last stock simulation, for drawing it.
     simulated: Option<simulate::Simulated>,
+    /// The last verification and what it was of, so posting right after
+    /// verifying does not simulate again.
+    verified: Option<(String, verify::Verification)>,
     /// The history marker: how many features are built, or all of them.
     /// A view of the past, not part of the document; any change to the
     /// document brings it back to the end.
@@ -369,6 +401,7 @@ impl Api {
             revision: 0,
             simulated: None,
             rollback: None,
+            verified: None,
         }
     }
 
@@ -416,13 +449,83 @@ impl Api {
     }
 
     /// Plans the hole program for the current part and posts it.
+    /// Posts after verifying (docs/safety.md, gate 4): a program with
+    /// verification problems is refused unless the user overrides them, and
+    /// then the header lists what was overridden.
     fn post(
+        &mut self,
+        id: &str,
+        machine: Option<&str>,
+        setup: Option<u32>,
+        setups: Option<&[u32]>,
+        path: Option<&Path>,
+        override_problems: bool,
+    ) -> Result<Value, ApiError> {
+        // Its own errors first, with their own kinds.
+        self.post_program(id, machine, setup, setups, None, &[])?;
+        let ids: Vec<u32> = match (setup, setups) {
+            (_, Some(ids)) => ids.to_vec(),
+            (Some(setup), None) => vec![setup],
+            (None, None) => self
+                .session
+                .document()
+                .cam()
+                .setups
+                .first()
+                .map(|s| s.id)
+                .into_iter()
+                .collect(),
+        };
+        let problems = self.verification(id, machine, &ids)?.problems;
+        let mut notes = Vec::new();
+        if !problems.is_empty() {
+            if !override_problems {
+                return Err(ApiError::new(
+                    "verification",
+                    format!(
+                        "verification found {} problem{}; resolve {} or post with override: {}",
+                        problems.len(),
+                        if problems.len() == 1 { "" } else { "s" },
+                        if problems.len() == 1 { "it" } else { "them" },
+                        problems.join(" ")
+                    ),
+                ));
+            }
+            notes.push(String::from("VERIFICATION OVERRIDDEN BY THE USER:"));
+            notes.extend(problems);
+        }
+        self.post_program(id, machine, setup, setups, path, &notes)
+    }
+
+    /// The verification of these setups through this post and machine,
+    /// reusing the last one if nothing has changed since.
+    fn verification(
+        &mut self,
+        post: &str,
+        machine: Option<&str>,
+        ids: &[u32],
+    ) -> Result<verify::Verification, ApiError> {
+        let key = format!("{}|{post}|{machine:?}|{ids:?}", self.revision);
+        if let Some((kept, report)) = &self.verified
+            && *kept == key
+        {
+            return Ok(report.clone());
+        }
+        let report = self.verify(post, machine, Some(ids), None, None)?;
+        self.verified = Some((key, report.clone()));
+        Ok(report)
+    }
+
+    /// Plans and posts without verifying, adding `header` to the program's
+    /// header comment.
+    pub(crate) fn post_program(
         &self,
         id: &str,
         machine: Option<&str>,
         setup: Option<u32>,
         setups: Option<&[u32]>,
         path: Option<&Path>,
+        header: &[String],
     ) -> Result<Value, ApiError> {
         let text = SHIPPED_POSTS
             .iter()
@@ -483,7 +586,7 @@ impl Api {
             }
         }
         let gcode = post
-            .run(&planned.program, env!("CARGO_PKG_VERSION"))
+            .run_noted(&planned.program, env!("CARGO_PKG_VERSION"), header)
             .map_err(|e| ApiError::new("post", e.to_string()))?;
         if let Some(path) = path {
             std::fs::write(path, &gcode).map_err(|e| {
@@ -659,6 +762,7 @@ impl Api {
                 machine,
                 setup,
                 setups,
+                override_problems,
                 path,
             } => {
                 return match self.post(
@@ -667,6 +771,7 @@ impl Api {
                     setup,
                     setups.as_deref(),
                     path.as_deref(),
+                    override_problems,
                 ) {
                     Ok(value) => success(value),
                     Err(error) => failure(error),
@@ -688,6 +793,42 @@ impl Api {
                         "grid": report.grid,
                         }))
                     }
+                    Err(error) => failure(error),
+                };
+            }
+            Request::Verify {
+                post,
+                machine,
+                setups,
+                cell,
+                path,
+            } => {
+                return match self.verify(
+                    &post,
+                    machine.as_deref(),
+                    setups.as_deref(),
+                    cell,
+                    path.as_deref(),
+                ) {
+                    Ok(report) => match serde_json::to_value(&report) {
+                        Ok(value) => {
+                            // Kept for the post that usually follows.
+                            if cell.is_none() {
+                                let ids: Vec<u32> = setups.unwrap_or_else(|| {
+                                    let cam = self.session.document().cam();
+                                    cam.setups.iter().map(|s| s.id).collect()
+                                });
+                                let key = format!(
+                                    "{}|{post}|{:?}|{ids:?}",
+                                    self.revision,
+                                    machine.as_deref()
+                                );
+                                self.verified = Some((key, report));
+                            }
+                            success(value)
+                        }
+                        Err(error) => failure(ApiError::new("internal", error.to_string())),
+                    },
                     Err(error) => failure(error),
                 };
             }
@@ -829,10 +970,14 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("state", &[]),
     ("commands", &[]),
     ("step_info", &["path"]),
-    ("post", &["post", "machine", "setup", "setups", "path"]),
+    (
+        "post",
+        &["post", "machine", "setup", "setups", "override", "path"],
+    ),
     ("detect", &["setup"]),
     ("simulate", &["setup", "cell"]),
     ("rollback", &["to"]),
+    ("verify", &["post", "machine", "setups", "cell", "path"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo

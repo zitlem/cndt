@@ -598,10 +598,61 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
     filters: [{ name: "G-code", extensions: ["nc", "tap", "ngc"] }],
   });
   if (!path) return;
-  const result = await request<{ gcode: string; notes: string[] }>({ method: "post", post, machine, ...which, path });
+  // Every check first; the report goes next to the program.
+  const reportPath = path.replace(/\.[^./\\]*$/, "") + ".report.txt";
+  const report = await request<Verification>({
+    method: "verify",
+    post,
+    machine,
+    setups: Array.isArray(setup) ? setup : [setup],
+    path: reportPath,
+  });
+  if (report.verdict === "problems") {
+    const list = report.problems.map((p) => `• ${p}`).join("\n");
+    const go = await ask(
+      `The checks found ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}. ` +
+        `Do not run this program until they are resolved.\n\n${list}\n\nThe report is in ${reportPath}. Save the G-code anyway?`,
+      { title: "Verification found problems", kind: "warning", okLabel: "Save anyway", cancelLabel: "Don't save" },
+    );
+    if (!go) {
+      showReport(report);
+      return;
+    }
+  }
+  // An override is recorded in the program's header (docs/safety.md, gate 4).
+  const result = await request<{ gcode: string; notes: string[] }>({
+    method: "post",
+    post,
+    machine,
+    ...which,
+    path,
+    override: report.verdict === "problems",
+  });
   const lines = result.gcode.split("\n").length;
-  const notes = result.notes.length > 0 ? ` Notes: ${result.notes.join(" ")}` : "";
-  showError(new Error(`Saved ${lines} lines of UNVERIFIED G-code. Prove it out carefully.${notes}`));
+  const verdict =
+    report.verdict === "problems"
+      ? "with PROBLEMS"
+      : report.verdict === "review"
+        ? `with ${report.review.length} finding${report.review.length === 1 ? "" : "s"} to review`
+        : "no problems found";
+  showError(
+    new Error(`Saved ${lines} lines of UNVERIFIED G-code. Verification: ${verdict}; report saved beside it. Prove it out carefully.`),
+  );
+}
+
+interface Verification {
+  verdict: "problems" | "review" | "clear";
+  problems: string[];
+  review: string[];
+  text: string;
+}
+
+/** Shows a verification report in its panel. */
+function showReport(report: Verification): void {
+  const panel = element("report-dialog");
+  element("report-text").textContent = report.text;
+  panel.dataset["verdict"] = report.verdict;
+  panel.hidden = false;
 }
 
 function renderSetups(state: DocumentState): void {
@@ -1760,3 +1811,17 @@ element("cam-simulate").addEventListener(
     await simulateSetup(target);
   }),
 );
+
+// Verify from the ribbon: every setup as one program, shown, not saved.
+element("cam-verify").addEventListener(
+  "click",
+  guarded(async () => {
+    const setups = (current?.document.cam?.setups ?? []).map((s) => s.id);
+    if (setups.length === 0) throw new Error("Add a setup first, from SETUP in the ribbon.");
+    const { post, machine } = chosenTarget;
+    showReport(await request<Verification>({ method: "verify", post, machine, setups }));
+  }),
+);
+element("report-close").addEventListener("click", () => {
+  element("report-dialog").hidden = true;
+});

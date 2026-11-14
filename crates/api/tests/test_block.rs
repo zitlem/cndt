@@ -791,6 +791,25 @@ fn the_cndt_test_block() {
     assert!(report["left"].as_f64().unwrap() < 0.05, "{reply}");
     let count = classes(&s.api.simulation_mesh(Some(1)).unwrap());
     assert_eq!((count[1], count[2]), (0, 0), "{count:?}");
+    // The verification report over both setups, for the Mazak: nothing
+    // blocks the program; the three model differences, the dowel note and
+    // the unverified machine are for review. Written next to the program.
+    let report_path =
+        std::env::temp_dir().join(format!("cndt-test-block-{}.report.txt", std::process::id()));
+    let reply = s.call(json!({"method": "verify", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setups": [0, 1], "path": report_path}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let report = &reply["result"];
+    assert_eq!(report["verdict"], "review", "{report}");
+    assert_eq!(report["problems"], json!([]), "{report}");
+    assert_eq!(report["review"].as_array().unwrap().len(), 5, "{report}");
+    let text = std::fs::read_to_string(&report_path).unwrap();
+    assert_eq!(text, report["text"].as_str().unwrap());
+    assert!(text.contains("VERDICT: NEEDS REVIEW"), "{text}");
+    assert!(text.contains("UNVERIFIED"), "{text}");
+    let _ = std::fs::remove_file(report_path);
+    // The Fanuc post on the Mazak is a problem, not a review item.
+    let reply = s.call(json!({"method": "verify", "post": "fanuc-mill", "machine": "mazak-hcn-5000", "setups": [1]}));
+    assert_eq!(reply["result"]["verdict"], "problems", "{reply}");
     // Without the facing, the pocket's rapid down to Z0.5 runs into the
     // 2 mm of stock still on top.
     let face_op = s.state()["document"]["cam"]["setups"][0]["setup"]["operations"][0]["id"].clone();
@@ -804,6 +823,34 @@ fn the_cndt_test_block() {
     assert!(
         (first["depth"].as_f64().unwrap() - 1.5).abs() < 1e-9,
         "{reply}"
+    );
+    let reply = s.call(json!({"method": "verify", "post": "mazak-smoothg", "setups": [0]}));
+    assert_eq!(reply["result"]["verdict"], "problems", "{reply}");
+    assert!(
+        reply["result"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("DO NOT RUN"),
+        "{reply}"
+    );
+    // Posting it is refused (docs/safety.md, gate 4) ...
+    let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "setup": 0}));
+    assert_eq!(reply["error"]["kind"], "verification", "{reply}");
+    assert!(reply["result"].is_null(), "{reply}");
+    // ... unless the user overrides it, and the header says so.
+    let reply =
+        s.call(json!({"method": "post", "post": "mazak-smoothg", "setup": 0, "override": true}));
+    let gcode = reply["result"]["gcode"].as_str().unwrap();
+    let header: Vec<&str> = gcode.lines().take(10).collect();
+    assert!(
+        header.contains(&"(VERIFICATION OVERRIDDEN BY THE USER:)"),
+        "{header:?}"
+    );
+    assert!(
+        header
+            .iter()
+            .any(|l| l.contains("RAPID MOVE RUNS 1.50 MM INTO THE STOCK IN POCKET 8 MM DEEP")),
+        "{header:?}"
     );
     s.call(json!({"method": "undo"}));
 

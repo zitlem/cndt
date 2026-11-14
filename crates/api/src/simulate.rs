@@ -18,7 +18,7 @@ pub const DEFAULT_CELL: f64 = 0.25;
 pub(crate) struct Simulated {
     revision: u64,
     setup: Option<u32>,
-    report: cndt_sim::Report,
+    pub(crate) report: cndt_sim::Report,
     part: Vec<Option<f64>>,
     placed: cndt_process_mill::Setup,
 }

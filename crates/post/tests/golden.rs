@@ -372,6 +372,35 @@ fn every_shipped_post_loads() {
 }
 
 #[test]
+fn an_override_is_recorded_in_the_header() {
+    let notes = [
+        String::from("VERIFICATION OVERRIDDEN BY THE USER:"),
+        String::from("Setup 1: a rapid (move) runs 1.50 mm into the stock"),
+    ];
+    let output = load("fanuc-mill")
+        .run_noted(&sample(), APP_VERSION, &notes)
+        .unwrap();
+    let header: Vec<&str> = output.lines().skip(2).take(6).collect();
+    assert_eq!(
+        header,
+        [
+            "(CNDT 0.0.0-GOLDEN)",
+            "(POST FANUC-MILL 0.1.0 UNVERIFIED)",
+            "(UNVERIFIED POST - PROVE OUT CAREFULLY BEFORE RUNNING)",
+            "(PREVIEW BUILD - NOT FOR PRODUCTION)",
+            "(VERIFICATION OVERRIDDEN BY THE USER:)",
+            "(SETUP 1: A RAPID MOVE RUNS 1.50 MM INTO THE STOCK)",
+        ]
+    );
+    // Everything after the header is the same as without notes.
+    let plain = load("fanuc-mill").run(&sample(), APP_VERSION).unwrap();
+    assert_eq!(
+        output.lines().skip(8).collect::<Vec<_>>(),
+        plain.lines().skip(6).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn output_is_deterministic() {
     let post = load("fanuc-mill");
     assert_eq!(
