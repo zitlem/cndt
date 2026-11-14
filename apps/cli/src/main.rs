@@ -21,7 +21,7 @@ project files:
   commands                                  list the commands exec accepts
 
 other:
-  post <file.cndt> [post] [setup]           print G-code for a setup (post: fanuc-mill or grbl; setup id)
+  post <file.cndt> [post] [setup]           print G-code for a setup (post: fanuc-mill, haas-mill, linuxcnc-mill or grbl; setup id)
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
   version                                   show the CNDT and geometry kernel versions

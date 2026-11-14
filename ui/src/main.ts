@@ -462,14 +462,17 @@ async function showToolpath(setup: number | null): Promise<void> {
   if (current) renderSetups(current);
 }
 
+/** The shipped posts, and the one the next Post… uses. */
+const POSTS: [string, string][] = [
+  ["fanuc-mill", "Fanuc"],
+  ["haas-mill", "Haas"],
+  ["linuxcnc-mill", "LinuxCNC"],
+  ["grbl", "GRBL"],
+];
+let chosenPost = "fanuc-mill";
+
 async function postSetup(setup: number, name: string): Promise<void> {
-  const choice = await ask("Which controller? Fanuc-style (Haas reads it too), or GRBL?", {
-    title: "Post",
-    kind: "info",
-    okLabel: "Fanuc",
-    cancelLabel: "GRBL",
-  });
-  const post = choice ? "fanuc-mill" : "grbl";
+  const post = chosenPost;
   const path = await save({
     title: "Save G-code",
     defaultPath: `${name}.nc`,
@@ -504,6 +507,19 @@ function renderSetups(state: DocumentState): void {
     post.className = "secondary";
     post.textContent = "Post…";
     post.addEventListener("click", guarded(() => postSetup(id, `${state.document.name} ${setup.name}`)));
+    const controller = globalThis.document.createElement("select");
+    controller.title = "Controller the Post… button writes for";
+    for (const [value, label] of POSTS) {
+      const option = globalThis.document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      option.selected = value === chosenPost;
+      controller.append(option);
+    }
+    controller.addEventListener("change", () => {
+      chosenPost = controller.value;
+      if (current) renderSetups(current);
+    });
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
     remove.className = "secondary";
@@ -516,7 +532,7 @@ function renderSetups(state: DocumentState): void {
         render(await execute("cam.remove_setup", { setup: id }));
       }),
     );
-    head.append(name, show, post, remove);
+    head.append(name, show, controller, post, remove);
     const ops = globalThis.document.createElement("ol");
     ops.className = "ops";
     for (const op of setup.operations) {

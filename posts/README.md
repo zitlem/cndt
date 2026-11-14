@@ -6,6 +6,8 @@ Each `.toml` file here turns CNDT's neutral toolpaths into G-code for one contro
 | --- | --- | --- |
 | `fanuc-mill.toml` | Fanuc-style milling | No |
 | `grbl.toml` | GRBL routers and mills | No |
+| `haas-mill.toml` | Haas milling (Fanuc-style, rigid G84 without M29) | No |
+| `linuxcnc-mill.toml` | LinuxCNC milling (rigid tapping with G33.1) | No |
 
 **Unverified posts have never run on a real controller.** Every program they produce says so in its header. Prove out any program carefully before running it: see [docs/safety.md](../docs/safety.md).
 
@@ -49,5 +51,7 @@ Then review every changed line in the diff before committing.
 ## Canned cycles
 
 A post may have a `[cycles]` section with templates for drilling (`drill`, G81), peck drilling (`peck`, G83), rigid tapping (`tap`, G84, with an optional `tap_prefix` such as Fanuc's `M29 S{rpm}`), reaming (`ream`, G85), further holes (`repeat`), the return mode (`retract`, such as G98) and the cancel code (`cancel`, G80). Placeholders: `{x} {y} {z} {r} {feed}`, `{peck}` for pecking and `{rpm}` in `tap_prefix`.
+
+With `tap_each_hole = true`, tapping is written one hole at a time: a rapid over the hole, a rapid down to the clearance plane, the `tap` line (which may use `{pitch}` and `{rpm}`, such as LinuxCNC's `G33.1 Z{z} K{pitch}`), and a rapid back up.
 
 A post without `[cycles]` gets every cycle written out as G0 and G1 moves, and refuses to tap, since tapping needs a synchronised spindle.
