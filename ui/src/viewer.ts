@@ -60,6 +60,99 @@ function sketchSegments(record: SketchRecord): { segments: XY[]; construction: X
   return { segments, construction };
 }
 
+/** The standard views: where the camera looks from, and which way is up. */
+export const VIEWS = {
+  home: { from: [1, -1.4, 1], up: [0, 0, 1] },
+  // A hair off vertical: orbiting keeps Z up, which a camera straight
+  // above cannot have.
+  top: { from: [0, -1e-4, 1], up: [0, 0, 1] },
+  bottom: { from: [0, -1e-4, -1], up: [0, 0, 1] },
+  front: { from: [0, -1, 0], up: [0, 0, 1] },
+  back: { from: [0, 1, 0], up: [0, 0, 1] },
+  right: { from: [1, 0, 0], up: [0, 0, 1] },
+  left: { from: [-1, 0, 0], up: [0, 0, 1] },
+} as const;
+export type ViewName = keyof typeof VIEWS;
+
+/** What can be shown or hidden, like layers. */
+export type Layer = "bodies" | "sketches" | "toolpaths" | "grid";
+
+/** A face of the view cube: its label, and the view it turns to. */
+const CUBE_FACES: { name: ViewName; label: string }[] = [
+  // BoxGeometry's face order: +x, −x, +y, −y, +z, −z.
+  { name: "right", label: "RIGHT" },
+  { name: "left", label: "LEFT" },
+  { name: "back", label: "BACK" },
+  { name: "front", label: "FRONT" },
+  { name: "top", label: "TOP" },
+  { name: "bottom", label: "BOTTOM" },
+];
+
+/**
+ * A small cube in the corner that turns with the view. Clicking a face
+ * looks at the part from that side.
+ */
+class ViewCube {
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
+  private readonly cube: THREE.Mesh;
+  private readonly raycaster = new THREE.Raycaster();
+
+  constructor(host: HTMLElement, onPick: (view: ViewName) => void) {
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.renderer.setSize(104, 104, false);
+    const canvas = this.renderer.domElement;
+    canvas.className = "view-cube";
+    canvas.title = "Click a face to look from that side";
+    host.appendChild(canvas);
+    const materials = CUBE_FACES.map(({ label }) => {
+      const paint = globalThis.document.createElement("canvas");
+      paint.width = paint.height = 128;
+      const g = paint.getContext("2d");
+      if (g) {
+        g.fillStyle = "#2b3138";
+        g.fillRect(0, 0, 128, 128);
+        g.strokeStyle = "#5a6470";
+        g.lineWidth = 6;
+        g.strokeRect(3, 3, 122, 122);
+        g.fillStyle = "#d7dde4";
+        g.font = "600 26px system-ui, sans-serif";
+        g.textAlign = "center";
+        g.textBaseline = "middle";
+        g.fillText(label, 64, 64);
+      }
+      const texture = new THREE.CanvasTexture(paint);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      return new THREE.MeshBasicMaterial({ map: texture });
+    });
+    this.cube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), materials);
+    this.scene.add(this.cube);
+    this.camera.up.set(0, 0, 1);
+    canvas.addEventListener("click", (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const pointer = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      this.raycaster.setFromCamera(pointer, this.camera);
+      const hit = this.raycaster.intersectObject(this.cube)[0];
+      const face = hit?.face ? CUBE_FACES[hit.face.materialIndex] : undefined;
+      if (face) onPick(face.name);
+    });
+  }
+
+  /** Turns the cube to match the main camera. */
+  render(main: THREE.PerspectiveCamera, target: THREE.Vector3): void {
+    const direction = main.position.clone().sub(target).normalize();
+    this.camera.position.copy(direction.multiplyScalar(4));
+    this.camera.up.copy(main.up);
+    this.camera.lookAt(0, 0, 0);
+    this.renderer.render(this.scene, this.camera);
+  }
+}
+
 export class Viewer {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
@@ -74,6 +167,9 @@ export class Viewer {
   private edgeHighlight: THREE.Group | null = null;
   private toolpath: THREE.Group | null = null;
   private stock: THREE.Mesh | null = null;
+  private readonly cube: ViewCube;
+  private readonly hidden = new Set<Layer>();
+  private wireframe = false;
   private readonly raycaster = new THREE.Raycaster();
   private sketches = new THREE.Group();
 
@@ -105,6 +201,8 @@ export class Viewer {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.addEventListener("change", () => this.render());
+
+    this.cube = new ViewCube(host, (view) => this.look(view));
 
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
@@ -143,6 +241,8 @@ export class Viewer {
     this.triangleFaces = mesh.triangleFaces;
     this.model = new THREE.Group();
     this.model.add(surface, edges);
+    surface.visible = !this.wireframe;
+    this.model.visible = !this.hidden.has("bodies");
     this.scene.add(this.model);
     if (keepView) this.render();
     else this.fit();
@@ -303,7 +403,7 @@ export class Viewer {
       (this.stock.material as THREE.Material).dispose();
       this.stock = null;
     }
-    if (this.model) this.model.visible = mesh === null;
+    if (this.model) this.model.visible = mesh === null && !this.hidden.has("bodies");
     if (mesh) {
       const colors = [0x9fb0c2, 0xf6c343, 0xe5484d, 0x5b6b7c].map((c) => new THREE.Color(c));
       const count = mesh.triangleFaces.length;
@@ -355,6 +455,7 @@ export class Viewer {
       };
       add(path.cuts, new THREE.LineBasicMaterial({ color: 0x4fd1c5, depthTest: false, transparent: true, opacity: 0.9 }));
       add(path.rapids, new THREE.LineDashedMaterial({ color: 0xf6c343, dashSize: 2, gapSize: 2, depthTest: false, transparent: true, opacity: 0.8 }));
+      group.visible = !this.hidden.has("toolpaths");
       this.toolpath = group;
       this.scene.add(group);
     }
@@ -414,8 +515,41 @@ export class Viewer {
     this.render();
   }
 
-  /** Points the camera at the whole model from an isometric-style view. */
-  fit(): void {
+  /** Shows or hides a layer. */
+  setLayer(layer: Layer, visible: boolean): void {
+    if (visible) this.hidden.delete(layer);
+    else this.hidden.add(layer);
+    if (layer === "bodies" && this.model) this.model.visible = visible && this.stock === null;
+    if (layer === "sketches") this.sketches.visible = visible;
+    if (layer === "toolpaths" && this.toolpath) this.toolpath.visible = visible;
+    if (layer === "grid") this.grid.visible = visible;
+    this.render();
+  }
+
+  /** Whether a layer is shown. */
+  isShown(layer: Layer): boolean {
+    return !this.hidden.has(layer);
+  }
+
+  /** Shaded faces with edges, or edges only. */
+  setWireframe(on: boolean): void {
+    this.wireframe = on;
+    if (this.surface) this.surface.visible = !on;
+    this.render();
+  }
+
+  /** Looks at the whole model from a standard view. */
+  look(view: ViewName): void {
+    const { from, up } = VIEWS[view];
+    this.fit(new THREE.Vector3(...from).normalize(), new THREE.Vector3(...up));
+  }
+
+  /** Points the camera at the whole model, from an isometric-style view
+   * unless a direction is given. */
+  fit(
+    direction = new THREE.Vector3(...VIEWS.home.from).normalize(),
+    up = new THREE.Vector3(0, 0, 1),
+  ): void {
     const box = new THREE.Box3();
     if (this.model) box.expandByObject(this.model);
     if (this.sketches.children.length > 0) box.expandByObject(this.sketches);
@@ -423,7 +557,7 @@ export class Viewer {
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const radius = Math.max(sphere.radius, 1);
     const distance = radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2));
-    const direction = new THREE.Vector3(1, -1.4, 1).normalize();
+    this.camera.up.copy(up);
     this.camera.position.copy(sphere.center).addScaledVector(direction, distance * 1.1);
     this.camera.near = distance / 100;
     this.camera.far = distance * 100;
@@ -455,5 +589,6 @@ export class Viewer {
 
   private render(): void {
     this.renderer.render(this.scene, this.camera);
+    this.cube?.render(this.camera, this.controls.target);
   }
 }

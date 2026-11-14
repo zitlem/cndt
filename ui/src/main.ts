@@ -23,7 +23,7 @@ import {
   simulationMesh,
 } from "./api";
 import { SketchEditor, type Tool } from "./sketch";
-import { Viewer } from "./viewer";
+import { type Layer, type ViewName, Viewer } from "./viewer";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -166,6 +166,7 @@ function render(next: DocumentState): void {
   if (globalThis.document.activeElement !== ui.docName) {
     ui.docName.value = doc.name;
   }
+  element("tree-doc").textContent = doc.name;
   ui.savedState.textContent = dirty ? "Unsaved changes" : "Saved";
   ui.savedState.classList.toggle("dirty", dirty);
   ui.undo.disabled = undo === null;
@@ -388,7 +389,9 @@ function renderFeatures(state: DocumentState): void {
     (f) => f.feature.type === "extrude" || f.feature.type === "hole",
   );
   ui.filletButton.disabled = !state.body;
-  for (const { id, feature } of features) {
+  const built = state.rollback ?? features.length;
+  for (const [index, { id, feature }] of features.entries()) {
+    if (index === built) ui.featureList.append(rollbackMarker());
     const status = state.feature_status[String(id)];
     const item = globalThis.document.createElement("li");
     const failed = status?.state === "failed";
@@ -406,6 +409,7 @@ function renderFeatures(state: DocumentState): void {
     const name = globalThis.document.createElement("span");
     name.className = "name";
     name.textContent = failed ? `⚠ ${feature.name}` : feature.name;
+    item.setAttribute("aria-label", item.title);
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
     remove.setAttribute("aria-label", `Delete ${feature.name}`);
@@ -425,8 +429,52 @@ function renderFeatures(state: DocumentState): void {
       if (event.key === "Enter") item.click();
     });
     item.append(icon, name, remove);
+    // Past the marker: not built, as if not there yet.
+    item.classList.toggle("rolled", index >= built);
     ui.featureList.append(item);
   }
+  if (features.length > 0 && built === features.length) ui.featureList.append(rollbackMarker());
+  for (const id of ["tl-start", "tl-back"]) element<HTMLButtonElement>(id).disabled = built === 0;
+  for (const id of ["tl-forward", "tl-end"]) element<HTMLButtonElement>(id).disabled = built === features.length;
+}
+
+/** Moves the history marker: the part as it was after `count` features. */
+async function rollTo(count: number): Promise<void> {
+  const total = current?.document.features?.length ?? 0;
+  const to = Math.max(0, Math.min(count, total));
+  render(await request<DocumentState>(to >= total ? { method: "rollback" } : { method: "rollback", to }));
+}
+
+/** The draggable marker in the timeline: features after it are not built. */
+function rollbackMarker(): HTMLLIElement {
+  const marker = globalThis.document.createElement("li");
+  marker.className = "rollback-marker";
+  marker.title = "Drag to see the part at an earlier point of its history";
+  marker.setAttribute("aria-label", "History marker");
+  marker.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    marker.setPointerCapture(event.pointerId);
+    marker.classList.add("dragging");
+    const chips = () => [...ui.featureList.querySelectorAll<HTMLLIElement>("li:not(.rollback-marker)")];
+    // The gap nearest the pointer: how many chips lie left of it.
+    const gapAt = (x: number) => chips().filter((chip) => {
+      const r = chip.getBoundingClientRect();
+      return r.left + r.width / 2 < x;
+    }).length;
+    const move = (e: PointerEvent) => {
+      marker.style.transform = `translateX(${e.clientX - event.clientX}px)`;
+    };
+    const up = (e: PointerEvent) => {
+      marker.removeEventListener("pointermove", move);
+      marker.removeEventListener("pointerup", up);
+      marker.classList.remove("dragging");
+      marker.style.transform = "";
+      guarded(() => rollTo(gapAt(e.clientX)))();
+    };
+    marker.addEventListener("pointermove", move);
+    marker.addEventListener("pointerup", up);
+  });
+  return marker;
 }
 
 /** The setup whose toolpath is drawn, if any. */
@@ -560,7 +608,7 @@ function renderSetups(state: DocumentState): void {
   const setups = state.document.cam?.setups ?? [];
   ui.setupList.replaceChildren();
   ui.noSetups.hidden = setups.length > 0;
-  element("cam-post-all").hidden = setups.length < 2;
+  element<HTMLButtonElement>("cam-post-all").disabled = setups.length < 2;
   for (const { id, setup } of setups) {
     const item = globalThis.document.createElement("li");
     item.classList.toggle("showing", shownSetup === id);
@@ -966,7 +1014,11 @@ function updateSketchUi(): void {
     closeBlend();
     closePattern();
   }
-  ui.sketchTools.hidden = editing === null;
+  // The SKETCH tab appears while a sketch is open, and takes over the ribbon.
+  const sketchTab = globalThis.document.querySelector<HTMLButtonElement>('.ribbon-tab[data-tab="sketch"]');
+  if (sketchTab) sketchTab.hidden = editing === null;
+  if (editing !== null) showTab("sketch");
+  else if (activeTab === "sketch") showTab(workspace === "design" ? "solid" : "milling");
   ui.sketchTools.parentElement?.classList.toggle("sketching", editing !== null);
   ui.viewportHint.hidden = editing !== null || ui.modelEmpty.hidden;
   for (const button of ui.sketchTools.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
@@ -1532,3 +1584,179 @@ appWindow
   .catch(showError);
 
 state().then(render).catch(showError);
+
+// ---------------------------------------------------------------- window layout
+
+/** Which workspace is showing: modelling, or programming the machine. */
+let workspace: "design" | "manufacture" = "design";
+/** Which ribbon tab is showing. */
+let activeTab = "solid";
+
+function showTab(tab: string): void {
+  activeTab = tab;
+  for (const button of globalThis.document.querySelectorAll<HTMLButtonElement>(".ribbon-tab")) {
+    button.classList.toggle("active", button.dataset["tab"] === tab);
+    button.setAttribute("aria-selected", String(button.dataset["tab"] === tab));
+  }
+  for (const pane of globalThis.document.querySelectorAll<HTMLElement>(".ribbon-pane")) {
+    pane.hidden = pane.dataset["pane"] !== tab;
+  }
+}
+
+function showWorkspace(next: "design" | "manufacture"): void {
+  workspace = next;
+  element<HTMLSelectElement>("workspace").value = next;
+  globalThis.document.body.dataset["workspace"] = next;
+  for (const tab of globalThis.document.querySelectorAll<HTMLButtonElement>(".ribbon-tab[data-workspace]")) {
+    tab.hidden = tab.dataset["workspace"] !== next;
+  }
+  for (const node of globalThis.document.querySelectorAll<HTMLElement>(".tree [data-workspace]")) {
+    node.hidden = node.dataset["workspace"] !== next;
+  }
+  if (activeTab !== "sketch") showTab(next === "design" ? "solid" : "milling");
+  // Programming wants the setups in view; modelling, the sketches.
+  const sketches = element("sketch-list").closest("details");
+  const setups = element("setup-list").closest("details");
+  if (sketches) sketches.open = next === "design";
+  if (setups) setups.open = next === "manufacture";
+}
+
+element<HTMLSelectElement>("workspace").addEventListener("change", (event) => {
+  const value = (event.target as HTMLSelectElement).value;
+  showWorkspace(value === "manufacture" ? "manufacture" : "design");
+});
+for (const tab of globalThis.document.querySelectorAll<HTMLButtonElement>(".ribbon-tab")) {
+  tab.addEventListener("click", () => showTab(tab.dataset["tab"] ?? "solid"));
+}
+showWorkspace("design");
+
+/** Opens a small menu under `anchor`; any click elsewhere closes it. */
+function popup(anchor: HTMLElement, items: { label: string; title: string; run: () => void; disabled: boolean }[]): void {
+  globalThis.document.querySelector(".popup-menu")?.remove();
+  const menu = globalThis.document.createElement("div");
+  menu.className = "menu popup-menu";
+  menu.setAttribute("role", "menu");
+  for (const item of items) {
+    const button = globalThis.document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.textContent = item.label;
+    button.title = item.title;
+    button.disabled = item.disabled;
+    button.addEventListener("click", () => {
+      menu.remove();
+      item.run();
+    });
+    menu.append(button);
+  }
+  const rect = anchor.getBoundingClientRect();
+  menu.style.left = `${rect.left}px`;
+  menu.style.top = `${rect.bottom + 4}px`;
+  globalThis.document.body.append(menu);
+  const close = (event: PointerEvent) => {
+    if (!menu.contains(event.target as Node) && event.target !== anchor) {
+      menu.remove();
+      globalThis.document.removeEventListener("pointerdown", close);
+    }
+  };
+  globalThis.document.addEventListener("pointerdown", close);
+}
+
+// A group's label opens a menu of everything in the group, by name.
+for (const group of globalThis.document.querySelectorAll<HTMLElement>(".ribbon-group")) {
+  const label = group.querySelector<HTMLButtonElement>(".ribbon-label");
+  if (!label) continue;
+  label.addEventListener("click", () => {
+    const tools = [...group.querySelectorAll<HTMLButtonElement>(".ribbon-buttons > button, .ribbon-buttons .tool, .ribbon-buttons .chip")];
+    const unique = [...new Set(tools)];
+    popup(
+      label,
+      unique.map((tool) => ({
+        label: tool.querySelector("span")?.textContent?.trim() || tool.textContent?.trim() || "",
+        title: tool.title,
+        disabled: tool.disabled,
+        run: () => tool.click(),
+      })),
+    );
+  });
+}
+
+// The File menu.
+const fileButton = element<HTMLButtonElement>("file-menu-button");
+const fileMenu = element<HTMLDivElement>("file-menu");
+fileButton.addEventListener("click", () => {
+  fileMenu.hidden = !fileMenu.hidden;
+  fileButton.setAttribute("aria-expanded", String(!fileMenu.hidden));
+});
+fileMenu.addEventListener("click", () => {
+  fileMenu.hidden = true;
+  fileButton.setAttribute("aria-expanded", "false");
+});
+globalThis.document.addEventListener("pointerdown", (event) => {
+  const target = event.target as Node;
+  if (!fileMenu.hidden && !fileMenu.contains(target) && !fileButton.contains(target)) {
+    fileMenu.hidden = true;
+    fileButton.setAttribute("aria-expanded", "false");
+  }
+});
+element("quick-save").addEventListener("click", () => element("save").click());
+element("insert-step").addEventListener("click", () => element("import-step").click());
+
+// Views and display.
+for (const button of globalThis.document.querySelectorAll<HTMLButtonElement>("[data-view]")) {
+  button.addEventListener("click", () => viewer.look(button.dataset["view"] as ViewName));
+}
+element("nav-fit").addEventListener("click", () => element("fit").click());
+const wire = element<HTMLButtonElement>("nav-wire");
+wire.addEventListener("click", () => {
+  const on = wire.getAttribute("aria-pressed") !== "true";
+  wire.setAttribute("aria-pressed", String(on));
+  viewer.setWireframe(on);
+});
+
+// Layers: the eyes in the browser and the grid button.
+for (const eye of globalThis.document.querySelectorAll<HTMLButtonElement>("[data-layer]")) {
+  eye.addEventListener("click", (event) => {
+    // An eye inside a tree heading must not fold the heading.
+    event.preventDefault();
+    event.stopPropagation();
+    const layer = eye.dataset["layer"] as Layer;
+    const on = !viewer.isShown(layer);
+    viewer.setLayer(layer, on);
+    eye.setAttribute("aria-pressed", String(on));
+  });
+}
+
+// The browser: docked beside the view, floating over it, or hidden.
+const stage = element("stage");
+const dock = element<HTMLButtonElement>("browser-dock");
+dock.addEventListener("click", () => {
+  const floating = stage.classList.toggle("browser-floating");
+  dock.setAttribute("aria-pressed", String(!floating));
+});
+element("browser-hide").addEventListener("click", () => {
+  stage.classList.add("browser-hidden");
+  element("browser-show").hidden = false;
+});
+element("browser-show").addEventListener("click", () => {
+  stage.classList.remove("browser-hidden");
+  element("browser-show").hidden = true;
+});
+
+// The timeline's playback buttons move the history marker.
+const built = () => current?.rollback ?? current?.document.features?.length ?? 0;
+element("tl-start").addEventListener("click", guarded(() => rollTo(0)));
+element("tl-back").addEventListener("click", guarded(() => rollTo(built() - 1)));
+element("tl-forward").addEventListener("click", guarded(() => rollTo(built() + 1)));
+element("tl-end").addEventListener("click", guarded(() => rollTo(Number.MAX_SAFE_INTEGER)));
+
+// Simulate from the ribbon: the setup whose toolpath is shown, or the first.
+element("cam-simulate").addEventListener(
+  "click",
+  guarded(async () => {
+    const setups = current?.document.cam?.setups ?? [];
+    const target = shownSetup ?? setups[0]?.id;
+    if (target === undefined) throw new Error("Add a setup first, from SETUP in the ribbon.");
+    await simulateSetup(target);
+  }),
+);

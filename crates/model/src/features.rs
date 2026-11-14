@@ -1122,11 +1122,21 @@ fn apply_tool(
 /// Rebuilds the part from the timeline.
 #[must_use]
 pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
+    rebuild_to(document, kernel, None)
+}
+
+/// Rebuilds the part from the first `count` features of the timeline only,
+/// or all of them for `None`: the part as it was at that point of its
+/// history. Later features get no status.
+#[must_use]
+pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>) -> Rebuilt {
     let mut part: Option<(Body, Names)> = None;
     let mut status = BTreeMap::new();
     let mut frames = BTreeMap::new();
     let mut tools: BTreeMap<FeatureId, Tool> = BTreeMap::new();
-    for entry in document.features() {
+    let features = document.features();
+    let features = &features[..count.map_or(features.len(), |n| n.min(features.len()))];
+    for entry in features {
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
             let Some(sketch) = entry.feature.sketch() else {
                 if let Feature::Pattern { .. } = &entry.feature {
