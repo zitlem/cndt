@@ -256,6 +256,22 @@ impl Post {
     /// Returns [`PostError::Toolpath`] if the program fails validation. No
     /// G-code is produced for an unsafe program.
     pub fn run(&self, program: &Program, app_version: &str) -> Result<String, PostError> {
+        self.run_noted(program, app_version, &[])
+    }
+
+    /// Posts a program with extra lines in its header comment, such as the
+    /// verification problems a user chose to override (docs/safety.md,
+    /// gate 4).
+    ///
+    /// # Errors
+    ///
+    /// As [`Post::run`].
+    pub fn run_noted(
+        &self,
+        program: &Program,
+        app_version: &str,
+        notes: &[String],
+    ) -> Result<String, PostError> {
         program.validate().map_err(PostError::Toolpath)?;
         let mut out = Output::new(&self.definition);
         let def = &self.definition;
@@ -280,8 +296,8 @@ impl Post {
         }
         for line in &def.program.start {
             if line == "{header}" {
-                for text in header(def, app_version) {
-                    out.comment(&text);
+                for text in header(def, app_version).iter().chain(notes) {
+                    out.comment(text);
                 }
             } else {
                 out.block(&fill(line, &values));

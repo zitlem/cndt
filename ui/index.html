@@ -194,6 +194,9 @@
                   <button id="cam-simulate" type="button" class="tool" title="Simulate the setup whose toolpath is shown, or the first">
                 <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 15l7 3 7-3-7-3zM3 15V9l7-3 7 3v6M7 4.5l3-1.5 3 1.5" /></svg><span>Simulate</span>
               </button>
+                  <button id="cam-verify" type="button" class="tool" title="Check every setup as one program: machine limits, posting and simulation">
+                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 2l6 2.5v5c0 4-2.7 6.7-6 8.5-3.3-1.8-6-4.5-6-8.5v-5z" /><path d="M7 10l2 2 4-4" /></svg><span>Verify</span>
+              </button>
                   <button id="cam-post-all" type="button" class="tool" title="Post all setups as one program">
                 <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 2h7l4 4v12H5zM12 2v4h4M7.5 10h5M7.5 13h5" /></svg><span>Post all</span>
               </button>
@@ -350,6 +353,15 @@
             </div>
           </form>
         
+          <section id="report-dialog" class="dialog report-dialog" hidden aria-label="Verification report">
+            <div class="report-head">
+              <h3>Verification report</h3>
+              <button id="report-close" type="button" class="icon-button small" aria-label="Close">
+                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" /></svg>
+              </button>
+            </div>
+            <pre id="report-text" class="report-text"></pre>
+          </section>
           <div class="nav-bar" role="toolbar" aria-label="View">
             <button type="button" class="icon-button" data-view="home" title="Home view">
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 10l7-6 7 6M5 8.5V16h10V8.5" /></svg>

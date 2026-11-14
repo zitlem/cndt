@@ -18,7 +18,7 @@ Build Phase 3 in thin slices, each usable on its own:
    - **Lengths and cutting time** at the programmed feeds.
 
    The result goes to the API as a `simulate` request, and to the 3D view as a coloured stock mesh: clean, left, gouged and off the part.
-2. **Verification report:** all setups, the machine check (decision 0015) and the simulation in one page, saved with the program.
+2. **Verification report:** all setups, the machine check (decision 0015) and the simulation in one page, saved with the program. Built: a `verify` request sorts findings into problems and review items; `post` runs it first and refuses problems without an explicit override, which the program header records (docs/safety.md, gate 4).
 3. **Tool assemblies:** flute length, shank and holder in the tool library (a file-format version), and holder and shank collisions in the simulation.
 4. **Stock carried between setups:** a three-direction dexel model, so the second side starts from what the first left.
 5. **Post editor** in the app, over the same TOML files, with the golden-file preview.

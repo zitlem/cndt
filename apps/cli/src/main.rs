@@ -21,11 +21,13 @@ project files:
   commands                                  list the commands exec accepts
 
 other:
-  post <file.cndt> [post] [setup] [--machine <id>] [--setups <id,id,...>]
+  post <file.cndt> [post] [setup] [--machine <id>] [--setups <id,id,...>] [--override]
                                             print G-code for a setup (post: fanuc-mill, haas-mill,
                                             linuxcnc-mill, mazak-smoothg or grbl; setup id); with a
                                             machine (mazak-hcn-5000), check its limits first; with
-                                            --setups, several sides in one program
+                                            --setups, several sides in one program; a program
+                                            verification finds problems in is refused unless
+                                            --override, which the program header records
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
   version                                   show the CNDT and geometry kernel versions
@@ -49,6 +51,17 @@ fn main() -> ExitCode {
         }
     }
     let [(_, machine), (_, setups)] = options;
+    let override_problems = match args.iter().position(|a| *a == "--override") {
+        Some(at) if args.first() == Some(&"post") => {
+            args.remove(at);
+            true
+        }
+        Some(_) => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+        None => false,
+    };
     let setups = match setups.map(|list| {
         list.split(',')
             .map(|id| id.trim().parse::<u32>())
@@ -61,7 +74,11 @@ fn main() -> ExitCode {
         Some(Ok(ids)) => Some(ids),
         None => None,
     };
-    let target = Target { machine, setups };
+    let target = Target {
+        machine,
+        setups,
+        override_problems,
+    };
     let result = match args.as_slice() {
         ["new", path] => new(Path::new(path), None),
         ["new", path, name] => new(Path::new(path), Some(name)),
@@ -141,6 +158,7 @@ fn new(path: &Path, name: Option<&str>) -> Result<(), String> {
 struct Target<'a> {
     machine: Option<&'a str>,
     setups: Option<Vec<u32>>,
+    override_problems: bool,
 }
 
 fn post(path: &Path, id: &str, target: &Target<'_>, setup: Option<u32>) -> Result<(), String> {
@@ -152,6 +170,9 @@ fn post(path: &Path, id: &str, target: &Target<'_>, setup: Option<u32>) -> Resul
     }
     if let Some(setups) = &target.setups {
         request["setups"] = json!(setups);
+    }
+    if target.override_problems {
+        request["override"] = json!(true);
     }
     if let Some(setup) = setup {
         request["setup"] = json!(setup);
