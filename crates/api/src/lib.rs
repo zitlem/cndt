@@ -95,6 +95,12 @@ pub enum Request {
         /// The setup's id; the first setup if left out.
         #[serde(default)]
         setup: Option<u32>,
+        /// Several setups in one program, in this order, instead of
+        /// `setup`: the table turns between sides that have a B angle, and
+        /// the program stops for the operator to turn the part between the
+        /// others.
+        #[serde(default)]
+        setups: Option<Vec<u32>>,
         /// A file to write the program to.
         #[serde(default)]
         path: Option<PathBuf>,
@@ -379,6 +385,7 @@ impl Api {
         id: &str,
         machine: Option<&str>,
         setup: Option<u32>,
+        setups: Option<&[u32]>,
         path: Option<&Path>,
     ) -> Result<Value, ApiError> {
         let text = SHIPPED_POSTS
@@ -394,25 +401,44 @@ impl Api {
             })?;
         let post = cndt_post::Post::from_toml(text)
             .map_err(|e| ApiError::new("internal", e.to_string()))?;
-        let planned = cndt_process_mill::plan_setup(
-            self.session.document(),
-            &self.rebuilt,
-            self.kernel.as_ref(),
-            setup,
-        )
+        let planned = match (setup, setups) {
+            (Some(_), Some(_)) => {
+                return Err(ApiError::new(
+                    "bad_request",
+                    "give either setup or setups, not both",
+                ));
+            }
+            (_, Some(ids)) => cndt_process_mill::plan_setups(
+                self.session.document(),
+                &self.rebuilt,
+                self.kernel.as_ref(),
+                ids,
+            ),
+            (setup, None) => cndt_process_mill::plan_setup(
+                self.session.document(),
+                &self.rebuilt,
+                self.kernel.as_ref(),
+                setup,
+            ),
+        }
         .map_err(|e| ApiError::new("cam", e.to_string()))?;
         let mut notes = planned.notes;
         if let Some(machine) = machine {
             let machine = shipped_machine(machine)?;
+            // Another controller's codes can mean something else here: on a
+            // Mazak, the Fanuc post's M29 is a robot request.
+            if machine.machine.post != id {
+                return Err(ApiError::new(
+                    "machine",
+                    format!(
+                        "the {} takes the {} post, not {id}",
+                        machine.machine.name, machine.machine.post
+                    ),
+                ));
+            }
             machine
                 .check(&planned.program)
                 .map_err(|e| ApiError::new("machine", e.to_string()))?;
-            if machine.machine.post != id {
-                notes.push(format!(
-                    "The {} is normally used with the {} post, not {id}.",
-                    machine.machine.name, machine.machine.post
-                ));
-            }
             if !machine.machine.verified {
                 notes.push(format!(
                     "The {} definition is unverified: check its limits on the machine.",
@@ -587,9 +613,16 @@ impl Api {
                 post,
                 machine,
                 setup,
+                setups,
                 path,
             } => {
-                return match self.post(&post, machine.as_deref(), setup, path.as_deref()) {
+                return match self.post(
+                    &post,
+                    machine.as_deref(),
+                    setup,
+                    setups.as_deref(),
+                    path.as_deref(),
+                ) {
                     Ok(value) => success(value),
                     Err(error) => failure(error),
                 };
@@ -731,7 +764,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("state", &[]),
     ("commands", &[]),
     ("step_info", &["path"]),
-    ("post", &["post", "machine", "setup", "path"]),
+    ("post", &["post", "machine", "setup", "setups", "path"]),
     ("detect", &["setup"]),
 ];
 

@@ -48,7 +48,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 12: pocket operations.
 /// - 13: chamfer milling operations.
 /// - 14: finishing allowances on pockets.
-pub const SCHEMA_VERSION: u32 = 14;
+/// - 15: setups turned about Y, and B table angles (decision 0015).
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -264,6 +265,19 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 14 knew nothing of turning about Y or of B angles.
+    if manifest.schema_version < 15
+        && document
+            .cam()
+            .setups
+            .iter()
+            .any(|s| s.setup.flip_about != cndt_model::cam::FlipAxis::X || s.setup.index.is_some())
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain B angles or setups turned about Y",
+            manifest.schema_version
         )));
     }
     // Version 13 knew nothing of pocket finishing allowances.
@@ -634,6 +648,27 @@ mod tests {
     }
 
     #[test]
+    fn b_angles_need_version_15() {
+        use cndt_model::cam::{CamEdit, FlipAxis, Side};
+        let mut document = Document::new("Indexed");
+        document
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Bottom,
+                work_offset: 2,
+                flip_about: FlipAxis::Y,
+                index: Some(180.0),
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        let v14 = raw_zip(&[(MANIFEST, &manifest(14)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v14)).unwrap_err();
+        assert!(error.to_string().contains("B angles"), "{error}");
+    }
+
+    #[test]
     fn a_pocket_finish_needs_version_14() {
         use cndt_model::cam::{CamEdit, OperationDef, Side};
         let mut document = Document::new("Finish");
@@ -642,6 +677,8 @@ mod tests {
                 name: String::new(),
                 side: Side::Top,
                 work_offset: 1,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
             })
             .unwrap();
         let setup = document.cam().setups[0].id;

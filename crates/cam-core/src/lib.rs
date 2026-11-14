@@ -160,6 +160,24 @@ pub enum Event {
         /// The text.
         text: String,
     },
+    /// Move the tool to its safe position clear of the part, such as the
+    /// tool change position. The spindle must be stopped. The position is
+    /// unknown afterwards, so the next motion must be a rapid.
+    Home,
+    /// Turn a rotary axis, such as an HMC's B table, to an angle in
+    /// degrees. The tool must be home, with no motion since.
+    Index {
+        /// The axis letter, such as `B`.
+        axis: String,
+        /// The angle in degrees.
+        angle: f64,
+    },
+    /// Change the work offset: 1 is G54 through 6 for G59. The position is
+    /// unknown afterwards, so the next motion must be a rapid.
+    WorkOffset {
+        /// The new offset.
+        offset: u8,
+    },
 }
 
 /// One entry in a toolpath.
@@ -233,6 +251,10 @@ pub enum ToolpathError {
     BadArc(Location),
     /// A cycle is malformed; says how.
     BadCycle(Location, &'static str),
+    /// The tool goes home or a rotary axis turns with the spindle running.
+    SpindleRunning(Location),
+    /// A rotary axis turns while the tool is not home.
+    NotHome(Location),
 }
 
 impl fmt::Display for ToolpathError {
@@ -254,6 +276,14 @@ impl fmt::Display for ToolpathError {
             Self::NoTool(at) => write!(f, "{at}: cutting before any tool is loaded"),
             Self::SpindleOff(at) => write!(f, "{at}: cutting with the spindle off"),
             Self::BadCycle(at, reason) => write!(f, "{at}: {reason}"),
+            Self::SpindleRunning(at) => write!(
+                f,
+                "{at}: the spindle must be stopped before the tool goes home or the table turns"
+            ),
+            Self::NotHome(at) => write!(
+                f,
+                "{at}: the table turns while the tool is near the part; send it home first"
+            ),
             Self::BadArc(at) => write!(
                 f,
                 "{at}: the arc's start and end are not the same distance from its centre"
@@ -283,6 +313,7 @@ impl Program {
         let mut tool_loaded = false;
         let mut spindle_on = false;
         let mut rpm_now = 0.0_f64;
+        let mut home = false;
 
         for operation in &self.operations {
             for (index, step) in operation.steps.iter().enumerate() {
@@ -290,7 +321,34 @@ impl Program {
                     operation: operation.name.clone(),
                     step: index + 1,
                 };
+                if matches!(step, Step::Move(_)) {
+                    home = false;
+                }
                 match step {
+                    Step::Event(Event::Home) => {
+                        if spindle_on {
+                            return Err(ToolpathError::SpindleRunning(at()));
+                        }
+                        home = true;
+                        position = None;
+                    }
+                    Step::Event(Event::Index { angle, .. }) => {
+                        if !angle.is_finite() {
+                            return Err(ToolpathError::NotFinite(at()));
+                        }
+                        if spindle_on {
+                            return Err(ToolpathError::SpindleRunning(at()));
+                        }
+                        if !home {
+                            return Err(ToolpathError::NotHome(at()));
+                        }
+                    }
+                    Step::Event(Event::WorkOffset { offset }) => {
+                        if !(1..=6).contains(offset) {
+                            return Err(ToolpathError::BadWorkOffset(*offset));
+                        }
+                        position = None;
+                    }
                     Step::Event(Event::ToolChange { .. }) => {
                         tool_loaded = true;
                         // Machines stop the spindle for a tool change.
@@ -603,6 +661,83 @@ mod tests {
         assert!(matches!(
             program(steps).validate(),
             Err(ToolpathError::SpindleOff(_))
+        ));
+    }
+
+    #[test]
+    fn the_table_turns_only_with_the_tool_home_and_the_spindle_stopped() {
+        let index = || {
+            Step::Event(Event::Index {
+                axis: String::from("B"),
+                angle: 180.0,
+            })
+        };
+        let off = Step::Event(Event::SpindleOff);
+        // Home, turn, new offset, then a rapid: fine.
+        let mut steps = ready();
+        steps.extend([
+            off.clone(),
+            Step::Event(Event::Home),
+            index(),
+            Step::Event(Event::WorkOffset { offset: 2 }),
+            Step::Move(Move::Rapid {
+                to: p(0.0, 0.0, 10.0),
+            }),
+        ]);
+        program(steps).validate().unwrap();
+
+        // Not home.
+        let mut steps = ready();
+        steps.extend([off.clone(), index()]);
+        assert!(matches!(
+            program(steps).validate(),
+            Err(ToolpathError::NotHome(_))
+        ));
+        // A move after going home.
+        let mut steps = ready();
+        steps.extend([
+            off.clone(),
+            Step::Event(Event::Home),
+            Step::Move(Move::Rapid {
+                to: p(0.0, 0.0, 10.0),
+            }),
+            index(),
+        ]);
+        assert!(matches!(
+            program(steps).validate(),
+            Err(ToolpathError::NotHome(_))
+        ));
+        // Spindle running.
+        let mut steps = ready();
+        steps.push(Step::Event(Event::Home));
+        assert!(matches!(
+            program(steps).validate(),
+            Err(ToolpathError::SpindleRunning(_))
+        ));
+        // After going home the position is unknown: no cutting before a rapid.
+        let mut steps = ready();
+        steps.extend([
+            off,
+            Step::Event(Event::Home),
+            Step::Event(Event::SpindleOn {
+                rpm: 1000.0,
+                direction: SpindleDirection::Clockwise,
+            }),
+            Step::Move(Move::Linear {
+                to: p(0.0, 0.0, 0.0),
+                feed: 100.0,
+            }),
+        ]);
+        assert!(matches!(
+            program(steps).validate(),
+            Err(ToolpathError::UnknownStart(_))
+        ));
+        // A bad offset.
+        let mut steps = ready();
+        steps.push(Step::Event(Event::WorkOffset { offset: 7 }));
+        assert!(matches!(
+            program(steps).validate(),
+            Err(ToolpathError::BadWorkOffset(7))
         ));
     }
 }

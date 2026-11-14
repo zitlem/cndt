@@ -61,8 +61,13 @@ tool_change = [
     "G53 G49 Z0.",
     "T{tool} M6",
 ]
-# Applied with the first Z move after every tool change.
+# Applied with the first Z move after every tool change, and after going home.
 tool_length_compensation = "G43 H{tool}"
+# Clear of the part, before the operator turns it over.
+home = [
+    "G53 G49 Z0.",
+    "G53 Y0.",
+]
 
 [cycles]
 retract = "G98"

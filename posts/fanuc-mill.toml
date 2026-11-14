@@ -56,8 +56,13 @@ tool_change = [
     "G90",
     "T{tool} M6",
 ]
-# Applied with the first Z move after every tool change.
+# Applied with the first Z move after every tool change, and after going home.
 tool_length_compensation = "G43 H{tool}"
+# Clear of the part, before the operator turns it over.
+home = [
+    "G91 G28 Z0.",
+    "G90",
+]
 
 [cycles]
 # Back to the starting height between holes, so the tool clears clamps.

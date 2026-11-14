@@ -188,6 +188,15 @@ pub struct Codes {
     /// tool's length applied. Leave out for controllers without it.
     #[serde(default)]
     pub tool_length_compensation: Option<String>,
+    /// Lines that move the tool to its safe position clear of the part,
+    /// before an operator turns it over or the table indexes. Leave out and
+    /// programs that need it are refused.
+    #[serde(default)]
+    pub home: Vec<String>,
+    /// Turns a rotary axis, such as `G0 {axis}{angle}`. Uses `{axis}` and
+    /// `{angle}` (degrees). Leave out for machines without one.
+    #[serde(default)]
+    pub index: Option<String>,
 }
 
 /// Why posting failed.
@@ -290,7 +299,13 @@ impl Post {
                             index + 1
                         ))
                     })?,
-                    Step::Event(event) => out.event(event),
+                    Step::Event(event) => out.event(event).map_err(|reason| {
+                        PostError::Unsupported(format!(
+                            "{}, step {}: {reason}",
+                            operation.name,
+                            index + 1
+                        ))
+                    })?,
                 }
             }
         }
@@ -369,6 +384,18 @@ fn check_definition(def: &PostDefinition) -> Result<(), PostError> {
                 .tool_change
                 .iter()
                 .map(|line| ("codes.tool_change", line.as_str(), &["tool"][..])),
+        )
+        .chain(
+            def.codes
+                .home
+                .iter()
+                .map(|line| ("codes.home", line.as_str(), &[][..])),
+        )
+        .chain(
+            def.codes
+                .index
+                .iter()
+                .map(|line| ("codes.index", line.as_str(), &["axis", "angle"][..])),
         )
         .chain([
             ("codes.rapid", def.codes.rapid.as_str(), &[][..]),
@@ -512,6 +539,8 @@ struct Output<'a> {
     pending_length_compensation: Option<u32>,
     /// The spindle speed last set, for rigid tapping.
     rpm: f64,
+    /// The tool in the spindle, to compensate again after going home.
+    tool: Option<u32>,
 }
 
 impl<'a> Output<'a> {
@@ -526,6 +555,7 @@ impl<'a> Output<'a> {
             feed: None,
             pending_length_compensation: None,
             rpm: 0.0,
+            tool: None,
         }
     }
 
@@ -878,7 +908,7 @@ impl<'a> Output<'a> {
         Ok(())
     }
 
-    fn event(&mut self, event: &Event) {
+    fn event(&mut self, event: &Event) -> Result<(), String> {
         let codes = self.def.codes.clone();
         match event {
             Event::ToolChange {
@@ -890,9 +920,39 @@ impl<'a> Output<'a> {
                     self.block(&fill(line, &[("tool", &tool.to_string())]));
                 }
                 self.reset_modal();
+                self.tool = Some(*tool);
                 if codes.tool_length_compensation.is_some() {
                     self.pending_length_compensation = Some(*tool);
                 }
+            }
+            Event::Home => {
+                if codes.home.is_empty() {
+                    return Err(String::from(
+                        "it has no home lines to move the tool clear of the part",
+                    ));
+                }
+                for line in &codes.home {
+                    self.block(line);
+                }
+                self.reset_modal();
+                self.position = None;
+                // The way home may cancel or change the length offset: apply
+                // it again with the first Z move.
+                if codes.tool_length_compensation.is_some() {
+                    self.pending_length_compensation = self.tool;
+                }
+            }
+            Event::Index { axis, angle } => {
+                let Some(template) = &codes.index else {
+                    return Err(format!("it cannot turn a rotary axis ({axis})"));
+                };
+                let angle = number(*angle, self.def.format.decimals, true, true);
+                self.block(&fill(template, &[("axis", axis), ("angle", &angle)]));
+            }
+            Event::WorkOffset { offset } => {
+                self.block(&format!("G{}", 53 + u32::from(*offset)));
+                self.reset_modal();
+                self.position = None;
             }
             Event::SpindleOn { rpm, direction } => {
                 let template = match direction {
@@ -915,6 +975,7 @@ impl<'a> Output<'a> {
             }),
             Event::Comment { text } => self.comment(text),
         }
+        Ok(())
     }
 
     fn finish(self) -> String {

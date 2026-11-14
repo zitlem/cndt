@@ -453,7 +453,19 @@ impl Registry {
                         name: "side",
                         kind: ArgKind::Text,
                         required: true,
-                        description: "top, or bottom for the part flipped about X.",
+                        description: "top, or bottom for the part turned over.",
+                    },
+                    ArgSpec {
+                        name: "flip_about",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "For the bottom: x (the default) or y, the model axis the part is turned about. A horizontal's B table turns it about the upright axis.",
+                    },
+                    ArgSpec {
+                        name: "index",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "B angle in degrees (0 to under 360) when the rotary table, not the operator, turns this side to the spindle.",
                     },
                     ArgSpec {
                         name: "work_offset",
@@ -486,6 +498,20 @@ impl Registry {
                             name,
                             side: side(args)?,
                             work_offset,
+                            flip_about: if args.contains_key("flip_about") {
+                                match text(args, "flip_about")?.as_str() {
+                                    "x" => cndt_model::cam::FlipAxis::X,
+                                    "y" => cndt_model::cam::FlipAxis::Y,
+                                    other => {
+                                        return Err(format!(
+                                            "unknown flip axis {other:?}; use x or y"
+                                        ));
+                                    }
+                                }
+                            } else {
+                                cndt_model::cam::FlipAxis::X
+                            },
+                            index: optional_number(args, "index")?,
                         },
                     )
                 },

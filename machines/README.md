@@ -16,15 +16,17 @@ Each `.toml` file here describes one machine: which way its spindle points, how 
 | `[travel]` | `x`, `y`, `z` in mm |
 | `[spindle]` | `max_rpm`, `taper`, `rigid_tapping` |
 | `[magazine]` | `pockets`: the highest tool number |
-| `[[rotary]]` | `axis`, `around` (`X`, `Y` or `Z`), `index` (smallest step in degrees, 0 for a fully interpolating axis). Described, not yet used |
+| `[[rotary]]` | `axis`, `around` (`X`, `Y` or `Z`), `index` (smallest step in degrees, 0 for a fully interpolating axis). Used for indexing between setups |
 
 A misspelled field fails to load, so a typo can never silently drop a limit.
 
 ## What the check catches
 
+- any post other than the machine's own (a Fanuc post's M29 is a robot request on a Mazak)
 - a spindle speed above `max_rpm`
 - a tool number of 0 or above `pockets`
 - tapping on a machine without rigid tapping
-- a program longer along an axis than that axis travels
+- a program longer along an axis than that axis travels, each side on its own work offset measured alone
+- a turn of a rotary axis the machine does not have, or not in whole index steps
 
 It does not know where the part sits on the machine, so a program that fits can still run out of travel if the work offset is near a limit. Simulation (Phase 3) will check that.

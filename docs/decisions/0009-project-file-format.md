@@ -95,3 +95,7 @@ Chamfer milling operations in a setup: `{"type": "chamfer", "face": "<face name>
 ## Version 14 (2026-11-13)
 
 Pocket operations may carry a finishing allowance: `"finish": <mm>`. The roughing leaves that much on the walls and one full-depth climbing lap takes it off. Older builds refuse files that use it with the update message; files without it are unchanged.
+
+## Version 15 (2026-11-13)
+
+A setup may say how the part reaches it (decision 0015): `"flip_about": "y"` for a bottom side turned about model Y instead of X (as an HMC's B table turns a part standing on the pallet), and `"index": <degrees>` for the B angle when the table, not the operator, turns that side to the spindle. Both are left out when unused. Older builds refuse files that use them with the update message; files without them are unchanged.

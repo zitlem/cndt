@@ -182,6 +182,20 @@ impl Machine {
                             self.magazine.pockets
                         ));
                     }
+                    Step::Event(Event::Index { axis, angle }) => {
+                        if let Err(reason) = self.check_index(axis, *angle) {
+                            return limit(reason);
+                        }
+                        // Each side has its own work offset: measure each alone.
+                        self.check_extent(&extent)?;
+                        extent = Extent::default();
+                        position = None;
+                    }
+                    Step::Event(Event::WorkOffset { .. }) => {
+                        self.check_extent(&extent)?;
+                        extent = Extent::default();
+                        position = None;
+                    }
                     Step::Move(Move::Rapid { to } | Move::Linear { to, .. }) => {
                         extent.add(*to);
                         position = Some(*to);
@@ -218,6 +232,11 @@ impl Machine {
                 }
             }
         }
+        self.check_extent(&extent)
+    }
+
+    /// The program's extent along each axis against that axis's travel.
+    fn check_extent(&self, extent: &Extent) -> Result<(), MachineError> {
         let travel = self.travel;
         for (axis, size, limit) in [
             ("X", extent.size(|p| p.x), travel.x),
@@ -226,8 +245,27 @@ impl Machine {
         ] {
             if size > limit {
                 return Err(MachineError::Limit(format!(
-                    "the program spans {size:.3} mm in {axis}, more than the {name}'s {limit} mm of travel"
+                    "the program spans {size:.3} mm in {axis}, more than the {}'s {limit} mm of travel",
+                    self.machine.name
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a turn of a rotary axis to `angle` degrees.
+    fn check_index(&self, axis: &str, angle: f64) -> Result<(), String> {
+        let name = &self.machine.name;
+        let Some(rotary) = self.rotary.iter().find(|r| r.axis == axis) else {
+            return Err(format!("the {name} has no {axis} axis"));
+        };
+        if rotary.index > 0.0 {
+            let steps = angle / rotary.index;
+            if (steps - steps.round()).abs() > 1e-6 {
+                return Err(format!(
+                    "{axis}{angle} is not a whole number of the {name}'s {}° steps",
+                    rotary.index
+                ));
             }
         }
         Ok(())
@@ -357,6 +395,39 @@ mod tests {
         ]);
         let error = machine.check(&arc).unwrap_err().to_string();
         assert!(error.contains("spans 732.000 mm"), "{error}");
+    }
+
+    #[test]
+    fn the_table_turns_in_its_own_steps() {
+        let machine = Machine::from_toml(MAZAK).unwrap();
+        let index = |axis: &str, angle: f64| {
+            program(vec![
+                Step::Event(Event::Home),
+                Step::Event(Event::Index {
+                    axis: axis.into(),
+                    angle,
+                }),
+            ])
+        };
+        machine.check(&index("B", 180.0)).unwrap();
+        let error = machine.check(&index("B", 90.5)).unwrap_err().to_string();
+        assert!(error.contains("whole number"), "{error}");
+        let error = machine.check(&index("A", 90.0)).unwrap_err().to_string();
+        assert!(error.contains("no A axis"), "{error}");
+        // Each side is measured alone: two 500 mm sides fit.
+        let two_sides = program(vec![
+            rapid(0.0, 0.0, 5.0),
+            rapid(500.0, 0.0, 5.0),
+            Step::Event(Event::Home),
+            Step::Event(Event::Index {
+                axis: "B".into(),
+                angle: 180.0,
+            }),
+            Step::Event(Event::WorkOffset { offset: 2 }),
+            rapid(-500.0, 0.0, 5.0),
+            rapid(0.0, 0.0, 5.0),
+        ]);
+        machine.check(&two_sides).unwrap();
     }
 
     #[test]

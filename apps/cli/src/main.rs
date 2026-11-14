@@ -21,10 +21,11 @@ project files:
   commands                                  list the commands exec accepts
 
 other:
-  post <file.cndt> [post] [setup] [--machine <id>]
+  post <file.cndt> [post] [setup] [--machine <id>] [--setups <id,id,...>]
                                             print G-code for a setup (post: fanuc-mill, haas-mill,
                                             linuxcnc-mill, mazak-smoothg or grbl; setup id); with a
-                                            machine (mazak-hcn-5000), check its limits first
+                                            machine (mazak-hcn-5000), check its limits first; with
+                                            --setups, several sides in one program
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
   version                                   show the CNDT and geometry kernel versions
@@ -36,15 +37,31 @@ example:
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut machine = None;
-    if let Some(at) = args.iter().position(|a| *a == "--machine") {
-        if args.first() != Some(&"post") || at + 1 >= args.len() {
-            eprintln!("{USAGE}");
+    let mut options = [("--machine", None), ("--setups", None)];
+    for (flag, value) in &mut options {
+        if let Some(at) = args.iter().position(|a| a == flag) {
+            if args.first() != Some(&"post") || at + 1 >= args.len() {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+            *value = Some(args[at + 1]);
+            args.drain(at..=at + 1);
+        }
+    }
+    let [(_, machine), (_, setups)] = options;
+    let setups = match setups.map(|list| {
+        list.split(',')
+            .map(|id| id.trim().parse::<u32>())
+            .collect::<Result<Vec<_>, _>>()
+    }) {
+        Some(Err(_)) => {
+            eprintln!("--setups takes setup ids separated by commas, such as 0,1");
             return ExitCode::from(2);
         }
-        machine = Some(args[at + 1]);
-        args.drain(at..=at + 1);
-    }
+        Some(Ok(ids)) => Some(ids),
+        None => None,
+    };
+    let target = Target { machine, setups };
     let result = match args.as_slice() {
         ["new", path] => new(Path::new(path), None),
         ["new", path, name] => new(Path::new(path), Some(name)),
@@ -53,10 +70,10 @@ fn main() -> ExitCode {
         ["exec", path, command, arguments] => exec(Path::new(path), command, arguments),
         ["commands"] => commands(),
         ["info", path] => info(Path::new(path)),
-        ["post", path] => post(Path::new(path), "fanuc-mill", machine, None),
-        ["post", path, id] => post(Path::new(path), id, machine, None),
+        ["post", path] => post(Path::new(path), "fanuc-mill", &target, None),
+        ["post", path, id] => post(Path::new(path), id, &target, None),
         ["post", path, id, setup] => match setup.parse::<u32>() {
-            Ok(setup) => post(Path::new(path), id, machine, Some(setup)),
+            Ok(setup) => post(Path::new(path), id, &target, Some(setup)),
             Err(_) => Err(format!("{setup:?} is not a setup id")),
         },
         ["api"] => serve_stdin(),
@@ -120,12 +137,21 @@ fn new(path: &Path, name: Option<&str>) -> Result<(), String> {
 
 /// Prints G-code to standard output and notes to standard error, so
 /// `cndt post part.cndt > part.nc` gives a clean program file.
-fn post(path: &Path, id: &str, machine: Option<&str>, setup: Option<u32>) -> Result<(), String> {
+/// What `post` writes for, beyond the post itself.
+struct Target<'a> {
+    machine: Option<&'a str>,
+    setups: Option<Vec<u32>>,
+}
+
+fn post(path: &Path, id: &str, target: &Target<'_>, setup: Option<u32>) -> Result<(), String> {
     let mut api = Api::new();
     open(&mut api, path)?;
     let mut request = json!({"method": "post", "post": id});
-    if let Some(machine) = machine {
+    if let Some(machine) = target.machine {
         request["machine"] = json!(machine);
+    }
+    if let Some(setups) = &target.setups {
+        request["setups"] = json!(setups);
     }
     if let Some(setup) = setup {
         request["setup"] = json!(setup);

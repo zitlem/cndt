@@ -7,10 +7,14 @@
 #
 # Written from the general Fanuc-style dialect that Mazak's EIA/ISO mode
 # reads and Mazak's public G-code list (G84.2 synchronous tapping); not
-# derived from any vendor post. Before the first run, check against a
-# program that already runs on the machine: the tool-change sequence, the
-# synchronous tapping format and the program end. On a horizontal machine
-# Z is the spindle axis, so "up" is away from the pallet.
+# derived from any vendor post. The way to the tool change position (G53 Z0,
+# then G30 for Z, Y and X) follows the owner's MACH1 generators for their
+# Mazak horizontals (github.com/zitlem/MACH1, GPL-3.0). Note that M29 is a
+# robot request on a Mazak, not rigid tapping: never run Fanuc-post output
+# here. Before the first run, check the tool-change sequence, the
+# synchronous tapping format, the B index and the program end on the
+# machine. On a horizontal machine Z is the spindle axis, so "up" is away
+# from the pallet.
 #
 # The work offset is G54 to G59, which on SmoothG are the same offsets as
 # the Mazatrol WPC table.
@@ -36,14 +40,18 @@ program_number_digits = 4
 first_line = "O{program_number} ({program_name})"
 start = [
     "{header}",
-    "G0 G17 G21 G40 G49 G80 G90 G94",
+    # As in the owner's MACH1 programs, metric.
+    "G21 G17 G40 G49 G80 G90 G94",
     "{work_offset}",
 ]
 end = [
     "M9",
     "M5",
-    # Spindle back from the work to its reference position.
-    "G91 G28 Z0.",
+    # Spindle back from the work, then to the tool change position.
+    "G53 Z0.",
+    "G91 G30 Z0.",
+    "G30 Y0.",
+    "G30 X0.",
     "G90",
     "M30",
 ]
@@ -65,13 +73,28 @@ optional_stop = "M1"
 dwell = "G4 P{milliseconds}"
 tool_change = [
     "M5",
-    # Spindle back from the work before the changer moves in.
-    "G91 G28 Z0.",
+    # Spindle back from the work, then to the tool change position.
+    "G53 Z0.",
+    "G91 G30 Z0.",
+    "G30 Y0.",
+    "G30 X0.",
     "G90",
     "T{tool} M6",
 ]
-# Applied with the first Z move after every tool change.
+# Applied with the first Z move after every tool change, and after going home.
 tool_length_compensation = "G43 H{tool}"
+# The tool change position: clear of the part before the table turns or the
+# operator turns the part.
+home = [
+    "G53 Z0.",
+    "G91 G30 Z0.",
+    "G30 Y0.",
+    "G30 X0.",
+    "G90",
+]
+# The B table to a face. Check on the machine whether it clamps on its own
+# or needs a clamp code.
+index = "G0 {axis}{angle}"
 
 [cycles]
 retract = "G98"

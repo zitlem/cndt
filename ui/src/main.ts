@@ -488,15 +488,17 @@ const TARGETS: Target[] = [
 ];
 let chosenTarget = MAZAK_HCN_5000;
 
-async function postSetup(setup: number, name: string): Promise<void> {
+/** Posts one setup, or all of them as one program when `setup` is a list. */
+async function postSetup(setup: number | number[], name: string): Promise<void> {
   const { post, machine } = chosenTarget;
+  const which = Array.isArray(setup) ? { setups: setup } : { setup };
   const path = await save({
     title: "Save G-code",
     defaultPath: `${name}.nc`,
     filters: [{ name: "G-code", extensions: ["nc", "tap", "ngc"] }],
   });
   if (!path) return;
-  const result = await request<{ gcode: string; notes: string[] }>({ method: "post", post, machine, setup, path });
+  const result = await request<{ gcode: string; notes: string[] }>({ method: "post", post, machine, ...which, path });
   const lines = result.gcode.split("\n").length;
   const notes = result.notes.length > 0 ? ` Notes: ${result.notes.join(" ")}` : "";
   showError(new Error(`Saved ${lines} lines of UNVERIFIED G-code. Prove it out carefully.${notes}`));
@@ -506,6 +508,7 @@ function renderSetups(state: DocumentState): void {
   const setups = state.document.cam?.setups ?? [];
   ui.setupList.replaceChildren();
   ui.noSetups.hidden = setups.length > 0;
+  element("cam-post-all").hidden = setups.length < 2;
   for (const { id, setup } of setups) {
     const item = globalThis.document.createElement("li");
     item.classList.toggle("showing", shownSetup === id);
@@ -513,7 +516,8 @@ function renderSetups(state: DocumentState): void {
     head.className = "head";
     const name = globalThis.document.createElement("span");
     name.className = "name";
-    name.textContent = `${setup.name} · G${53 + setup.work_offset}`;
+    const table = setup.index === undefined ? "" : ` · B${setup.index}`;
+    name.textContent = `${setup.name} · G${53 + setup.work_offset}${table}`;
     const show = globalThis.document.createElement("button");
     show.type = "button";
     show.className = "secondary";
@@ -1182,7 +1186,15 @@ element("cam-add-top").addEventListener(
   guarded(async () => {
     // The first setup also brings the test block's stock allowances.
     if (!current?.document.cam?.stock) render(await execute("cam.set_stock", { side: 2, top: 2, bottom: 3 }));
-    render(await execute("cam.add_setup", { side: "top" }));
+    const setups = current?.document.cam?.setups?.length ?? 0;
+    const table = element<HTMLSelectElement>("cam-turn").value === "table";
+    // On the B table each side keeps its own offset, set at its angle.
+    render(
+      await execute(
+        "cam.add_setup",
+        table ? { side: "top", index: 0, work_offset: Math.min(setups + 1, 6) } : { side: "top" },
+      ),
+    );
   }),
 );
 element("cam-add-bottom").addEventListener(
@@ -1190,7 +1202,21 @@ element("cam-add-bottom").addEventListener(
   guarded(async () => {
     if (!current?.document.cam?.stock) render(await execute("cam.set_stock", { side: 2, top: 2, bottom: 3 }));
     const setups = current?.document.cam?.setups?.length ?? 0;
-    render(await execute("cam.add_setup", { side: "bottom", work_offset: Math.min(setups + 1, 6) }));
+    const table = element<HTMLSelectElement>("cam-turn").value === "table";
+    // The B table turns a part standing on the pallet about its upright
+    // axis, model Y.
+    const turn = table ? { index: 180, flip_about: "y" } : {};
+    render(await execute("cam.add_setup", { side: "bottom", work_offset: Math.min(setups + 1, 6), ...turn }));
+  }),
+);
+element("cam-post-all").addEventListener(
+  "click",
+  guarded(async () => {
+    const setups = current?.document.cam?.setups ?? [];
+    await postSetup(
+      setups.map((s) => s.id),
+      `${current?.document.name ?? "part"} all sides`,
+    );
   }),
 );
 viewer.canvas.addEventListener("pointermove", (event) => {
