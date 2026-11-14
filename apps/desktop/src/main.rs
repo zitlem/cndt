@@ -13,6 +13,8 @@
 //!   documented on `cndt_api::EDGES_MAGIC`.
 //! - `toolpath_preview`: a setup's toolpath for the 3D view, in the layout
 //!   documented on `cndt_api::Api::toolpath_preview`.
+//! - `simulation_mesh`: a setup's simulated stock, as
+//!   `cndt_api::Api::simulation_mesh` describes.
 //!
 //! Both run off the main thread, so a slow import never freezes the window.
 
@@ -86,6 +88,15 @@ fn toolpath_preview(setup: Option<u32>, state: State<'_, AppState>) -> Result<Re
         .map_err(|error| error.message)
 }
 
+#[tauri::command(async)]
+fn simulation_mesh(setup: Option<u32>, state: State<'_, AppState>) -> Result<Response, String> {
+    state
+        .api()
+        .simulation_mesh(setup)
+        .map(Response::new)
+        .map_err(|error| error.message)
+}
+
 /// Tauri's generated startup context uses `HashMap` internally. It is
 /// configuration loading, not anything that reaches a toolpath or a file, so
 /// the determinism rule (architecture rule 11) does not apply to it.
@@ -103,7 +114,8 @@ fn main() {
             step_preview,
             body_mesh,
             body_edges,
-            toolpath_preview
+            toolpath_preview,
+            simulation_mesh
         ])
         .run(context());
     if let Err(error) = result {

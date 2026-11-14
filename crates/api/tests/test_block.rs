@@ -735,6 +735,78 @@ fn the_cndt_test_block() {
     let reply = s.call(json!({"method": "post", "post": "grbl", "machine": "lathe"}));
     assert_eq!(reply["error"]["kind"], "unknown_machine", "{reply}");
 
+    // Stock simulation (decision 0016). Setup 1: no rapid touches the
+    // stock. Two cuts go below the model, both real: the dowel drill's
+    // point under the modelled flat bottom, and the chamfer cone rounding
+    // the sharp mitred corners where the keyway meets the front edge. The
+    // 6 mm end mill leaves its radius in the keyway's square inside corners.
+    let reply = s.call(json!({"method": "simulate", "setup": 0, "cell": 0.5}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let report = &reply["result"];
+    assert_eq!(report["collisions"], json!([]), "{report}");
+    let gouged: Vec<&str> = report["gouges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["operation"].as_str().unwrap())
+        .collect();
+    assert_eq!(gouged, ["Drill 7.8 mm", "Chamfer 0.5 mm"], "{report}");
+    assert!(report["gouges"][0]["depth"].as_f64().unwrap() > 2.0);
+    assert!(report["gouges"][1]["depth"].as_f64().unwrap() < 0.2);
+    let left = report["left"].as_f64().unwrap();
+    assert!(left > 5.0 && left < 6.0, "{report}");
+    let at = &report["left_at"];
+    let near = |v: &Value, target: f64| (v.as_f64().unwrap() - target).abs() < 1.0;
+    assert!(
+        (near(&at["x"], 43.0) || near(&at["x"], 53.0)) && near(&at["y"], 10.0),
+        "{report}"
+    );
+    let minutes = report["cut_minutes"].as_f64().unwrap();
+    assert!(minutes > 5.0 && minutes < 7.0, "{report}");
+    // The simulated stock for the 3D view: triangles classed as clean (0),
+    // material left (1), gouged (2) or off the part (3).
+    let classes = |mesh: &[u8]| {
+        let word = |at: usize| u32::from_le_bytes(mesh[at..at + 4].try_into().unwrap()) as usize;
+        let (v, t) = (word(8), word(12));
+        assert_eq!(word(16), 4);
+        let faces = 20 + 12 * v + 12 * t;
+        let mut count = [0_usize; 4];
+        for k in 0..t {
+            count[word(faces + 4 * k)] += 1;
+        }
+        count
+    };
+    let mesh = s.api.simulation_mesh(Some(0)).unwrap();
+    assert_eq!(&mesh[..8], b"CNDTMSH1");
+    let count = classes(&mesh);
+    assert!(
+        count[0] > 0 && count[1] > 0 && count[2] > 0 && count[3] > 0,
+        "{count:?}"
+    );
+    // Setup 2 cuts cleanly, and finishes its faces.
+    let reply = s.call(json!({"method": "simulate", "setup": 1, "cell": 0.5}));
+    let report = &reply["result"];
+    assert_eq!(report["collisions"], json!([]), "{reply}");
+    assert_eq!(report["gouges"], json!([]), "{reply}");
+    assert!(report["left"].as_f64().unwrap() < 0.05, "{reply}");
+    let count = classes(&s.api.simulation_mesh(Some(1)).unwrap());
+    assert_eq!((count[1], count[2]), (0, 0), "{count:?}");
+    // Without the facing, the pocket's rapid down to Z0.5 runs into the
+    // 2 mm of stock still on top.
+    let face_op = s.state()["document"]["cam"]["setups"][0]["setup"]["operations"][0]["id"].clone();
+    s.exec(
+        "cam.remove_operation",
+        json!({"setup": 0, "operation": face_op}),
+    );
+    let reply = s.call(json!({"method": "simulate", "setup": 0, "cell": 0.5}));
+    let first = &reply["result"]["collisions"][0];
+    assert_eq!(first["operation"], "Pocket 8 mm deep", "{reply}");
+    assert!(
+        (first["depth"].as_f64().unwrap() - 1.5).abs() < 1e-9,
+        "{reply}"
+    );
+    s.call(json!({"method": "undo"}));
+
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
     s.call(json!({"method": "save_as", "path": path}));

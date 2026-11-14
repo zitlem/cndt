@@ -355,6 +355,7 @@ dependencies = [
  "cndt-model",
  "cndt-post",
  "cndt-process-mill",
+ "cndt-sim",
  "serde",
  "serde_json",
 ]
@@ -457,6 +458,15 @@ dependencies = [
  "cndt-geom",
  "cndt-kernel",
  "cndt-model",
+]
+
+[[package]]
+name = "cndt-sim"
+version = "0.0.0"
+dependencies = [
+ "cndt-cam-core",
+ "cndt-geom",
+ "serde",
 ]
 
 [[package]]

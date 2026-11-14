@@ -42,6 +42,9 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <gp_Ax1.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
+#include <gp_Lin.hxx>
+#include <limits>
 #include <GProp_GProps.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS_Edge.hxx>
@@ -1476,6 +1479,59 @@ int cndt_occt_section_outline(
             return kModelFailed;
         }
         *out = segments.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// For each (x, y) in `xy` (n pairs), where a line along Z first meets the
+// solid: coming down from above when `from_above` is nonzero, up from below
+// otherwise. NaN where the line misses it. Used to compare simulated stock
+// with the exact part, without tessellation error.
+int cndt_occt_heights(
+    const cndt_shape* shape,
+    const double* xy,
+    std::size_t n,
+    int from_above,
+    double* out,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || (n > 0 && (xy == nullptr || out == nullptr))) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    try {
+        silence_console_output();
+        Bnd_Box box;
+        BRepBndLib::Add(shape->shape, box);
+        if (box.IsVoid()) {
+            set_error(err, err_len, "the part is empty");
+            return kModelFailed;
+        }
+        double x0, y0, z0, x1, y1, z1;
+        box.Get(x0, y0, z0, x1, y1, z1);
+        const double start = from_above ? z1 + 1.0 : z0 - 1.0;
+        const double reach = (z1 - z0) + 2.0;
+        const gp_Dir dir(0.0, 0.0, from_above ? -1.0 : 1.0);
+        IntCurvesFace_ShapeIntersector intersector;
+        intersector.Load(shape->shape, 1e-7);
+        for (std::size_t i = 0; i < n; ++i) {
+            const double x = xy[2 * i];
+            const double y = xy[2 * i + 1];
+            out[i] = std::numeric_limits<double>::quiet_NaN();
+            if (!std::isfinite(x) || !std::isfinite(y)) {
+                continue;
+            }
+            intersector.PerformNearest(gp_Lin(gp_Pnt(x, y, start), dir), 0.0, reach);
+            if (intersector.IsDone() && intersector.NbPnt() > 0) {
+                out[i] = intersector.Pnt(1).Z();
+            }
+        }
         return kOk;
     } catch (const Standard_Failure& failure) {
         set_error(err, err_len, failure.GetMessageString());

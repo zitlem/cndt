@@ -27,6 +27,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0013](0013-phase-2-plan.md) | Phase 2 plan: programming the test block | Accepted |
 | [0014](0014-cam-data-in-the-document.md) | CAM data lives in the document | Accepted |
 | [0015](0015-machine-definitions.md) | Machine definitions | Accepted |
+| [0016](0016-phase-3-plan.md) | Phase 3 plan: trust before the first cut | Accepted |
 
 ## Open decisions
 
