@@ -134,7 +134,14 @@ export interface Cam {
   tools?: Record<string, { kind: { type: string }; diameter: number; description: string }>;
   setups?: {
     id: number;
-    setup: { name: string; side: "top" | "bottom"; work_offset: number; operations: { id: number; operation: CamOperation }[] };
+    setup: {
+      name: string;
+      side: "top" | "bottom";
+      work_offset: number;
+      flip_about?: "x" | "y";
+      index?: number;
+      operations: { id: number; operation: CamOperation }[];
+    };
   }[];
 }
 

@@ -347,6 +347,7 @@ dependencies = [
 name = "cndt-api"
 version = "0.0.0"
 dependencies = [
+ "cndt-cam-core",
  "cndt-engine",
  "cndt-format",
  "cndt-geom",
@@ -364,6 +365,7 @@ version = "0.0.0"
 dependencies = [
  "cndt-geom",
  "serde",
+ "toml 1.2.1+spec-1.1.0",
 ]
 
 [[package]]

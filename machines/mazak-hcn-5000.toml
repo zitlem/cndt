@@ -1,0 +1,40 @@
+# Mazak HCN-5000 horizontal machining centre with a Mazatrol SmoothG
+# control (decision 0015).
+#
+# UNVERIFIED: these values come from public listings of the HCN-5000, which
+# vary by model year and options, and are set to the most cautious figures
+# found. Check every one against the machine's own specification plate or
+# manual, then set `verified = true` and say who checked and when.
+#
+# On a horizontal machine Z is the spindle axis, pointing out of the pallet
+# towards the spindle, so programs look the same as on a vertical machine.
+
+[machine]
+id = "mazak-hcn-5000"
+name = "Mazak HCN-5000 (SmoothG)"
+layout = "horizontal"
+post = "mazak-smoothg"
+verified = false
+
+[travel]
+# Listed as 730 mm on X and Y, and 740 to 800 mm on Z depending on the year.
+x = 730.0
+y = 730.0
+z = 740.0
+
+[spindle]
+# Listed as 12,000 rpm on older machines and 18,000 rpm on newer ones.
+max_rpm = 12000.0
+taper = "CAT40"
+rigid_tapping = true
+
+[magazine]
+# Listings show 80 and 120 pockets; 40 is assumed until checked.
+pockets = 40
+
+[[rotary]]
+# The table under the pallet. The indexing step depends on the options
+# fitted; 1 degree is assumed until checked.
+axis = "B"
+around = "Y"
+index = 1.0

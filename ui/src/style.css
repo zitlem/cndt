@@ -858,7 +858,24 @@ button:disabled {
 /* Manufacture */
 .cam-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.cam-actions select {
+  flex: 1 0 100%;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.cam-actions button {
+  flex: 1;
+}
+
+#cam-post-all {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 11px;
 }
 
 .cam-actions button,

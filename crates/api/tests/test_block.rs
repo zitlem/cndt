@@ -605,6 +605,135 @@ fn the_cndt_test_block() {
             .contains("rigid tapping"),
         "{reply}"
     );
+    // The Mazak HCN-5000 (decision 0015): both setups fit its limits and
+    // post with its own post.
+    for (setup, golden) in [
+        (0, "test-block-setup-1-mazak-smoothg"),
+        (1, "test-block-setup-2-mazak-smoothg"),
+    ] {
+        let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": setup}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        let notes = reply["result"]["notes"].to_string();
+        assert!(notes.contains("definition is unverified"), "{notes}");
+        let gcode = reply["result"]["gcode"].as_str().unwrap();
+        assert_eq!(gcode.matches("G84.2 ").count(), usize::from(setup == 0));
+        check_golden(golden, gcode);
+    }
+    // Another controller's codes are refused: the Fanuc post's M29 is a
+    // robot request on a Mazak.
+    let reply = s.call(
+        json!({"method": "post", "post": "fanuc-mill", "machine": "mazak-hcn-5000", "setup": 0}),
+    );
+    assert_eq!(reply["error"]["kind"], "machine", "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("takes the mazak-smoothg post"),
+        "{reply}"
+    );
+
+    // Both sides in one program, the part turned over by hand: the tool
+    // goes home and the program stops before the second side, on G55.
+    let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setups": [0, 1]}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let turned = reply["result"]["gcode"].as_str().unwrap();
+    assert!(
+        turned.contains("\n(TURN THE PART OVER, CLAMP IT, SET G55 AND RESTART: SETUP 2 BOTTOM)\n"),
+        "{turned}"
+    );
+    assert_eq!(turned.lines().filter(|l| l.ends_with(" M0")).count(), 1);
+    check_golden("test-block-both-sides-turned-mazak-smoothg", turned);
+
+    // Both sides on the B table: the part stands on the pallet, so turning
+    // it to its bottom is a turn about model Y. Each side has its own
+    // offset, set at its B angle.
+    let ops = |s: &mut Session, setup: usize| -> Value {
+        Value::Array(
+            s.state()["document"]["cam"]["setups"][setup]["setup"]["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| o["operation"].clone())
+                .collect(),
+        )
+    };
+    let (top_ops, bottom_ops) = (ops(&mut s, 0), ops(&mut s, 1));
+    let state = s.exec(
+        "cam.add_setup",
+        json!({"side": "top", "work_offset": 3, "index": 0, "name": "B0 top"}),
+    );
+    let setups = state["document"]["cam"]["setups"].as_array().unwrap();
+    let b0 = setups.last().unwrap()["id"].as_u64().unwrap();
+    s.exec(
+        "cam.add_operations",
+        json!({"setup": b0, "operations": top_ops}),
+    );
+    let state = s.exec(
+        "cam.add_setup",
+        json!({"side": "bottom", "flip_about": "y", "work_offset": 4, "index": 180, "name": "B180 bottom"}),
+    );
+    let setups = state["document"]["cam"]["setups"].as_array().unwrap();
+    let b180 = setups.last().unwrap()["id"].as_u64().unwrap();
+    s.exec(
+        "cam.add_operations",
+        json!({"setup": b180, "operations": bottom_ops}),
+    );
+    let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setups": [b0, b180]}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let indexed = reply["result"]["gcode"].as_str().unwrap();
+    let b_lines: Vec<&str> = indexed
+        .lines()
+        .filter(|l| l.starts_with('N') && l.contains(" B"))
+        .map(|l| l.split_once(' ').unwrap().1)
+        .collect();
+    assert_eq!(b_lines, ["G0 B0.", "G0 B180."], "{indexed}");
+    assert!(
+        !indexed.lines().any(|l| l.ends_with(" M0")),
+        "no stop on the table"
+    );
+    check_golden("test-block-both-sides-indexed-mazak-smoothg", indexed);
+    // The B180 side alone turns the table there first.
+    let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": b180}));
+    let alone = reply["result"]["gcode"].as_str().unwrap();
+    assert!(alone.contains(" G0 B180.\n"), "{reply}");
+    // A post for a machine without a B table refuses.
+    let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setups": [b0, b180]}));
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot turn a rotary axis (B)"),
+        "{reply}"
+    );
+    let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "setups": [b0, b0]}));
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("listed twice"),
+        "{reply}"
+    );
+    // A tool faster than the spindle gives no G-code.
+    s.exec(
+        "cam.set_tool",
+        json!({"number": 12, "kind": "end_mill", "diameter": 6, "rpm": 15000, "feed": 900}),
+    );
+    let reply = s.call(
+        json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": 0}),
+    );
+    assert_eq!(reply["error"]["kind"], "machine", "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("15000 rpm is faster than the Mazak HCN-5000 (SmoothG)'s 12000 rpm"),
+        "{reply}"
+    );
+    assert!(reply["result"].is_null(), "{reply}");
+    s.call(json!({"method": "undo"}));
+    let reply = s.call(json!({"method": "post", "post": "grbl", "machine": "lathe"}));
+    assert_eq!(reply["error"]["kind"], "unknown_machine", "{reply}");
 
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));

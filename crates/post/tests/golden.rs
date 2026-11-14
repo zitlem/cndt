@@ -248,6 +248,11 @@ fn haas_mill_matches_golden() {
 }
 
 #[test]
+fn mazak_smoothg_matches_golden() {
+    check_golden("mazak-smoothg");
+}
+
+#[test]
 fn linuxcnc_mill_matches_golden() {
     check_golden("linuxcnc-mill");
 }
@@ -256,10 +261,90 @@ fn linuxcnc_mill_matches_golden() {
 fn canned_cycles_match_golden() {
     compare("fanuc-mill", "fanuc-mill-cycles", &cycles(true));
     compare("haas-mill", "haas-mill-cycles", &cycles(true));
+    // Mazak taps synchronously with G84.2.
+    compare("mazak-smoothg", "mazak-smoothg-cycles", &cycles(true));
     // LinuxCNC taps with G33.1, one hole at a time.
     compare("linuxcnc-mill", "linuxcnc-mill-cycles", &cycles(true));
     // GRBL has no canned cycles: they are written out as moves.
     compare("grbl", "grbl-cycles", &cycles(false));
+}
+
+/// Two sides of a part: the first face, then either a turn of the B table
+/// or a stop for the operator to turn the part, then the second face on
+/// its own work offset with the same tool.
+fn two_sides(indexed: bool) -> Program {
+    let side = |name: &str| Operation {
+        name: name.to_owned(),
+        steps: vec![
+            Step::Event(Event::SpindleOn {
+                rpm: 6000.0,
+                direction: SpindleDirection::Clockwise,
+            }),
+            rapid(-30.0, 0.0, 5.0),
+            rapid(-30.0, 0.0, 0.0),
+            cut(70.0, 0.0, 0.0, 800.0),
+            rapid(70.0, 0.0, 5.0),
+            Step::Event(Event::SpindleOff),
+        ],
+    };
+    let mut first = side("Face side 1");
+    first.steps.insert(
+        0,
+        Step::Event(Event::ToolChange {
+            number: 1,
+            description: String::from("50 mm face mill"),
+        }),
+    );
+    let mut turn = vec![Step::Event(Event::Home)];
+    if indexed {
+        turn.push(Step::Event(Event::Index {
+            axis: String::from("B"),
+            angle: 180.0,
+        }));
+    } else {
+        turn.push(Step::Event(Event::Comment {
+            text: String::from("Turn the part over and clamp it"),
+        }));
+        turn.push(Step::Event(Event::ProgramStop { optional: false }));
+    }
+    turn.push(Step::Event(Event::WorkOffset { offset: 2 }));
+    Program {
+        name: String::from("Plate both sides"),
+        number: 1002,
+        work_offset: 1,
+        operations: vec![
+            first,
+            Operation {
+                name: String::from(if indexed { "B180" } else { "Turn the part" }),
+                steps: turn,
+            },
+            side("Face side 2"),
+        ],
+    }
+}
+
+#[test]
+fn two_sides_match_golden() {
+    // The B table turns, and the length offset comes back after going home.
+    compare("mazak-smoothg", "mazak-smoothg-indexed", &two_sides(true));
+    // The operator turns the part.
+    compare("fanuc-mill", "fanuc-mill-turned", &two_sides(false));
+}
+
+#[test]
+fn posts_refuse_what_their_machine_cannot_do() {
+    let error = load("fanuc-mill")
+        .run(&two_sides(true), APP_VERSION)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("cannot turn a rotary axis (B)"),
+        "{error}"
+    );
+    // GRBL has no safe home position to go to.
+    let error = load("grbl")
+        .run(&two_sides(false), APP_VERSION)
+        .unwrap_err();
+    assert!(error.to_string().contains("no home lines"), "{error}");
 }
 
 #[test]
@@ -283,7 +368,7 @@ fn every_shipped_post_loads() {
             count += 1;
         }
     }
-    assert!(count >= 4);
+    assert!(count >= 5);
 }
 
 #[test]
@@ -297,7 +382,13 @@ fn output_is_deterministic() {
 
 #[test]
 fn every_program_carries_the_safety_header() {
-    for id in ["fanuc-mill", "grbl", "haas-mill", "linuxcnc-mill"] {
+    for id in [
+        "fanuc-mill",
+        "grbl",
+        "haas-mill",
+        "linuxcnc-mill",
+        "mazak-smoothg",
+    ] {
         let output = load(id).run(&sample(), "0.1.0").unwrap();
         let upper = output.to_ascii_uppercase();
         assert!(upper.contains("CNDT 0.1.0"), "{id}");

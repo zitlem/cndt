@@ -154,8 +154,30 @@ pub struct Stock {
 pub enum Side {
     /// As modelled: the spindle looks down model −Z.
     Top,
-    /// Flipped about X: the spindle looks up model +Z.
+    /// Turned over: the spindle looks up model +Z. Turned about model X
+    /// unless the setup says Y.
     Bottom,
+}
+
+/// The model axis a part turns about to show its bottom to the spindle.
+/// Turned over by hand on a vertical machine it is usually X; turned by the
+/// B table of a horizontal machine, it is the axis standing upright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlipAxis {
+    /// About model X: the back edge comes to the front.
+    #[default]
+    X,
+    /// About model Y: the right edge comes to the left.
+    Y,
+}
+
+impl FlipAxis {
+    /// `true` for the default, so files only store the other one.
+    #[must_use]
+    pub fn is_x(&self) -> bool {
+        *self == Self::X
+    }
 }
 
 /// An operation in a setup.
@@ -228,6 +250,14 @@ pub struct SetupDef {
     pub side: Side,
     /// 1 (G54) to 6 (G59).
     pub work_offset: u8,
+    /// For the bottom side: the model axis the part is turned about.
+    #[serde(default, skip_serializing_if = "FlipAxis::is_x")]
+    pub flip_about: FlipAxis,
+    /// The rotary table's B angle in degrees for this side, when the part
+    /// stays clamped and the table turns it to the spindle. `None` when the
+    /// part is clamped by hand for this setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<f64>,
     /// In machining order.
     pub operations: Vec<OperationEntry>,
 }
@@ -274,6 +304,10 @@ pub enum CamEdit {
         side: Side,
         /// 1 (G54) to 6 (G59).
         work_offset: u8,
+        /// For the bottom side: the axis it is turned about.
+        flip_about: FlipAxis,
+        /// The B angle, when the table turns the part to the spindle.
+        index: Option<f64>,
     },
     /// Removes a setup and its operations.
     RemoveSetup(u32),
@@ -343,6 +377,8 @@ impl Cam {
                 name,
                 side,
                 work_offset,
+                flip_about,
+                index,
             } => {
                 if self.tools.is_empty() {
                     self.tools = default_tools();
@@ -364,6 +400,8 @@ impl Cam {
                         name,
                         side,
                         work_offset,
+                        flip_about,
+                        index,
                         operations: Vec::new(),
                     },
                 });
@@ -489,6 +527,14 @@ impl Cam {
             {
                 return Err(format!("setup {} needs a plain-text name", entry.id));
             }
+            if let Some(angle) = setup.index
+                && !(angle.is_finite() && (0.0..360.0).contains(&angle))
+            {
+                return Err(format!(
+                    "setup {}'s B angle must be from 0 up to 360 degrees, not {angle}",
+                    entry.id
+                ));
+            }
             for op in &setup.operations {
                 if op.id >= self.next_operation || !operation_ids.insert(op.id) {
                     return Err(format!("operation {} has a damaged id", op.id));
@@ -512,6 +558,8 @@ mod tests {
                 name: String::new(),
                 side: Side::Top,
                 work_offset: 1,
+                flip_about: FlipAxis::X,
+                index: None,
             })
             .unwrap()
             .unwrap();
@@ -541,8 +589,20 @@ mod tests {
                     name: String::new(),
                     side: Side::Bottom,
                     work_offset: 7,
+                    flip_about: FlipAxis::X,
+                    index: None,
                 },
                 "work offset",
+            ),
+            (
+                CamEdit::AddSetup {
+                    name: String::new(),
+                    side: Side::Bottom,
+                    work_offset: 2,
+                    flip_about: FlipAxis::Y,
+                    index: Some(360.0),
+                },
+                "B angle",
             ),
             (
                 CamEdit::RemoveOperation {

@@ -11,7 +11,7 @@ Phase 1 models the CNDT test block end to end (decision 0010). Phase 2 must turn
 
 | Choice | Default | Why |
 | --- | --- | --- |
-| Machine | Generic 3-axis vertical machining centre, metric | The test block is a 3-axis part |
+| Machine | Generic 3-axis vertical machining centre, metric. The owner has since named a Mazak HCN-5000 with SmoothG (decision 0015) | The test block is a 3-axis part |
 | Controller dialect | Fanuc-style (`posts/fanuc-mill.toml`), which Haas also reads | The most common dialect; canned cycles G81 to G85 |
 | Second post | GRBL (`posts/grbl.toml`): cycles expanded into moves, no rigid tapping | Hobby routers; proves posts without cycles work |
 | Work offset | G54, origin at the part's front-left corner, Z0 on the finished top face | Easy to set with an edge finder and a probe |

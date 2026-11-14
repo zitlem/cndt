@@ -264,10 +264,15 @@
           <p id="no-features" class="muted">No features yet.</p>
           <h2 class="panel-title">Manufacture</h2>
           <div class="cam-actions">
+            <select id="cam-turn" title="How the part is turned to each side">
+              <option value="hand">Turned by hand</option>
+              <option value="table">Turned by the B table</option>
+            </select>
             <button id="cam-add-top" type="button" class="secondary">+ Setup, top</button>
             <button id="cam-add-bottom" type="button" class="secondary">+ Setup, bottom</button>
           </div>
           <ol id="setup-list" class="setup-list"></ol>
+          <button id="cam-post-all" type="button" class="secondary" hidden>Post all setups as one program…</button>
           <p id="no-setups" class="muted">No setups yet. Add one to program the part.</p>
           <h2 id="model-title" class="panel-title">Model</h2>
           <div id="model-empty" class="muted">No model loaded.</div>

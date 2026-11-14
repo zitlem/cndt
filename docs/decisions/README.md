@@ -24,6 +24,9 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0010](0010-first-user-story.md) | First user story: the CNDT test block | Accepted |
 | [0011](0011-constraint-solver.md) | Sketch constraint solver adapted from CADCraft | Accepted |
 | [0012](0012-stable-references.md) | Stable references through edits, the Fusion 360 way | Accepted |
+| [0013](0013-phase-2-plan.md) | Phase 2 plan: programming the test block | Accepted |
+| [0014](0014-cam-data-in-the-document.md) | CAM data lives in the document | Accepted |
+| [0015](0015-machine-definitions.md) | Machine definitions | Accepted |
 
 ## Open decisions
 

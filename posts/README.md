@@ -8,6 +8,7 @@ Each `.toml` file here turns CNDT's neutral toolpaths into G-code for one contro
 | `grbl.toml` | GRBL routers and mills | No |
 | `haas-mill.toml` | Haas milling (Fanuc-style, rigid G84 without M29) | No |
 | `linuxcnc-mill.toml` | LinuxCNC milling (rigid tapping with G33.1) | No |
+| `mazak-smoothg.toml` | Mazak SmoothG in EIA/ISO mode (G30 tool change position, synchronous tapping with G84.2, B table index) | No |
 
 **Unverified posts have never run on a real controller.** Every program they produce says so in its header. Prove out any program carefully before running it: see [docs/safety.md](../docs/safety.md).
 
@@ -28,6 +29,9 @@ Each `.toml` file here turns CNDT's neutral toolpaths into G-code for one contro
 | `codes.spindle_cw`, `codes.spindle_ccw` | `{rpm}` |
 | `codes.dwell` | `{seconds}`, `{milliseconds}` |
 | `codes.tool_change`, `codes.tool_length_compensation` | `{tool}` |
+| `codes.index` | `{axis}`, `{angle}` |
+
+`codes.home` lists the lines that take the tool clear of the part before the operator turns it over or the table turns (both optional). A post without `home` refuses programs that need it, and one without `index` refuses to turn a rotary axis. After going home, tool length compensation is applied again with the first Z move.
 
 A misspelled field or placeholder makes the post fail to load, so a typo can never silently produce wrong G-code.
 

@@ -62,6 +62,8 @@ tool_change = [
     "T{tool} M6",
 ]
 tool_length_compensation = "G43 H{tool}"
+# Clear of the part, before the operator turns it over.
+home = ["G53 G0 Z0"]
 
 [cycles]
 retract = "G98"

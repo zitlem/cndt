@@ -19,7 +19,7 @@ use cndt_cam_core::{
     Step,
 };
 use cndt_geom::Point3;
-use cndt_model::cam::{OperationDef, SetupDef, Side};
+use cndt_model::cam::{FlipAxis, OperationDef, SetupDef, Side};
 use cndt_model::{Document, Feature, FrameStatus, HoleDepth, Rebuilt, threads};
 
 pub use cndt_model::cam::{Tool, ToolKind};
@@ -57,10 +57,15 @@ impl ToolLibrary {
 pub struct Setup {
     /// The work-offset origin in model coordinates. For the top side,
     /// program X, Y and Z are model coordinates minus this; for the bottom
-    /// side (flipped about X), program Y and Z are mirrored.
+    /// side turned about X, program Y and Z are mirrored; turned about Y,
+    /// program X and Z.
     pub origin: Point3,
     /// Which side faces the spindle.
     pub side: Side,
+    /// For the bottom side: the model axis the part was turned about.
+    pub flip_about: FlipAxis,
+    /// The B table's angle for this side, if the table turns it.
+    pub index: Option<f64>,
     /// Work offset, 1 (G54) to 6 (G59).
     pub work_offset: u8,
     /// Height above the origin for moves between holes.
@@ -78,6 +83,8 @@ impl Setup {
         Some(Self {
             origin: Point3::new(bounds.min.x, bounds.min.y, bounds.max.z),
             side: Side::Top,
+            flip_about: FlipAxis::X,
+            index: None,
             work_offset: 1,
             safe_z: 10.0,
             clearance: 2.0,
@@ -89,14 +96,18 @@ impl Setup {
     #[must_use]
     pub fn from_def(def: &SetupDef, rebuilt: &Rebuilt) -> Option<Self> {
         let bounds = rebuilt.properties?.bounds;
-        let origin = match def.side {
-            Side::Top => Point3::new(bounds.min.x, bounds.min.y, bounds.max.z),
-            // Flipped about X: the old back edge is now at the front.
-            Side::Bottom => Point3::new(bounds.min.x, bounds.max.y, bounds.min.z),
+        let origin = match (def.side, def.flip_about) {
+            (Side::Top, _) => Point3::new(bounds.min.x, bounds.min.y, bounds.max.z),
+            // Turned about X: the old back edge is now at the front.
+            (Side::Bottom, FlipAxis::X) => Point3::new(bounds.min.x, bounds.max.y, bounds.min.z),
+            // Turned about Y: the old right edge is now on the left.
+            (Side::Bottom, FlipAxis::Y) => Point3::new(bounds.max.x, bounds.min.y, bounds.min.z),
         };
         Some(Self {
             origin,
             side: def.side,
+            flip_about: def.flip_about,
+            index: def.index,
             work_offset: def.work_offset,
             safe_z: 10.0,
             clearance: 2.0,
@@ -108,18 +119,24 @@ impl Setup {
     #[must_use]
     pub fn model_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
-        match self.side {
-            Side::Top => Point3::new(p.x + o.x, p.y + o.y, p.z + o.z),
-            Side::Bottom => Point3::new(p.x + o.x, o.y - p.y, o.z - p.z),
+        match (self.side, self.flip_about) {
+            (Side::Top, _) => Point3::new(p.x + o.x, p.y + o.y, p.z + o.z),
+            (Side::Bottom, FlipAxis::X) => Point3::new(p.x + o.x, o.y - p.y, o.z - p.z),
+            (Side::Bottom, FlipAxis::Y) => Point3::new(o.x - p.x, p.y + o.y, o.z - p.z),
         }
     }
 
     /// A model point in program coordinates.
     pub fn program_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
-        match self.side {
-            Side::Top => Point3::new(round3(p.x - o.x), round3(p.y - o.y), round3(p.z - o.z)),
-            Side::Bottom => Point3::new(round3(p.x - o.x), round3(o.y - p.y), round3(o.z - p.z)),
+        match (self.side, self.flip_about) {
+            (Side::Top, _) => Point3::new(round3(p.x - o.x), round3(p.y - o.y), round3(p.z - o.z)),
+            (Side::Bottom, FlipAxis::X) => {
+                Point3::new(round3(p.x - o.x), round3(o.y - p.y), round3(o.z - p.z))
+            }
+            (Side::Bottom, FlipAxis::Y) => {
+                Point3::new(round3(o.x - p.x), round3(p.y - o.y), round3(o.z - p.z))
+            }
         }
     }
 
@@ -150,6 +167,8 @@ pub enum CamError {
     NoStock,
     /// A contour cannot be made; says why.
     Contour(String),
+    /// Setups cannot be joined into one program; says why.
+    Join(String),
 }
 
 impl fmt::Display for CamError {
@@ -160,6 +179,7 @@ impl fmt::Display for CamError {
             Self::Nothing => write!(f, "the part has no holes this setup can make"),
             Self::UnknownSetup(id) => write!(f, "there is no setup {id}"),
             Self::Contour(reason) => write!(f, "the contour cannot be made: {reason}"),
+            Self::Join(reason) => write!(f, "the setups cannot share one program: {reason}"),
             Self::NoStock => write!(f, "facing needs the stock; set it first (cam.set_stock)"),
             Self::NoSetups => write!(
                 f,
@@ -527,7 +547,7 @@ fn face(
     };
     let [length, width, _] = bounds.size();
     // The stock outline in program coordinates (the same for both sides:
-    // flipping about X maps the box onto itself).
+    // turning about X or Y maps the box onto itself).
     let (x_min, x_max) = (-stock.side, length + stock.side);
     let (y_min, y_max) = (-stock.side, width + stock.side);
     let r = cutter.diameter / 2.0;
@@ -1782,6 +1802,125 @@ pub fn plan_setup(
             .ok_or(CamError::UnknownSetup(id))?,
         None => cam.setups.first().ok_or(CamError::NoSetups)?,
     };
+    let mut planned = plan_entry(document, rebuilt, kernel, entry)?;
+    // A side the table turns to: turn it there first, whatever B was.
+    if let Some(angle) = entry.setup.index {
+        planned.program.operations.insert(
+            0,
+            Operation {
+                name: format!("Table to B{}", round3(angle)),
+                steps: vec![
+                    Step::Event(Event::Home),
+                    Step::Event(Event::Index {
+                        axis: String::from("B"),
+                        angle,
+                    }),
+                ],
+            },
+        );
+    }
+    Ok(planned)
+}
+
+/// Joins several setups into one program, in the order given (decision
+/// 0015). Between two setups the spindle and coolant stop and the tool goes
+/// home; then, for a setup with a B angle, the table turns it to the
+/// spindle, and for one without, the program stops for the operator to turn
+/// the part. Each setup keeps its own work offset.
+///
+/// # Errors
+///
+/// As [`plan_setup`], and [`CamError::Join`] when a setup is listed twice
+/// or two sides the table turns to share a work offset.
+pub fn plan_setups(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    setup_ids: &[u32],
+) -> Result<Planned, CamError> {
+    let cam = document.cam();
+    let mut entries = Vec::new();
+    for id in setup_ids {
+        if setup_ids.iter().filter(|other| *other == id).count() > 1 {
+            return Err(CamError::Join(format!("setup {id} is listed twice")));
+        }
+        entries.push(
+            cam.setups
+                .iter()
+                .find(|e| e.id == *id)
+                .ok_or(CamError::UnknownSetup(*id))?,
+        );
+    }
+    let Some((first, rest)) = entries.split_first() else {
+        return Err(CamError::NoSetups);
+    };
+    for (i, a) in entries.iter().enumerate() {
+        for b in &entries[i + 1..] {
+            if a.setup.index.is_some()
+                && b.setup.index.is_some()
+                && a.setup.work_offset == b.setup.work_offset
+            {
+                return Err(CamError::Join(format!(
+                    "{} and {} are both turned to by the table and share G{}; give each side its own work offset",
+                    a.setup.name,
+                    b.setup.name,
+                    53 + u32::from(a.setup.work_offset)
+                )));
+            }
+        }
+    }
+    let mut planned = plan_setup(document, rebuilt, kernel, Some(first.id))?;
+    planned.setup = None;
+    let mut names = vec![first.setup.name.clone()];
+    for entry in rest {
+        let next = plan_entry(document, rebuilt, kernel, entry)?;
+        let def = &entry.setup;
+        let mut steps = vec![
+            Step::Event(Event::SpindleOff),
+            Step::Event(Event::Coolant {
+                mode: cndt_cam_core::Coolant::Off,
+            }),
+            Step::Event(Event::Home),
+        ];
+        let name = if let Some(angle) = def.index {
+            steps.push(Step::Event(Event::Index {
+                axis: String::from("B"),
+                angle,
+            }));
+            format!("Table to B{} for {}", round3(angle), def.name)
+        } else {
+            steps.push(Step::Event(Event::Comment {
+                text: format!(
+                    "Turn the part over, clamp it, set G{} and restart: {}",
+                    53 + u32::from(def.work_offset),
+                    def.name
+                ),
+            }));
+            steps.push(Step::Event(Event::ProgramStop { optional: false }));
+            format!("Turn the part for {}", def.name)
+        };
+        steps.push(Step::Event(Event::WorkOffset {
+            offset: def.work_offset,
+        }));
+        planned.program.operations.push(Operation { name, steps });
+        planned.program.operations.extend(next.program.operations);
+        planned
+            .notes
+            .extend(next.notes.into_iter().map(|n| format!("{}: {n}", def.name)));
+        names.push(def.name.clone());
+    }
+    planned.program.name = format!("{} {}", document.name(), names.join(" + "));
+    Ok(planned)
+}
+
+/// One stored setup's operations, without any table turn.
+fn plan_entry(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    entry: &cndt_model::cam::SetupEntry,
+) -> Result<Planned, CamError> {
+    let cam = document.cam();
     let setup = Setup::from_def(&entry.setup, rebuilt).ok_or(CamError::NoPart)?;
     let library = ToolLibrary {
         tools: cam.tools.clone(),
@@ -2069,6 +2208,8 @@ mod tests {
                 name: String::new(),
                 side: Side::Top,
                 work_offset: 1,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
             })
             .unwrap()
             .unwrap();
@@ -2082,6 +2223,8 @@ mod tests {
                 name: String::new(),
                 side: Side::Bottom,
                 work_offset: 2,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
             })
             .unwrap()
             .unwrap();
@@ -2109,6 +2252,40 @@ mod tests {
     }
 
     #[test]
+    fn turned_about_y_the_right_edge_comes_to_the_left() {
+        let mut d = block_with_bottom_hole();
+        let under = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Bottom,
+                work_offset: 2,
+                flip_about: FlipAxis::Y,
+                index: Some(180.0),
+            })
+            .unwrap()
+            .unwrap();
+        d.edit_cam(CamEdit::AddOperation {
+            setup: under,
+            operation: OperationDef::Holes,
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        let bounds = r.properties.unwrap().bounds;
+        // Model x = 10 is program x = length − 10; y stays.
+        let planned = plan_setup(&d, &r, &OpenCascade, Some(under)).unwrap();
+        let spot = first_cycle(&planned);
+        let x = bounds.max.x - bounds.min.x - 10.0;
+        assert_eq!(spot.holes, vec![Point3::new(x, 10.0, 0.0)]);
+        // And back again.
+        let def = &d.cam().setups[0].setup;
+        let setup = Setup::from_def(def, &r).unwrap();
+        let p = Point3::new(12.5, -3.0, 7.0);
+        let back = setup.model_point(setup.program_point(p));
+        assert!((back.x - p.x).abs() < 1e-9 && (back.y - p.y).abs() < 1e-9);
+        assert!((back.z - p.z).abs() < 1e-9);
+    }
+
+    #[test]
     fn facing_covers_the_stock_and_never_plunges_into_it() {
         let mut d = block_with_bottom_hole();
         let top = d
@@ -2116,6 +2293,8 @@ mod tests {
                 name: String::new(),
                 side: Side::Top,
                 work_offset: 1,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
             })
             .unwrap()
             .unwrap();
@@ -2177,6 +2356,8 @@ mod tests {
                 name: String::new(),
                 side: Side::Bottom,
                 work_offset: 2,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
             })
             .unwrap()
             .unwrap();
@@ -2203,6 +2384,8 @@ mod tests {
                 name: String::new(),
                 side: Side::Top,
                 work_offset: 1,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
             })
             .unwrap()
             .unwrap();
