@@ -248,6 +248,11 @@ fn haas_mill_matches_golden() {
 }
 
 #[test]
+fn mazak_smoothg_matches_golden() {
+    check_golden("mazak-smoothg");
+}
+
+#[test]
 fn linuxcnc_mill_matches_golden() {
     check_golden("linuxcnc-mill");
 }
@@ -256,6 +261,8 @@ fn linuxcnc_mill_matches_golden() {
 fn canned_cycles_match_golden() {
     compare("fanuc-mill", "fanuc-mill-cycles", &cycles(true));
     compare("haas-mill", "haas-mill-cycles", &cycles(true));
+    // Mazak taps synchronously with G84.2.
+    compare("mazak-smoothg", "mazak-smoothg-cycles", &cycles(true));
     // LinuxCNC taps with G33.1, one hole at a time.
     compare("linuxcnc-mill", "linuxcnc-mill-cycles", &cycles(true));
     // GRBL has no canned cycles: they are written out as moves.
@@ -283,7 +290,7 @@ fn every_shipped_post_loads() {
             count += 1;
         }
     }
-    assert!(count >= 4);
+    assert!(count >= 5);
 }
 
 #[test]
@@ -297,7 +304,13 @@ fn output_is_deterministic() {
 
 #[test]
 fn every_program_carries_the_safety_header() {
-    for id in ["fanuc-mill", "grbl", "haas-mill", "linuxcnc-mill"] {
+    for id in [
+        "fanuc-mill",
+        "grbl",
+        "haas-mill",
+        "linuxcnc-mill",
+        "mazak-smoothg",
+    ] {
         let output = load(id).run(&sample(), "0.1.0").unwrap();
         let upper = output.to_ascii_uppercase();
         assert!(upper.contains("CNDT 0.1.0"), "{id}");

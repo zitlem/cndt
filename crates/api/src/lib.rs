@@ -84,8 +84,14 @@ pub enum Request {
     /// post. Replies `{gcode, notes}`; with `path`, also writes the G-code
     /// there.
     Post {
-        /// `fanuc-mill`, `haas-mill`, `linuxcnc-mill` or `grbl`.
+        /// `fanuc-mill`, `haas-mill`, `linuxcnc-mill`, `mazak-smoothg` or
+        /// `grbl`.
         post: String,
+        /// A shipped machine, such as `mazak-hcn-5000`, to check the program
+        /// against first (decision 0015). A program that breaks one of its
+        /// limits produces no G-code.
+        #[serde(default)]
+        machine: Option<String>,
         /// The setup's id; the first setup if left out.
         #[serde(default)]
         setup: Option<u32>,
@@ -264,7 +270,36 @@ const SHIPPED_POSTS: &[(&str, &str)] = &[
         "linuxcnc-mill",
         include_str!("../../../posts/linuxcnc-mill.toml"),
     ),
+    (
+        "mazak-smoothg",
+        include_str!("../../../posts/mazak-smoothg.toml"),
+    ),
 ];
+
+/// The machine definitions that ship with CNDT (`machines/`, decision 0015).
+const SHIPPED_MACHINES: &[(&str, &str)] = &[(
+    "mazak-hcn-5000",
+    include_str!("../../../machines/mazak-hcn-5000.toml"),
+)];
+
+/// Reads a shipped machine definition by id.
+fn shipped_machine(id: &str) -> Result<cndt_cam_core::Machine, ApiError> {
+    let text = SHIPPED_MACHINES
+        .iter()
+        .find(|(name, _)| *name == id)
+        .map(|(_, text)| *text)
+        .ok_or_else(|| {
+            let names: Vec<&str> = SHIPPED_MACHINES.iter().map(|(name, _)| *name).collect();
+            ApiError::new(
+                "unknown_machine",
+                format!(
+                    "there is no machine {id:?}; use one of {}",
+                    names.join(", ")
+                ),
+            )
+        })?;
+    cndt_cam_core::Machine::from_toml(text).map_err(|e| ApiError::new("internal", e.to_string()))
+}
 
 /// The first bytes of a toolpath preview buffer.
 pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH1";
@@ -339,7 +374,13 @@ impl Api {
     }
 
     /// Plans the hole program for the current part and posts it.
-    fn post(&self, id: &str, setup: Option<u32>, path: Option<&Path>) -> Result<Value, ApiError> {
+    fn post(
+        &self,
+        id: &str,
+        machine: Option<&str>,
+        setup: Option<u32>,
+        path: Option<&Path>,
+    ) -> Result<Value, ApiError> {
         let text = SHIPPED_POSTS
             .iter()
             .find(|(name, _)| *name == id)
@@ -360,6 +401,25 @@ impl Api {
             setup,
         )
         .map_err(|e| ApiError::new("cam", e.to_string()))?;
+        let mut notes = planned.notes;
+        if let Some(machine) = machine {
+            let machine = shipped_machine(machine)?;
+            machine
+                .check(&planned.program)
+                .map_err(|e| ApiError::new("machine", e.to_string()))?;
+            if machine.machine.post != id {
+                notes.push(format!(
+                    "The {} is normally used with the {} post, not {id}.",
+                    machine.machine.name, machine.machine.post
+                ));
+            }
+            if !machine.machine.verified {
+                notes.push(format!(
+                    "The {} definition is unverified: check its limits on the machine.",
+                    machine.machine.name
+                ));
+            }
+        }
         let gcode = post
             .run(&planned.program, env!("CARGO_PKG_VERSION"))
             .map_err(|e| ApiError::new("post", e.to_string()))?;
@@ -368,7 +428,7 @@ impl Api {
                 ApiError::new("io", format!("cannot write {}: {e}", path.display()))
             })?;
         }
-        Ok(serde_json::json!({ "gcode": gcode, "notes": planned.notes }))
+        Ok(serde_json::json!({ "gcode": gcode, "notes": notes }))
     }
 
     /// A setup's toolpath for drawing, in model coordinates. Layout,
@@ -523,8 +583,13 @@ impl Api {
                     Err(error) => failure(ApiError::new("internal", error.to_string())),
                 };
             }
-            Request::Post { post, setup, path } => {
-                return match self.post(&post, setup, path.as_deref()) {
+            Request::Post {
+                post,
+                machine,
+                setup,
+                path,
+            } => {
+                return match self.post(&post, machine.as_deref(), setup, path.as_deref()) {
                     Ok(value) => success(value),
                     Err(error) => failure(error),
                 };
@@ -666,7 +731,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("state", &[]),
     ("commands", &[]),
     ("step_info", &["path"]),
-    ("post", &["post", "setup", "path"]),
+    ("post", &["post", "machine", "setup", "path"]),
     ("detect", &["setup"]),
 ];
 

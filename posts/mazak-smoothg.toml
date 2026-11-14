@@ -1,0 +1,85 @@
+# Mazak machining centres on Mazatrol SmoothG and similar controls, in
+# EIA/ISO (G-code) mode. Mazatrol conversational programs are not produced.
+#
+# UNVERIFIED: this post has not been run on a real controller. Do not set
+# `verified = true` until its output has cut a test part on the named
+# controller, and record that run as docs/safety.md describes.
+#
+# Written from the general Fanuc-style dialect that Mazak's EIA/ISO mode
+# reads and Mazak's public G-code list (G84.2 synchronous tapping); not
+# derived from any vendor post. Before the first run, check against a
+# program that already runs on the machine: the tool-change sequence, the
+# synchronous tapping format and the program end. On a horizontal machine
+# Z is the spindle axis, so "up" is away from the pallet.
+#
+# The work offset is G54 to G59, which on SmoothG are the same offsets as
+# the Mazatrol WPC table.
+
+[post]
+id = "mazak-smoothg"
+name = "Mazak SmoothG (EIA/ISO)"
+version = "0.1.0"
+verified = false
+
+[format]
+decimals = 3
+feed_decimals = 1
+trim_zeros = true
+# As on Fanuc, a coordinate without a point may be read in thousandths.
+keep_decimal_point = true
+line_numbers = { start = 10, step = 10 }
+comment = { open = "(", close = ")", uppercase = true }
+percent_wrapped = true
+program_number_digits = 4
+
+[program]
+first_line = "O{program_number} ({program_name})"
+start = [
+    "{header}",
+    "G0 G17 G21 G40 G49 G80 G90 G94",
+    "{work_offset}",
+]
+end = [
+    "M9",
+    "M5",
+    # Spindle back from the work to its reference position.
+    "G91 G28 Z0.",
+    "G90",
+    "M30",
+]
+
+[codes]
+rapid = "G0"
+linear = "G1"
+arc_cw = "G2"
+arc_ccw = "G3"
+spindle_cw = "M3 S{rpm}"
+spindle_ccw = "M4 S{rpm}"
+spindle_off = "M5"
+coolant_flood = "M8"
+coolant_mist = "M7"
+coolant_off = "M9"
+stop = "M0"
+optional_stop = "M1"
+# Without a decimal point, P is in milliseconds.
+dwell = "G4 P{milliseconds}"
+tool_change = [
+    "M5",
+    # Spindle back from the work before the changer moves in.
+    "G91 G28 Z0.",
+    "G90",
+    "T{tool} M6",
+]
+# Applied with the first Z move after every tool change.
+tool_length_compensation = "G43 H{tool}"
+
+[cycles]
+retract = "G98"
+drill = "G81 X{x} Y{y} Z{z} R{r} F{feed}"
+peck = "G83 X{x} Y{y} Z{z} R{r} Q{peck} F{feed}"
+# Synchronous (rigid) tapping. With G94, F is the spindle speed times the
+# pitch, in mm/min.
+tap = "G84.2 X{x} Y{y} Z{z} R{r} F{feed}"
+ream = "G85 X{x} Y{y} Z{z} R{r} F{feed}"
+repeat = "X{x} Y{y}"
+cancel = "G80"

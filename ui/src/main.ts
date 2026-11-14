@@ -462,24 +462,41 @@ async function showToolpath(setup: number | null): Promise<void> {
   if (current) renderSetups(current);
 }
 
-/** The shipped posts, and the one the next Post… uses. */
-const POSTS: [string, string][] = [
-  ["fanuc-mill", "Fanuc"],
-  ["haas-mill", "Haas"],
-  ["linuxcnc-mill", "LinuxCNC"],
-  ["grbl", "GRBL"],
+/**
+ * What the Post… button writes for: a shipped machine (its post, with the
+ * program checked against its limits first, decision 0015) or a bare post.
+ */
+interface Target {
+  key: string;
+  label: string;
+  post: string;
+  machine?: string;
+}
+const MAZAK_HCN_5000: Target = {
+  key: "mazak-hcn-5000",
+  label: "Mazak HCN-5000",
+  post: "mazak-smoothg",
+  machine: "mazak-hcn-5000",
+};
+const TARGETS: Target[] = [
+  MAZAK_HCN_5000,
+  { key: "fanuc-mill", label: "Fanuc", post: "fanuc-mill" },
+  { key: "haas-mill", label: "Haas", post: "haas-mill" },
+  { key: "linuxcnc-mill", label: "LinuxCNC", post: "linuxcnc-mill" },
+  { key: "mazak-smoothg", label: "Mazak SmoothG", post: "mazak-smoothg" },
+  { key: "grbl", label: "GRBL", post: "grbl" },
 ];
-let chosenPost = "fanuc-mill";
+let chosenTarget = MAZAK_HCN_5000;
 
 async function postSetup(setup: number, name: string): Promise<void> {
-  const post = chosenPost;
+  const { post, machine } = chosenTarget;
   const path = await save({
     title: "Save G-code",
     defaultPath: `${name}.nc`,
     filters: [{ name: "G-code", extensions: ["nc", "tap", "ngc"] }],
   });
   if (!path) return;
-  const result = await request<{ gcode: string; notes: string[] }>({ method: "post", post, setup, path });
+  const result = await request<{ gcode: string; notes: string[] }>({ method: "post", post, machine, setup, path });
   const lines = result.gcode.split("\n").length;
   const notes = result.notes.length > 0 ? ` Notes: ${result.notes.join(" ")}` : "";
   showError(new Error(`Saved ${lines} lines of UNVERIFIED G-code. Prove it out carefully.${notes}`));
@@ -508,16 +525,16 @@ function renderSetups(state: DocumentState): void {
     post.textContent = "Post…";
     post.addEventListener("click", guarded(() => postSetup(id, `${state.document.name} ${setup.name}`)));
     const controller = globalThis.document.createElement("select");
-    controller.title = "Controller the Post… button writes for";
-    for (const [value, label] of POSTS) {
+    controller.title = "Machine or controller the Post… button writes for";
+    for (const target of TARGETS) {
       const option = globalThis.document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      option.selected = value === chosenPost;
+      option.value = target.key;
+      option.textContent = target.label;
+      option.selected = target === chosenTarget;
       controller.append(option);
     }
     controller.addEventListener("change", () => {
-      chosenPost = controller.value;
+      chosenTarget = TARGETS.find((t) => t.key === controller.value) ?? MAZAK_HCN_5000;
       if (current) renderSetups(current);
     });
     const remove = globalThis.document.createElement("button");

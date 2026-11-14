@@ -11,6 +11,10 @@
 
 use std::fmt;
 
+mod machine;
+
+pub use machine::{Identity, Layout, Machine, MachineError, Magazine, Rotary, Spindle, Travel};
+
 use cndt_geom::Point3;
 use serde::{Deserialize, Serialize};
 

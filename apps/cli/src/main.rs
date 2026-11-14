@@ -21,7 +21,10 @@ project files:
   commands                                  list the commands exec accepts
 
 other:
-  post <file.cndt> [post] [setup]           print G-code for a setup (post: fanuc-mill, haas-mill, linuxcnc-mill or grbl; setup id)
+  post <file.cndt> [post] [setup] [--machine <id>]
+                                            print G-code for a setup (post: fanuc-mill, haas-mill,
+                                            linuxcnc-mill, mazak-smoothg or grbl; setup id); with a
+                                            machine (mazak-hcn-5000), check its limits first
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
   version                                   show the CNDT and geometry kernel versions
@@ -32,7 +35,16 @@ example:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut machine = None;
+    if let Some(at) = args.iter().position(|a| *a == "--machine") {
+        if args.first() != Some(&"post") || at + 1 >= args.len() {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+        machine = Some(args[at + 1]);
+        args.drain(at..=at + 1);
+    }
     let result = match args.as_slice() {
         ["new", path] => new(Path::new(path), None),
         ["new", path, name] => new(Path::new(path), Some(name)),
@@ -41,10 +53,10 @@ fn main() -> ExitCode {
         ["exec", path, command, arguments] => exec(Path::new(path), command, arguments),
         ["commands"] => commands(),
         ["info", path] => info(Path::new(path)),
-        ["post", path] => post(Path::new(path), "fanuc-mill", None),
-        ["post", path, id] => post(Path::new(path), id, None),
+        ["post", path] => post(Path::new(path), "fanuc-mill", machine, None),
+        ["post", path, id] => post(Path::new(path), id, machine, None),
         ["post", path, id, setup] => match setup.parse::<u32>() {
-            Ok(setup) => post(Path::new(path), id, Some(setup)),
+            Ok(setup) => post(Path::new(path), id, machine, Some(setup)),
             Err(_) => Err(format!("{setup:?} is not a setup id")),
         },
         ["api"] => serve_stdin(),
@@ -108,10 +120,13 @@ fn new(path: &Path, name: Option<&str>) -> Result<(), String> {
 
 /// Prints G-code to standard output and notes to standard error, so
 /// `cndt post part.cndt > part.nc` gives a clean program file.
-fn post(path: &Path, id: &str, setup: Option<u32>) -> Result<(), String> {
+fn post(path: &Path, id: &str, machine: Option<&str>, setup: Option<u32>) -> Result<(), String> {
     let mut api = Api::new();
     open(&mut api, path)?;
     let mut request = json!({"method": "post", "post": id});
+    if let Some(machine) = machine {
+        request["machine"] = json!(machine);
+    }
     if let Some(setup) = setup {
         request["setup"] = json!(setup);
     }

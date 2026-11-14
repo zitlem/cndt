@@ -605,6 +605,50 @@ fn the_cndt_test_block() {
             .contains("rigid tapping"),
         "{reply}"
     );
+    // The Mazak HCN-5000 (decision 0015): both setups fit its limits and
+    // post with its own post.
+    for (setup, golden) in [
+        (0, "test-block-setup-1-mazak-smoothg"),
+        (1, "test-block-setup-2-mazak-smoothg"),
+    ] {
+        let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": setup}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        let notes = reply["result"]["notes"].to_string();
+        assert!(notes.contains("definition is unverified"), "{notes}");
+        let gcode = reply["result"]["gcode"].as_str().unwrap();
+        assert_eq!(gcode.matches("G84.2 ").count(), usize::from(setup == 0));
+        check_golden(golden, gcode);
+    }
+    // Another post works, with a note.
+    let reply = s.call(
+        json!({"method": "post", "post": "fanuc-mill", "machine": "mazak-hcn-5000", "setup": 0}),
+    );
+    assert!(
+        reply["result"]["notes"]
+            .to_string()
+            .contains("normally used with the mazak-smoothg post"),
+        "{reply}"
+    );
+    // A tool faster than the spindle gives no G-code.
+    s.exec(
+        "cam.set_tool",
+        json!({"number": 12, "kind": "end_mill", "diameter": 6, "rpm": 15000, "feed": 900}),
+    );
+    let reply = s.call(
+        json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": 0}),
+    );
+    assert_eq!(reply["error"]["kind"], "machine", "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("15000 rpm is faster than the Mazak HCN-5000 (SmoothG)'s 12000 rpm"),
+        "{reply}"
+    );
+    assert!(reply["result"].is_null(), "{reply}");
+    s.call(json!({"method": "undo"}));
+    let reply = s.call(json!({"method": "post", "post": "grbl", "machine": "lathe"}));
+    assert_eq!(reply["error"]["kind"], "unknown_machine", "{reply}");
 
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
