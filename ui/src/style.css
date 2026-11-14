@@ -1133,17 +1133,19 @@ button:disabled {
 .workspace-switch {
   display: flex;
   align-items: center;
-  padding: 0 8px;
-  border-right: 1px solid var(--border);
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
 }
 
 .workspace-switch select {
-  height: 44px;
-  padding: 0 28px 0 12px;
+  height: 30px;
+  padding: 0 26px 0 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   background: var(--panel-raised);
   color: var(--text);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   cursor: pointer;
@@ -1539,4 +1541,32 @@ span.ribbon-label {
 .feature-list li.rollback-marker:hover,
 .feature-list li.rollback-marker.dragging {
   background-color: var(--accent-soft);
+}
+
+/* The timeline shows icons only; hovering gives the name and details. */
+.feature-list li {
+  padding: 5px;
+}
+
+.feature-list .name {
+  display: none;
+}
+
+.feature-list .icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.feature-list li.failed {
+  background: var(--warning-bg);
+}
+
+.feature-list li button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--panel-raised);
 }

@@ -409,6 +409,7 @@ function renderFeatures(state: DocumentState): void {
     const name = globalThis.document.createElement("span");
     name.className = "name";
     name.textContent = failed ? `⚠ ${feature.name}` : feature.name;
+    item.setAttribute("aria-label", item.title);
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
     remove.setAttribute("aria-label", `Delete ${feature.name}`);

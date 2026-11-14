@@ -31,6 +31,13 @@
         <button id="redo" type="button" class="icon-button" aria-label="Redo" title="Redo">
           <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M13 4l4 4-4 4M17 8H8a4 4 0 0 0 0 8h3" /></svg>
         </button>
+        <label class="workspace-switch">
+          <span class="visually-hidden">Workspace</span>
+          <select id="workspace" title="Workspace">
+            <option value="design">DESIGN</option>
+            <option value="manufacture">MANUFACTURE</option>
+          </select>
+        </label>
         <div class="doc-title">
           <label class="doc-name">
             <span class="visually-hidden">Document name</span>
@@ -41,13 +48,6 @@
       </header>
 
       <div class="command-bar">
-        <label class="workspace-switch">
-          <span class="visually-hidden">Workspace</span>
-          <select id="workspace" title="Workspace">
-            <option value="design">DESIGN</option>
-            <option value="manufacture">MANUFACTURE</option>
-          </select>
-        </label>
         <div class="ribbon-area">
           <div class="ribbon-tabs" role="tablist" aria-label="Ribbon">
             <button type="button" class="ribbon-tab" role="tab" data-tab="solid" data-workspace="design">SOLID</button>
