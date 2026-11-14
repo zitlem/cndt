@@ -42,6 +42,10 @@ A misspelled field or placeholder makes the post fail to load, so a typo can nev
 - **Tool length compensation.** When a post sets `tool_length_compensation`, the first move after every tool change must be a rapid. It is output as an XY move, then the compensation code with the Z move.
 - **Deterministic output.** The same program and post always give the same bytes.
 
+## Editing a post in the app
+
+**Manufacture → ACTIONS → Edit post** opens the post editor. Start from a shipped post or open a `.toml` file. As you type, the current setup's program is posted through your text, and every line that differs from the shipped post's output is highlighted: review each one. Mistakes show the engine's own message. **Save as…** writes the file; **Use for posting** makes Post… and Verify use it. A program from a changed shipped post says `EDITED POST` in its header, and one from a post that is not shipped says `CUSTOM POST`.
+
 ## Changing a post
 
 Every shipped post has a golden-file test in `crates/post/tests/golden/`. If you change a post or the engine and the output changes on purpose, regenerate with:

@@ -619,6 +619,68 @@ fn the_cndt_test_block() {
         assert_eq!(gcode.matches("G84.2 ").count(), usize::from(setup == 0));
         check_golden(golden, gcode);
     }
+    // The post editor (decision 0016, slice 5). The shipped text, unchanged,
+    // posts exactly as the shipped post.
+    let shipped =
+        s.call(json!({"method": "post_source", "post": "mazak-smoothg"}))["result"]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    assert!(shipped.contains("id = \"mazak-smoothg\""));
+    let preview = s.call(json!({"method": "post_preview", "definition": shipped, "setup": 0}));
+    assert_eq!(preview["result"]["changed"], json!([]), "{preview}");
+    assert_eq!(preview["result"]["base"], "mazak-smoothg");
+    // Edited: tapping with G84 instead of G84.2. The one tapping line and
+    // the header's "edited" line are the changes.
+    let edited = shipped.replace("tap = \"G84.2 ", "tap = \"G84 ");
+    let preview = s.call(json!({"method": "post_preview", "definition": edited, "setup": 0}));
+    let gcode = preview["result"]["gcode"].as_str().unwrap();
+    let lines: Vec<&str> = gcode.lines().collect();
+    let changed: Vec<&str> = preview["result"]["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| lines[n.as_u64().unwrap() as usize])
+        .collect();
+    assert_eq!(changed.len(), 2, "{changed:?}");
+    assert!(
+        changed[0].contains("EDITED POST: CHANGED FROM THE SHIPPED MAZAK-SMOOTHG"),
+        "{changed:?}"
+    );
+    assert!(changed[1].contains("G98 G84 X20. Y8."), "{changed:?}");
+    // Posting with it, on the machine: allowed (same post id), and the
+    // header says it was edited.
+    let reply = s.call(
+        json!({"method": "post", "definition": edited, "machine": "mazak-hcn-5000", "setup": 0}),
+    );
+    assert!(
+        reply["result"]["gcode"]
+            .as_str()
+            .unwrap()
+            .contains("(EDITED POST: CHANGED FROM THE SHIPPED MAZAK-SMOOTHG)"),
+        "{reply}"
+    );
+    // A definition with a mistake is refused with the engine's reason.
+    let broken = shipped.replace("rapid = \"G0\"", "rapid = \"G0 {feed}\"");
+    let reply = s.call(json!({"method": "post_preview", "definition": broken}));
+    assert_eq!(reply["error"]["kind"], "post_definition", "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("{feed}"),
+        "{reply}"
+    );
+    // Saved and read back; a broken one is not written.
+    let file = std::env::temp_dir().join(format!("cndt-post-{}.toml", std::process::id()));
+    let reply = s.call(json!({"method": "write_post", "definition": edited, "path": file}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let reply = s.call(json!({"method": "read_post", "path": file}));
+    assert_eq!(reply["result"]["text"], json!(edited));
+    let reply = s.call(json!({"method": "write_post", "definition": broken, "path": file}));
+    assert_eq!(reply["error"]["kind"], "post_definition", "{reply}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+    let _ = std::fs::remove_file(file);
     // Another controller's codes are refused: the Fanuc post's M29 is a
     // robot request on a Mazak.
     let reply = s.call(

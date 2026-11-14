@@ -197,6 +197,9 @@
                   <button id="cam-verify" type="button" class="tool" title="Check every setup as one program: machine limits, posting and simulation">
                 <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 2l6 2.5v5c0 4-2.7 6.7-6 8.5-3.3-1.8-6-4.5-6-8.5v-5z" /><path d="M7 10l2 2 4-4" /></svg><span>Verify</span>
               </button>
+                  <button id="cam-post-editor" type="button" class="tool" title="Edit a post and see the program change">
+                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 2h7l4 4v12H5zM12 2v4h4M7 13l2-2-2-2M10.5 13H13" /></svg><span>Edit post</span>
+              </button>
                   <button id="cam-post-all" type="button" class="tool" title="Post all setups as one program">
                 <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 2h7l4 4v12H5zM12 2v4h4M7.5 10h5M7.5 13h5" /></svg><span>Post all</span>
               </button>
@@ -357,6 +360,31 @@
             </div>
           </form>
         
+          <section id="post-editor" class="dialog post-editor" hidden aria-label="Post editor">
+            <div class="report-head">
+              <h3>Post editor</h3>
+              <label class="editor-base">Start from
+                <select id="post-editor-base">
+                  <option value="mazak-smoothg">Mazak SmoothG</option>
+                  <option value="fanuc-mill">Fanuc</option>
+                  <option value="haas-mill">Haas</option>
+                  <option value="linuxcnc-mill">LinuxCNC</option>
+                  <option value="grbl">GRBL</option>
+                </select>
+              </label>
+              <button id="post-editor-load" type="button" class="secondary">Open…</button>
+              <button id="post-editor-save" type="button" class="secondary">Save as…</button>
+              <button id="post-editor-use" type="button" class="primary">Use for posting</button>
+              <button id="post-editor-close" type="button" class="icon-button small" aria-label="Close">
+                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" /></svg>
+              </button>
+            </div>
+            <div class="editor-body">
+              <textarea id="post-editor-text" spellcheck="false" aria-label="Post definition"></textarea>
+              <div id="post-editor-preview" class="editor-preview" aria-label="Program preview"></div>
+            </div>
+            <p id="post-editor-status" class="editor-status muted small"></p>
+          </section>
           <section id="report-dialog" class="dialog report-dialog" hidden aria-label="Verification report">
             <div class="report-head">
               <h3>Verification report</h3>
