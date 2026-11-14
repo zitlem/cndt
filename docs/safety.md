@@ -28,7 +28,7 @@ Each setup produces a report covering:
 - rapid moves through material
 - moves outside the machine's travel limits
 
-What is checked today (decisions 0015 and 0016): rapid moves through material and gouges against the exact part, from a stock simulation of each setup; material left; the machine's spindle speed, tool numbers, rigid tapping, rotary steps and the program's extent against its travel; and whether the post accepts the program. Not yet: shank, holder and fixture collisions, and travel against the machine's actual coordinates.
+What is checked today (decisions 0015 and 0016): rapid moves through material, shanks rubbing above the flutes and holders hitting the stock, and gouges against the exact part, from a stock simulation of each setup; material left; the machine's spindle speed, tool numbers, rigid tapping, rotary steps and the program's extent against its travel; and whether the post accepts the program. Shank and holder checks use each tool's measured assembly, or typical sizes for its kind until it is measured, which the report flags for review. Not yet: fixture and spindle collisions, and travel against the machine's actual coordinates.
 
 `post` verifies first. Rapids through material, broken machine limits and a program the post refuses are **problems**: the program is refused unless the user overrides them, and the override is listed in the program header (gate 4). Gouges, material left, notes and unverified definitions are listed for **review** and do not block. The app saves the report as `<program>.report.txt` beside the G-code.
 

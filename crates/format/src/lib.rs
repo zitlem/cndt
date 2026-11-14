@@ -49,7 +49,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 13: chamfer milling operations.
 /// - 14: finishing allowances on pockets.
 /// - 15: setups turned about Y, and B table angles (decision 0015).
-pub const SCHEMA_VERSION: u32 = 15;
+/// - 16: measured tool assemblies (decision 0016).
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -265,6 +266,13 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
             "a version 1 file cannot contain sketches",
+        )));
+    }
+    // Version 15 knew nothing of tool assemblies.
+    if manifest.schema_version < 16 && document.cam().tools.values().any(|t| t.assembly.is_some()) {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain tool assemblies",
+            manifest.schema_version
         )));
     }
     // Version 14 knew nothing of turning about Y or of B angles.
@@ -645,6 +653,37 @@ mod tests {
             read(Cursor::new(forged)),
             Err(FormatError::Corrupt(_))
         ));
+    }
+
+    #[test]
+    fn tool_assemblies_need_version_16() {
+        use cndt_model::cam::{Assembly, CamEdit, Tool, ToolKind};
+        let mut document = Document::new("Tools");
+        document
+            .edit_cam(CamEdit::SetTool {
+                number: 3,
+                tool: Tool {
+                    kind: ToolKind::EndMill,
+                    diameter: 10.0,
+                    rpm: 8000.0,
+                    feed: 1200.0,
+                    description: String::new(),
+                    assembly: Some(Assembly {
+                        flute_length: 22.0,
+                        stickout: 40.0,
+                        shank_diameter: 10.0,
+                        holder_diameter: 50.0,
+                        holder_length: 60.0,
+                    }),
+                },
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        let v15 = raw_zip(&[(MANIFEST, &manifest(15)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v15)).unwrap_err();
+        assert!(error.to_string().contains("tool assemblies"), "{error}");
     }
 
     #[test]

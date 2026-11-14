@@ -792,8 +792,8 @@ fn the_cndt_test_block() {
     let count = classes(&s.api.simulation_mesh(Some(1)).unwrap());
     assert_eq!((count[1], count[2]), (0, 0), "{count:?}");
     // The verification report over both setups, for the Mazak: nothing
-    // blocks the program; the three model differences, the dowel note and
-    // the unverified machine are for review. Written next to the program.
+    // blocks the program; the three model differences, the dowel note,
+    // the unverified machine ... Written next to the program.
     let report_path =
         std::env::temp_dir().join(format!("cndt-test-block-{}.report.txt", std::process::id()));
     let reply = s.call(json!({"method": "verify", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setups": [0, 1], "path": report_path}));
@@ -801,12 +801,66 @@ fn the_cndt_test_block() {
     let report = &reply["result"];
     assert_eq!(report["verdict"], "review", "{report}");
     assert_eq!(report["problems"], json!([]), "{report}");
-    assert_eq!(report["review"].as_array().unwrap().len(), 5, "{report}");
+    // ... and that the tool assemblies are typical, not measured.
+    assert_eq!(report["review"].as_array().unwrap().len(), 6, "{report}");
     let text = std::fs::read_to_string(&report_path).unwrap();
     assert_eq!(text, report["text"].as_str().unwrap());
     assert!(text.contains("VERDICT: NEEDS REVIEW"), "{text}");
     assert!(text.contains("UNVERIFIED"), "{text}");
     let _ = std::fs::remove_file(report_path);
+    // Measured tools: a 10 mm end mill with only 8 mm of flute cannot take
+    // the contour's 10 mm steps: its shank rubs the top 2 mm. Held 15 mm
+    // out, its holder also hits the part on the second step.
+    s.exec(
+        "cam.set_tool",
+        json!({"number": 11, "kind": "end_mill", "diameter": 10, "rpm": 8000, "feed": 1200,
+               "flute_length": 8, "stickout": 15, "shank_diameter": 10,
+               "holder_diameter": 50, "holder_length": 60}),
+    );
+    let reply = s.call(json!({"method": "simulate", "setup": 0, "cell": 0.5}));
+    let hits: Vec<(String, String)> = reply["result"]["collisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["what"].as_str().unwrap().to_owned(),
+                c["operation"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert!(
+        hits.contains(&("shank".into(), "Contour 20 mm deep".into())),
+        "{hits:?}"
+    );
+    assert!(
+        hits.contains(&("holder".into(), "Contour 20 mm deep".into())),
+        "{hits:?}"
+    );
+    let shank = reply["result"]["collisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["what"] == "shank")
+        .unwrap();
+    assert!(
+        (shank["depth"].as_f64().unwrap() - 2.0).abs() < 1e-9,
+        "{shank}"
+    );
+    let reply = s.call(json!({"method": "verify", "post": "mazak-smoothg", "setups": [0]}));
+    assert_eq!(reply["result"]["verdict"], "problems", "{reply}");
+    assert!(
+        reply["result"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the shank above the flutes rubs the stock"),
+        "{reply}"
+    );
+    // Only some assembly values: refused.
+    let reply = s.call(json!({"method": "execute", "command": "cam.set_tool", "args":
+        {"number": 11, "kind": "end_mill", "diameter": 10, "rpm": 8000, "feed": 1200, "stickout": 40}}));
+    assert_eq!(reply["ok"], false, "{reply}");
+    s.call(json!({"method": "undo"}));
     // The Fanuc post on the Mazak is a problem, not a review item.
     let reply = s.call(json!({"method": "verify", "post": "fanuc-mill", "machine": "mazak-hcn-5000", "setups": [1]}));
     assert_eq!(reply["result"]["verdict"], "problems", "{reply}");
@@ -847,9 +901,9 @@ fn the_cndt_test_block() {
         "{header:?}"
     );
     assert!(
-        header
-            .iter()
-            .any(|l| l.contains("RAPID MOVE RUNS 1.50 MM INTO THE STOCK IN POCKET 8 MM DEEP")),
+        header.iter().any(
+            |l| l.contains("RAPID MOVE RUNS INTO THE STOCK, 1.50 MM DEEP, IN POCKET 8 MM DEEP")
+        ),
         "{header:?}"
     );
     s.call(json!({"method": "undo"}));

@@ -44,6 +44,84 @@ pub struct Tool {
     pub feed: f64,
     /// Shown in the program, such as `5.0 mm drill`.
     pub description: String,
+    /// The tool as it sits in its holder, measured. `None` means typical
+    /// sizes are assumed ([`Tool::assembly`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembly: Option<Assembly>,
+}
+
+/// A tool as it sits in its holder, for collision checks (decision 0016).
+/// Lengths are millimetres from the tool's tip.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assembly {
+    /// How far up from the tip it cuts.
+    pub flute_length: f64,
+    /// How far the tool sticks out of the holder: the holder's face is
+    /// this far above the tip.
+    pub stickout: f64,
+    /// The plain shank's diameter, between the flutes and the holder.
+    pub shank_diameter: f64,
+    /// The holder's diameter.
+    pub holder_diameter: f64,
+    /// The holder's length, from its face towards the spindle.
+    pub holder_length: f64,
+}
+
+impl Tool {
+    /// The tool's assembly: as measured, or typical for its kind and size.
+    #[must_use]
+    pub fn assembly(&self) -> Assembly {
+        self.assembly
+            .unwrap_or_else(|| typical_assembly(&self.kind, self.diameter))
+    }
+}
+
+/// Typical sizes for a tool nobody has measured: jobber drills, stub
+/// length end mills, collet chucks sized to the shank. Made up from common
+/// catalogue proportions to make the checks useful; measure the real tools
+/// and enter them before trusting a collision check.
+#[must_use]
+pub fn typical_assembly(kind: &ToolKind, diameter: f64) -> Assembly {
+    let d = diameter;
+    // A collet chuck that takes the shank: ER20, ER32 or a larger one.
+    let holder = |shank: f64| -> (f64, f64) {
+        if shank <= 7.0 {
+            (35.0, 50.0)
+        } else if shank <= 13.0 {
+            (50.0, 60.0)
+        } else {
+            (63.0, 65.0)
+        }
+    };
+    let (flute, stickout, shank, holder_dims) = match kind {
+        // An arbor-mounted cutter: short teeth, a body narrower than the
+        // teeth, then the arbor.
+        ToolKind::FaceMill => (6.0, 45.0, d * 0.8, (d.max(40.0), 40.0)),
+        ToolKind::EndMill => {
+            let flute = (2.5 * d).max(8.0);
+            (flute, flute + 1.5 * d + 10.0, d, holder(d))
+        }
+        ToolKind::Drill => {
+            let flute = (10.0 * d).clamp(20.0, 120.0);
+            (flute, flute + 15.0, d, holder(d))
+        }
+        ToolKind::SpotDrill => (2.0 * d, 2.0 * d + 20.0, d, holder(d)),
+        ToolKind::Reamer => {
+            let flute = 4.0 * d;
+            (flute, flute + 30.0, d, holder(d))
+        }
+        // A tap in a tapping holder.
+        ToolKind::Tap { .. } => (2.0 * d, 60.0, d, (40.0, 70.0)),
+        ToolKind::ChamferMill => (d / 2.0 + 2.0, 30.0, d, holder(d)),
+    };
+    Assembly {
+        flute_length: flute,
+        stickout,
+        shank_diameter: shank,
+        holder_diameter: holder_dims.0,
+        holder_length: holder_dims.1,
+    }
 }
 
 /// The default tool library of decision 0013, with conservative cutting
@@ -56,6 +134,7 @@ pub fn default_tools() -> BTreeMap<u32, Tool> {
         rpm,
         feed,
         description: description.to_owned(),
+        assembly: None,
     };
     BTreeMap::from([
         (
@@ -507,6 +586,27 @@ impl Cam {
             if tool.description.chars().any(char::is_control) || tool.description.len() > 200 {
                 return Err(format!("tool {number}'s description is not plain text"));
             }
+            if let Some(a) = tool.assembly {
+                for (what, value) in [
+                    ("flute length", a.flute_length),
+                    ("stick-out", a.stickout),
+                    ("shank diameter", a.shank_diameter),
+                    ("holder diameter", a.holder_diameter),
+                    ("holder length", a.holder_length),
+                ] {
+                    if !(value.is_finite() && value > 0.0 && value <= 2000.0) {
+                        return Err(format!(
+                            "tool {number}'s {what} must be more than zero, not {value}"
+                        ));
+                    }
+                }
+                if a.stickout < a.flute_length {
+                    return Err(format!(
+                        "tool {number} sticks out {} mm but cuts {} mm: the flutes would be inside the holder",
+                        a.stickout, a.flute_length
+                    ));
+                }
+            }
         }
         let mut setup_ids = std::collections::BTreeSet::new();
         let mut operation_ids = std::collections::BTreeSet::new();
@@ -629,6 +729,7 @@ mod tests {
                         rpm: 1.0,
                         feed: 1.0,
                         description: String::new(),
+                        assembly: None,
                     },
                 },
                 "diameter",

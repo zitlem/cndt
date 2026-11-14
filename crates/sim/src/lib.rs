@@ -81,6 +81,63 @@ impl ToolShape {
     }
 }
 
+/// A whole tool as it sits in its holder: the cutting shape at the tip,
+/// the plain shank above the flutes, and the holder above that. Only the
+/// cutting part may touch the stock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tool {
+    /// The cutting shape.
+    pub cutter: ToolShape,
+    /// How far up from the tip it cuts, in mm.
+    pub flute_length: f64,
+    /// How far up from the tip the holder's face is, in mm.
+    pub stickout: f64,
+    /// The plain shank's diameter, in mm.
+    pub shank_diameter: f64,
+    /// The holder's diameter, in mm.
+    pub holder_diameter: f64,
+}
+
+impl Tool {
+    /// A cutter with nothing above it in the way: for tests and for tools
+    /// whose assembly does not matter.
+    #[must_use]
+    pub fn bare(cutter: ToolShape) -> Self {
+        Self {
+            cutter,
+            flute_length: 1000.0,
+            stickout: 1000.0,
+            shank_diameter: cutter.radius() * 2.0,
+            holder_diameter: cutter.radius() * 2.0,
+        }
+    }
+
+    fn check(self) -> bool {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        self.cutter.check()
+            && positive(self.flute_length)
+            && positive(self.stickout)
+            && positive(self.shank_diameter)
+            && positive(self.holder_diameter)
+            && self.stickout >= self.flute_length
+    }
+}
+
+/// What a finding is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Hit {
+    /// A rapid move removed material: the tool crashed into the stock.
+    Rapid,
+    /// The plain shank above the flutes touched the stock: the cut is
+    /// deeper than the flutes are long.
+    Shank,
+    /// The holder touched the stock: the tool sticks out too little.
+    Holder,
+    /// A cut went below the finished part.
+    Gouge,
+}
+
 /// A grid of square cells in the setup's XY plane. Cell `(i, j)` has its
 /// centre at `(x0 + (i + ½)·cell, y0 + (j + ½)·cell)` and index `j·nx + i`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -148,6 +205,8 @@ pub struct Setup {
 /// Something wrong, where it happened.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Finding {
+    /// What it is.
+    pub what: Hit,
     /// The operation's name.
     pub operation: String,
     /// The step in it, counting from 1.
@@ -161,7 +220,8 @@ pub struct Finding {
 /// What the simulation found.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Report {
-    /// Rapid moves into material, one per move, deepest first in each.
+    /// Rapid moves into material, and shanks or holders touching the
+    /// stock: the deepest of each kind on each move.
     pub collisions: Vec<Finding>,
     /// Cuts below the finished part, the deepest of each operation.
     pub gouges: Vec<Finding>,
@@ -222,7 +282,7 @@ const MAX_CELLS: usize = 16_000_000;
 /// that turns to another side after cutting.
 pub fn simulate(
     program: &Program,
-    tools: &BTreeMap<u32, ToolShape>,
+    tools: &BTreeMap<u32, Tool>,
     setup: &Setup,
 ) -> Result<Report, SimError> {
     let grid = setup.grid;
@@ -239,12 +299,13 @@ pub fn simulate(
     if !(setup.top.is_finite() && setup.bottom.is_finite() && setup.bottom < setup.top) {
         return bad("the stock's bottom must be below its top");
     }
-    if let Some((number, _)) = tools.iter().find(|(_, shape)| !shape.check()) {
-        return bad(&format!("tool {number}'s shape"));
+    if let Some((number, _)) = tools.iter().find(|(_, tool)| !tool.check()) {
+        return bad(&format!("tool {number}'s shape or assembly"));
     }
     let mut sim = Sim {
         setup,
         heights: vec![setup.top; grid.len()],
+        highest: setup.top,
         tool: None,
         position: None,
         moved: false,
@@ -298,8 +359,9 @@ struct At<'a> {
 }
 
 impl At<'_> {
-    fn finding(&self, at: Point3, depth: f64) -> Finding {
+    fn finding(&self, what: Hit, at: Point3, depth: f64) -> Finding {
         Finding {
+            what,
             operation: self.name.to_owned(),
             step: self.step,
             at,
@@ -317,7 +379,10 @@ enum Kind {
 struct Sim<'a> {
     setup: &'a Setup,
     heights: Vec<f64>,
-    tool: Option<ToolShape>,
+    /// No stock is higher than this: the shank and holder need checking
+    /// only when they reach below it.
+    highest: f64,
+    tool: Option<Tool>,
     position: Option<Point3>,
     moved: bool,
     removed: f64,
@@ -333,13 +398,14 @@ impl Sim<'_> {
     fn step(
         &mut self,
         step: &Step,
-        tools: &BTreeMap<u32, ToolShape>,
+        tools: &BTreeMap<u32, Tool>,
         at: &At<'_>,
     ) -> Result<(), SimError> {
         match step {
             Step::Event(Event::ToolChange { number, .. }) => {
                 self.tool = Some(*tools.get(number).ok_or(SimError::MissingTool(*number))?);
                 self.position = None;
+                self.highest = self.heights.iter().copied().fold(f64::MIN, f64::max);
             }
             Step::Event(Event::Home) => self.position = None,
             Step::Event(Event::Index { .. } | Event::WorkOffset { .. }) => {
@@ -393,7 +459,7 @@ impl Sim<'_> {
         let length = distance(from, to);
         self.count(length, kind, feed);
         let Some(tool) = self.tool else { return };
-        let n = (length / tool.spacing(self.setup.grid.cell))
+        let n = (length / tool.cutter.spacing(self.setup.grid.cell))
             .ceil()
             .max(1.0) as usize;
         let points: Vec<Point3> = (0..=n)
@@ -434,7 +500,7 @@ impl Sim<'_> {
         let length = (radius * sweep.abs()).hypot(to.z - from.z);
         self.count(length, Kind::Cut, Some(feed));
         let Some(tool) = self.tool else { return };
-        let n = (length / tool.spacing(self.setup.grid.cell))
+        let n = (length / tool.cutter.spacing(self.setup.grid.cell))
             .ceil()
             .max(1.0) as usize;
         let points: Vec<Point3> = (0..=n)
@@ -466,9 +532,12 @@ impl Sim<'_> {
     /// Puts the tool's tip at each point in turn, lowering the stock under
     /// it, and records what that hits.
     fn sweep(&mut self, points: &[Point3], kind: Kind, at: &At<'_>) {
-        let Some(tool) = self.tool else { return };
+        let Some(whole) = self.tool else { return };
+        let tool = whole.cutter;
         let grid = self.setup.grid;
         let r = tool.radius();
+        // The worst touch of the shank and of the holder on this move.
+        let mut touched: [Option<(Point3, f64)>; 2] = [None, None];
         let area = grid.cell * grid.cell;
         // The deepest removal on this move (a rapid) or below the part (a cut).
         let mut worst: Option<(Point3, f64)> = None;
@@ -476,6 +545,9 @@ impl Sim<'_> {
         // before the last have already lowered it.
         let mut before_move: BTreeMap<usize, f64> = BTreeMap::new();
         for p in points {
+            // Before this point cuts: whatever stands above the flutes, or
+            // under the holder, is hit by a part that cannot cut.
+            self.check_assembly(whole, *p, &mut touched);
             let range = |lo: f64, hi: f64, origin: f64, count: usize| {
                 let first = ((lo - origin) / grid.cell).floor().max(0.0) as usize;
                 let last = (((hi - origin) / grid.cell).ceil().max(0.0) as usize).min(count);
@@ -507,16 +579,59 @@ impl Sim<'_> {
                 }
             }
         }
+        for (hit, touch) in [Hit::Shank, Hit::Holder].into_iter().zip(touched) {
+            if let Some((point, depth)) = touch {
+                self.collisions.push(at.finding(hit, point, depth));
+            }
+        }
         let Some((point, depth)) = worst else { return };
         match kind {
-            Kind::Rapid => self.collisions.push(at.finding(point, depth)),
+            Kind::Rapid => self.collisions.push(at.finding(Hit::Rapid, point, depth)),
             Kind::Cut => {
                 let deeper = self
                     .gouges
                     .get(&at.operation)
                     .is_none_or(|known| depth > known.depth);
                 if deeper {
-                    self.gouges.insert(at.operation, at.finding(point, depth));
+                    self.gouges
+                        .insert(at.operation, at.finding(Hit::Gouge, point, depth));
+                }
+            }
+        }
+    }
+
+    /// Whether the shank or holder, with the tip at `p`, touches stock
+    /// that is still there; keeps the deepest touch of each.
+    fn check_assembly(&self, whole: Tool, p: Point3, touched: &mut [Option<(Point3, f64)>; 2]) {
+        let grid = self.setup.grid;
+        let parts = [
+            // Above the flutes, nothing cuts across the whole cutter's width.
+            (
+                whole.shank_diameter.max(whole.cutter.radius() * 2.0) / 2.0,
+                p.z + whole.flute_length,
+            ),
+            (whole.holder_diameter / 2.0, p.z + whole.stickout),
+        ];
+        for ((radius, base), touch) in parts.into_iter().zip(touched.iter_mut()) {
+            if base + TOLERANCE >= self.highest {
+                continue;
+            }
+            let span = |lo: f64, hi: f64, origin: f64, count: usize| {
+                let first = ((lo - origin) / grid.cell).floor().max(0.0) as usize;
+                let last = (((hi - origin) / grid.cell).ceil().max(0.0) as usize).min(count);
+                first..last
+            };
+            for j in span(p.y - radius, p.y + radius, grid.y0, grid.ny) {
+                let cy = grid.y0 + (j as f64 + 0.5) * grid.cell;
+                for i in span(p.x - radius, p.x + radius, grid.x0, grid.nx) {
+                    let cx = grid.x0 + (i as f64 + 0.5) * grid.cell;
+                    if (cx - p.x).hypot(cy - p.y) > radius {
+                        continue;
+                    }
+                    let depth = self.heights[j * grid.nx + i] - base;
+                    if depth > TOLERANCE && touch.is_none_or(|(_, d)| depth > d) {
+                        *touch = Some((Point3::new(cx, cy, base), depth));
+                    }
                 }
             }
         }
@@ -592,8 +707,8 @@ mod tests {
         }
     }
 
-    fn tools(shape: ToolShape) -> BTreeMap<u32, ToolShape> {
-        BTreeMap::from([(1, shape)])
+    fn tools(shape: ToolShape) -> BTreeMap<u32, Tool> {
+        BTreeMap::from([(1, Tool::bare(shape))])
     }
 
     #[test]
@@ -750,5 +865,51 @@ mod tests {
             simulate(&two, &tools(ToolShape::Flat { diameter: 1.0 }), &setup),
             Err(SimError::SeveralSides)
         );
+    }
+
+    #[test]
+    fn the_shank_and_holder_must_not_touch_the_stock() {
+        let setup = block();
+        let mill = |flute: f64, stickout: f64| {
+            BTreeMap::from([(
+                1,
+                Tool {
+                    cutter: ToolShape::Flat { diameter: 4.0 },
+                    flute_length: flute,
+                    stickout,
+                    shank_diameter: 4.0,
+                    holder_diameter: 20.0,
+                },
+            )])
+        };
+        // Into the stock from the side at −5: 5 mm of wall.
+        let side = program(vec![
+            rapid(-5.0, 10.0, 2.0),
+            rapid(-5.0, 10.0, -5.0),
+            cut(10.0, 10.0, -5.0),
+            rapid(10.0, 10.0, 2.0),
+        ]);
+        // Long enough flutes, the holder well clear: clean.
+        let report = simulate(&side, &mill(8.0, 30.0), &setup).unwrap();
+        assert!(report.collisions.is_empty(), "{report:?}");
+        // 3 mm flutes: the shank rubs the top 2 mm of the wall.
+        let report = simulate(&side, &mill(3.0, 30.0), &setup).unwrap();
+        assert_eq!(report.collisions.len(), 1, "{report:?}");
+        let rub = &report.collisions[0];
+        assert_eq!(rub.what, Hit::Shank);
+        assert!((rub.depth - 2.0).abs() < 1e-9, "{rub:?}");
+        // Sticking out only 4 mm: the 20 mm holder hits the top.
+        let report = simulate(&side, &mill(3.0, 4.0), &setup).unwrap();
+        let holder = report
+            .collisions
+            .iter()
+            .find(|c| c.what == Hit::Holder)
+            .unwrap();
+        assert!((holder.depth - 1.0).abs() < 1e-9, "{holder:?}");
+        // A plunge deeper than the flutes is fine: the shank follows the
+        // hole the flutes made.
+        let plunge = program(vec![rapid(10.0, 10.0, 2.0), cut(10.0, 10.0, -5.0)]);
+        let report = simulate(&plunge, &mill(3.0, 30.0), &setup).unwrap();
+        assert!(report.collisions.is_empty(), "{report:?}");
     }
 }

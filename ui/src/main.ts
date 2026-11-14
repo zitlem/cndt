@@ -211,6 +211,7 @@ function render(next: DocumentState): void {
   renderSketches(next);
   renderFeatures(next);
   renderSetups(next);
+  renderTools(next);
   void showBody(next);
   editor.update(next);
   updateSketchUi();
@@ -1825,3 +1826,28 @@ element("cam-verify").addEventListener(
 element("report-close").addEventListener("click", () => {
   element("report-dialog").hidden = true;
 });
+
+/** The tool library in the browser, with each tool's assembly. */
+function renderTools(state: DocumentState): void {
+  const list = element("tool-list");
+  list.replaceChildren();
+  for (const [number, tool] of Object.entries(state.document.cam?.tools ?? {})) {
+    const a = state.tool_assemblies?.[number];
+    const item = globalThis.document.createElement("li");
+    const name = globalThis.document.createElement("span");
+    name.className = "name";
+    name.textContent = `T${number} ${tool.description}`;
+    const detail = globalThis.document.createElement("span");
+    detail.className = "detail";
+    if (a) {
+      detail.textContent = `${formatNumber(a.stickout)} out`;
+      item.title =
+        `Flutes ${formatNumber(a.flute_length)} mm, sticks out ${formatNumber(a.stickout)} mm, ` +
+        `shank Ø${formatNumber(a.shank_diameter)}, holder Ø${formatNumber(a.holder_diameter)} × ${formatNumber(a.holder_length)} mm` +
+        (a.measured ? " (measured)" : " (typical sizes, not measured: measure the tool and enter it)");
+      item.classList.toggle("typical", !a.measured);
+    }
+    item.append(name, detail);
+    list.append(item);
+  }
+}

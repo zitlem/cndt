@@ -99,3 +99,7 @@ Pocket operations may carry a finishing allowance: `"finish": <mm>`. The roughin
 ## Version 15 (2026-11-13)
 
 A setup may say how the part reaches it (decision 0015): `"flip_about": "y"` for a bottom side turned about model Y instead of X (as an HMC's B table turns a part standing on the pallet), and `"index": <degrees>` for the B angle when the table, not the operator, turns that side to the spindle. Both are left out when unused. Older builds refuse files that use them with the update message; files without them are unchanged.
+
+## Version 16 (2026-11-14)
+
+A tool may carry its measured assembly (decision 0016): `"assembly": {"flute_length", "stickout", "shank_diameter", "holder_diameter", "holder_length"}`, in millimetres from the tip. Without it, typical sizes for the tool's kind and diameter are assumed. Older builds refuse files that use it with the update message; files without it are unchanged.

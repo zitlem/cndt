@@ -285,6 +285,17 @@ struct StateView<'a> {
     /// How many timeline features are built, when the history is rolled
     /// back; `null` for all of them.
     rollback: Option<usize>,
+    /// Each library tool's assembly as the checks use it, and whether it
+    /// was measured or is typical for the tool.
+    tool_assemblies: BTreeMap<u32, ToolAssemblyView>,
+}
+
+/// A tool's assembly in the state.
+#[derive(Debug, Serialize)]
+struct ToolAssemblyView {
+    #[serde(flatten)]
+    assembly: cndt_model::cam::Assembly,
+    measured: bool,
 }
 
 /// The part as front ends see it. Its triangles come from `body_mesh`.
@@ -907,6 +918,22 @@ impl Api {
             }),
             body_revision: self.revision,
             rollback: self.rollback,
+            tool_assemblies: self
+                .session
+                .document()
+                .cam()
+                .tools
+                .iter()
+                .map(|(number, tool)| {
+                    (
+                        *number,
+                        ToolAssemblyView {
+                            assembly: tool.assembly(),
+                            measured: tool.assembly.is_some(),
+                        },
+                    )
+                })
+                .collect(),
         };
         serde_json::to_value(view).map_err(|error| ApiError::new("internal", error.to_string()))
     }

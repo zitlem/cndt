@@ -117,19 +117,47 @@ impl Api {
             ) {
                 Ok(planned) => {
                     let mut tools: Vec<String> = Vec::new();
+                    let mut typical = false;
                     for step in planned.program.operations.iter().flat_map(|o| &o.steps) {
                         if let Step::Event(Event::ToolChange {
                             number,
                             description,
                         }) = step
                         {
-                            let tool = format!("T{number} {description}");
+                            let mut tool = format!("T{number} {description}");
+                            if let Some(t) = cam.tools.get(number) {
+                                let a = t.assembly();
+                                let _ = write!(
+                                    tool,
+                                    " (flutes {:.0}, sticks out {:.0}, holder Ø{:.0}{})",
+                                    a.flute_length,
+                                    a.stickout,
+                                    a.holder_diameter,
+                                    if t.assembly.is_none() {
+                                        ", typical"
+                                    } else {
+                                        ""
+                                    }
+                                );
+                                typical |= t.assembly.is_none();
+                            }
                             if !tools.contains(&tool) {
                                 tools.push(tool);
                             }
                         }
                     }
-                    let _ = writeln!(sections, "  Tools: {}", tools.join(", "));
+                    let _ = writeln!(sections, "  Tools:");
+                    for tool in &tools {
+                        let _ = writeln!(sections, "    {tool}");
+                    }
+                    if typical {
+                        let note = String::from(
+                            "Some tools have typical, not measured, flute lengths, stick-outs and holders: the shank and holder checks are only as good as those. Measure the tools and enter them.",
+                        );
+                        if !review.contains(&note) {
+                            review.push(note);
+                        }
+                    }
                     let operations: Vec<&str> = planned
                         .program
                         .operations
@@ -145,8 +173,19 @@ impl Api {
                     let report = &sim.report;
                     minutes += report.cut_minutes;
                     for hit in &report.collisions {
+                        let what = match hit.what {
+                            cndt_sim::Hit::Shank => {
+                                "the shank above the flutes rubs the stock (the cut is deeper than the flutes are long)"
+                            }
+                            cndt_sim::Hit::Holder => {
+                                "the holder hits the stock (the tool does not stick out far enough)"
+                            }
+                            cndt_sim::Hit::Rapid | cndt_sim::Hit::Gouge => {
+                                "a rapid move runs into the stock"
+                            }
+                        };
                         problems.push(format!(
-                            "{name}: a rapid move runs {} into the stock in {}, step {}, at {}.",
+                            "{name}: {what}, {} deep, in {}, step {}, at {}.",
                             mm(hit.depth),
                             hit.operation,
                             hit.step,
