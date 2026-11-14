@@ -481,6 +481,82 @@ fn the_cndt_test_block() {
         "cam.add_operation",
         json!({"setup": 1, "type": "chamfer", "face": underside, "width": 0.5}),
     );
+    // Feature detection finds the same operations from the solid alone
+    // (less the keyway's finishing allowance, which is a design choice).
+    let stored = |s: &mut Session, setup: usize| -> Vec<Value> {
+        s.state()["document"]["cam"]["setups"][setup]["setup"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| {
+                let mut op = o["operation"].clone();
+                op.as_object_mut().unwrap().remove("finish");
+                op
+            })
+            .collect()
+    };
+    for setup in [0_u32, 1] {
+        // Detecting again on a programmed setup adds nothing.
+        let reply = s.call(json!({"method": "detect", "setup": setup}));
+        assert_eq!(reply["result"]["operations"], json!([]), "{reply}");
+        // On an empty setup of the same side, it finds them all.
+        let side = if setup == 0 { "top" } else { "bottom" };
+        s.exec("cam.add_setup", json!({"side": side}));
+        let reply = s.call(json!({"method": "detect", "setup": 2}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        let mut expected = stored(&mut s, setup as usize);
+        if setup == 0 {
+            // Setup 1, earlier, contours already: the copy goes after it.
+            expected.retain(|o| o["type"] != "contour");
+        }
+        assert_eq!(
+            reply["result"]["operations"].as_array().unwrap(),
+            &expected,
+            "setup {setup}: {reply}"
+        );
+        assert_eq!(reply["result"]["notes"], json!([]), "{reply}");
+        s.call(json!({"method": "undo"}));
+    }
+    // Without its contour, setup 1 gets exactly that suggested back.
+    let contour = s.state()["document"]["cam"]["setups"][0]["setup"]["operations"][1].clone();
+    assert_eq!(contour["operation"]["type"], "contour");
+    s.exec(
+        "cam.remove_operation",
+        json!({"setup": 0, "operation": contour["id"]}),
+    );
+    let reply = s.call(json!({"method": "detect", "setup": 0}));
+    assert_eq!(
+        reply["result"]["operations"],
+        json!([contour["operation"]]),
+        "{reply}"
+    );
+    s.call(json!({"method": "undo"}));
+    // One click: a new setup takes every suggestion as one undoable step.
+    s.exec("cam.add_setup", json!({"side": "top", "work_offset": 3}));
+    let found = s.call(json!({"method": "detect", "setup": 2}))["result"]["operations"].clone();
+    let state = s.exec(
+        "cam.add_operations",
+        json!({"setup": 2, "operations": found}),
+    );
+    let ops = state["document"]["cam"]["setups"][2]["setup"]["operations"]
+        .as_array()
+        .unwrap()
+        .len();
+    // Setup 1 already contours the outside, so this one does not.
+    assert_eq!(ops, 5);
+    s.call(json!({"method": "undo"}));
+    assert_eq!(
+        s.state()["document"]["cam"]["setups"][2]["setup"]["operations"],
+        json!([])
+    );
+    s.call(json!({"method": "undo"}));
+    assert_eq!(
+        s.state()["document"]["cam"]["setups"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 1}));
     assert_eq!(reply["ok"], true, "{reply}");
     check_golden(

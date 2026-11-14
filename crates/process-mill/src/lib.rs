@@ -1539,6 +1539,228 @@ pub fn preview(program: &Program, setup: &Setup) -> Vec<PreviewSegment> {
     out
 }
 
+/// Operations feature detection suggests for a setup, and why it left
+/// anything out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Detected {
+    /// In machining order: face, outside contour, pockets, holes, chamfers.
+    pub operations: Vec<OperationDef>,
+    /// What was found but not suggested, with the reason.
+    pub notes: Vec<String>,
+}
+
+/// Finds the machinable features of the part from one setup and suggests an
+/// operation for each, without changing the document:
+///
+/// - **Face** the stock down, when there is stock on that side.
+/// - **Contour** the outside profile down to the far face, unless an
+///   earlier setup already does.
+/// - **Pocket** every flat floor facing the spindle below Z0 that is not
+///   part of a hole, shallowest feature first.
+/// - **Holes**, when any hole faces the spindle.
+/// - **Chamfer** the Z0 face's edges, when the model chamfers them.
+///
+/// Every suggestion is planned once; one that cannot be machined (no tool
+/// fits, say) is left out with a note instead. One the setup already has
+/// (the same kind on the same face, whatever its tool) is left out too, so
+/// detecting twice adds nothing.
+///
+/// # Errors
+///
+/// [`CamError::UnknownSetup`] or [`CamError::NoPart`].
+pub fn detect(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    setup_id: u32,
+) -> Result<Detected, CamError> {
+    let cam = document.cam();
+    let position = cam
+        .setups
+        .iter()
+        .position(|e| e.id == setup_id)
+        .ok_or(CamError::UnknownSetup(setup_id))?;
+    let entry = cam
+        .setups
+        .get(position)
+        .ok_or(CamError::UnknownSetup(setup_id))?;
+    let setup = Setup::from_def(&entry.setup, rebuilt).ok_or(CamError::NoPart)?;
+    let body = rebuilt.body.as_ref().ok_or(CamError::NoPart)?;
+    let library = ToolLibrary {
+        tools: cam.tools.clone(),
+    };
+    let mut operations = Vec::new();
+    let mut notes = Vec::new();
+
+    // A name for each face that picks out that face alone.
+    let unique = |index: usize| -> Option<String> {
+        rebuilt
+            .faces
+            .get(index)?
+            .iter()
+            .map(ToString::to_string)
+            .find(|token| {
+                rebuilt
+                    .faces
+                    .iter()
+                    .filter(|names| names.iter().any(|n| n.to_string() == *token))
+                    .count()
+                    == 1
+            })
+    };
+    // Every flat face square to the spindle: (index, program Z, faces it).
+    let mut flats = Vec::new();
+    for index in 0..rebuilt.faces.len() {
+        let Ok(face) = u32::try_from(index) else {
+            continue;
+        };
+        let Ok((point, normal)) = kernel.face_plane(body, face) else {
+            continue;
+        };
+        if (normal[2].abs() - 1.0).abs() > 1e-9 {
+            continue;
+        }
+        let toward = (normal[2] - setup.facing()).abs() < 1e-9;
+        flats.push((index, setup.program_point(point).z, toward));
+    }
+
+    if document.cam().stock.is_some() {
+        operations.push(OperationDef::Face { tool: None });
+    } else {
+        notes.push(String::from("no facing: the job has no stock"));
+    }
+
+    let contoured = cam
+        .setups
+        .iter()
+        .take(position)
+        .flat_map(|e| &e.setup.operations)
+        .any(|o| matches!(o.operation, OperationDef::Contour { .. }));
+    if !contoured {
+        let far = flats
+            .iter()
+            .filter(|(_, _, toward)| !toward)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .and_then(|(index, _, _)| unique(*index));
+        if let Some(face) = far {
+            match contour(
+                document, rebuilt, kernel, &setup, &library, &face, None, None,
+            ) {
+                Ok(_) => operations.push(OperationDef::Contour {
+                    face,
+                    tool: None,
+                    depth: None,
+                }),
+                Err(e) => notes.push(format!("no outside contour: {e}")),
+            }
+        }
+    }
+
+    let mut floors: Vec<(u64, String)> = flats
+        .iter()
+        .filter(|(index, z, toward)| {
+            *toward
+                && *z < -1e-6
+                && rebuilt
+                    .faces
+                    .get(*index)
+                    .is_some_and(|names| names.iter().all(|n| !n.to_string().contains("/hole/")))
+        })
+        .filter_map(|(index, _, _)| unique(*index))
+        .map(|name| (feature_number(&name), name))
+        .collect();
+    floors.sort();
+    for (_, floor) in floors {
+        match pocket(rebuilt, kernel, &setup, &library, &floor, None, 0.0) {
+            Ok(_) => operations.push(OperationDef::Pocket {
+                floor,
+                tool: None,
+                finish: None,
+            }),
+            Err(e) => notes.push(format!("no pocket at {floor}: {e}")),
+        }
+    }
+
+    match hole_program(document, rebuilt, &setup, &library, "detect") {
+        Ok(planned) if !planned.program.operations.is_empty() => {
+            operations.push(OperationDef::Holes);
+        }
+        Ok(_) | Err(CamError::Nothing) => {}
+        Err(e) => notes.push(format!("no holes: {e}")),
+    }
+
+    // The Z0 face, and the chamfers the model puts on its edges.
+    let top = flats
+        .iter()
+        .find(|(_, z, toward)| *toward && z.abs() < 1e-6)
+        .map(|(index, _, _)| *index);
+    if let (Some(index), Some(face)) = (top, top.and_then(unique)) {
+        let names: Vec<String> = rebuilt
+            .faces
+            .get(index)
+            .map(|n| n.iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        let on_top = |token: &String| names.contains(token);
+        let mut widths: Vec<f64> = document
+            .features()
+            .iter()
+            .filter_map(|e| match &e.feature {
+                Feature::Chamfer {
+                    edges, distance, ..
+                } if edges.iter().any(|edge| match edge {
+                    cndt_model::EdgeTarget::Face(f) => on_top(f),
+                    cndt_model::EdgeTarget::Between(a, b) => on_top(a) || on_top(b),
+                }) =>
+                {
+                    Some(*distance)
+                }
+                _ => None,
+            })
+            .collect();
+        widths.sort_by(f64::total_cmp);
+        widths.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        if let [width] = widths[..] {
+            match chamfer_mill(rebuilt, kernel, &setup, &library, &face, width, None) {
+                Ok(_) => operations.push(OperationDef::Chamfer {
+                    face,
+                    width,
+                    tool: None,
+                }),
+                Err(e) => notes.push(format!("no chamfer milling: {e}")),
+            }
+        } else if widths.len() > 1 {
+            notes.push(String::from(
+                "no chamfer milling: the top edges have chamfers of different widths",
+            ));
+        }
+    }
+    let same = |a: &OperationDef, b: &OperationDef| match (a, b) {
+        (OperationDef::Face { .. }, OperationDef::Face { .. })
+        | (OperationDef::Holes, OperationDef::Holes) => true,
+        (OperationDef::Contour { face: x, .. }, OperationDef::Contour { face: y, .. })
+        | (OperationDef::Chamfer { face: x, .. }, OperationDef::Chamfer { face: y, .. })
+        | (OperationDef::Pocket { floor: x, .. }, OperationDef::Pocket { floor: y, .. }) => x == y,
+        _ => false,
+    };
+    operations.retain(|op| {
+        !entry
+            .setup
+            .operations
+            .iter()
+            .any(|o| same(&o.operation, op))
+    });
+    Ok(Detected { operations, notes })
+}
+
+/// The feature number a face name starts with (`f12/...` gives 12), for
+/// ordering suggestions by the timeline.
+fn feature_number(name: &str) -> u64 {
+    name.strip_prefix('f')
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
 /// Plans every operation of a stored setup (decision 0014).
 ///
 /// # Errors

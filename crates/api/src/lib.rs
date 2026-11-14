@@ -84,7 +84,7 @@ pub enum Request {
     /// post. Replies `{gcode, notes}`; with `path`, also writes the G-code
     /// there.
     Post {
-        /// `fanuc-mill` or `grbl`.
+        /// `fanuc-mill`, `haas-mill`, `linuxcnc-mill` or `grbl`.
         post: String,
         /// The setup's id; the first setup if left out.
         #[serde(default)]
@@ -92,6 +92,14 @@ pub enum Request {
         /// A file to write the program to.
         #[serde(default)]
         path: Option<PathBuf>,
+    },
+    /// Feature detection: the operations suggested for a setup from the
+    /// part's holes, pockets and outside profile. Changes nothing; replies
+    /// `{operations, notes}`, and `operations` can be passed straight to
+    /// the `cam.add_operations` command.
+    Detect {
+        /// The setup's id.
+        setup: u32,
     },
 }
 
@@ -521,6 +529,20 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::Detect { setup } => {
+                return match cndt_process_mill::detect(
+                    self.session.document(),
+                    &self.rebuilt,
+                    self.kernel.as_ref(),
+                    setup,
+                ) {
+                    Ok(found) => success(serde_json::json!({
+                        "operations": found.operations,
+                        "notes": found.notes,
+                    })),
+                    Err(e) => failure(ApiError::new("cam", e.to_string())),
+                };
+            }
             Request::StepInfo { path } => {
                 return match self.kernel.import_step(&path) {
                     Ok(summary) => match serde_json::to_value(summary) {
@@ -645,6 +667,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("commands", &[]),
     ("step_info", &["path"]),
     ("post", &["post", "setup", "path"]),
+    ("detect", &["setup"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo
@@ -1266,7 +1289,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 33, "{names:?}");
+        assert_eq!(names.len(), 34, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",
