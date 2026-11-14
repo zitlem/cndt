@@ -1598,3 +1598,41 @@ span.ribbon-label {
 .report-dialog[data-verdict="review"] {
   border-color: var(--warning-border);
 }
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 8px 16px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.tool-list li {
+  display: flex;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+.tool-list li:hover {
+  background: var(--panel-raised);
+}
+
+.tool-list .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-list .detail {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-list li.typical .detail::after {
+  content: " ·typ";
+  color: var(--warning-text);
+}

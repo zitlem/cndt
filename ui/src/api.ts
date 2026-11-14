@@ -164,6 +164,18 @@ export interface DocumentState {
   body_revision: number;
   /** How many timeline features are built while the history is rolled back. */
   rollback: number | null;
+  /** Each library tool's assembly as the checks use it. */
+  tool_assemblies: Record<
+    string,
+    {
+      flute_length: number;
+      stickout: number;
+      shank_diameter: number;
+      holder_diameter: number;
+      holder_length: number;
+      measured: boolean;
+    }
+  >;
 }
 
 export interface Point3 {
