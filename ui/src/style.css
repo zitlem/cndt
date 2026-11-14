@@ -766,51 +766,100 @@ button:disabled {
   font-size: 11px;
 }
 
+/* The timeline: the part's history along the bottom, oldest first. */
+.timeline-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.timeline-label {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.timeline-bar .muted {
+  margin: 0;
+  font-size: 12px;
+}
+
 .feature-list {
   display: flex;
-  flex-direction: column;
+  flex: 1;
+  align-items: center;
   gap: 2px;
-  margin: 0 0 12px;
+  min-width: 0;
+  margin: 0;
   padding: 0;
+  overflow-x: auto;
   list-style: none;
 }
 
 .feature-list li {
+  position: relative;
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
 }
 
+/* A step arrow between features. */
+.feature-list li + li::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 50%;
+  width: 4px;
+  height: 1px;
+  background: var(--border);
+}
+
 .feature-list li:hover {
+  border-color: var(--border);
   background: var(--panel-raised);
 }
 
+.feature-list .icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+
 .feature-list .name {
-  flex: 1;
+  white-space: nowrap;
+  font-size: 12px;
 }
 
-.feature-list .detail {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+.feature-list li.failed {
+  border-color: var(--warning-text);
 }
 
-.feature-list .flag {
-  color: var(--warning-text);
-}
-
-.feature-list li.failed .name {
+.feature-list li.failed .name,
+.feature-list li.failed .icon {
   color: var(--warning-text);
 }
 
 .feature-list button {
-  display: grid;
+  display: none;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
   border-radius: 6px;
@@ -819,9 +868,14 @@ button:disabled {
   cursor: pointer;
 }
 
+.feature-list li:hover button,
+.feature-list li:focus-within button {
+  display: grid;
+}
+
 .feature-list button svg {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
 }
 
 .dialog .primary {
@@ -934,7 +988,12 @@ button:disabled {
 
 .setup-list .row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.setup-list .row select {
+  flex: 1 0 100%;
 }
 
 .setup-list select {
