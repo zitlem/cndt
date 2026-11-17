@@ -26,6 +26,11 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
+#include <ShapeFix_Shape.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepTools.hxx>
@@ -1544,6 +1549,107 @@ int cndt_occt_heights(
 }
 
 // Writes the shape to a STEP file (AP214), in millimetres.
+// Reads STEP data held in memory (`len` bytes, not NUL-terminated) as one
+// solid, in millimetres. Several solids are fused into one. A file of
+// surfaces only is sewn, and each closed shell becomes a solid; a file
+// with no closed solid at all is refused with how many faces it held.
+// Face numbers of the result are its face map order, which is the same
+// for the same data on every run.
+int cndt_occt_read_step_solid(
+    const std::uint8_t* data,
+    std::size_t len,
+    cndt_shape** out,
+    char* err,
+    std::size_t err_len) {
+    if (data == nullptr || out == nullptr || len == 0) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        silence_console_output();
+        STEPControl_Reader reader;
+        Interface_Static::SetCVal("xstep.cascade.unit", "MM");
+        std::istringstream stream(std::string(reinterpret_cast<const char*>(data), len));
+        if (reader.ReadStream("import.step", stream) != IFSelect_RetDone) {
+            set_error(err, err_len, "the file could not be read as STEP");
+            return kReadFailed;
+        }
+        reader.TransferRoots();
+        if (reader.NbShapes() == 0) {
+            set_error(err, err_len, "the file contains no shapes");
+            return kNoShapes;
+        }
+        const TopoDS_Shape shape = reader.OneShape();
+        std::vector<TopoDS_Shape> solids;
+        for (TopExp_Explorer it(shape, TopAbs_SOLID); it.More(); it.Next()) {
+            solids.push_back(it.Current());
+        }
+        if (solids.empty()) {
+            // Surfaces only, as IGES and some STEP exports give: sew them,
+            // and keep each closed shell as a solid.
+            BRepBuilderAPI_Sewing sewing(1.0e-3);
+            sewing.Add(shape);
+            sewing.Perform();
+            const TopoDS_Shape sewn = sewing.SewedShape();
+            for (TopExp_Explorer it(sewn, TopAbs_SHELL); it.More(); it.Next()) {
+                const TopoDS_Shell shell = TopoDS::Shell(it.Current());
+                if (!BRep_Tool::IsClosed(shell)) {
+                    continue;
+                }
+                BRepBuilderAPI_MakeSolid make(shell);
+                if (make.IsDone()) {
+                    solids.push_back(make.Solid());
+                }
+            }
+            if (solids.empty()) {
+                const std::string message = "the file holds " +
+                    std::to_string(count_unique(shape, TopAbs_FACE)) +
+                    " faces but no closed solid; close the surfaces into a solid in the program that made it";
+                set_error(err, err_len, message.c_str());
+                return kModelFailed;
+            }
+        }
+        TopoDS_Shape result = solids.front();
+        if (solids.size() > 1) {
+            TopTools_ListOfShape arguments;
+            TopTools_ListOfShape tools;
+            arguments.Append(solids.front());
+            for (std::size_t i = 1; i < solids.size(); ++i) {
+                tools.Append(solids[i]);
+            }
+            BRepAlgoAPI_Fuse fuse;
+            fuse.SetArguments(arguments);
+            fuse.SetTools(tools);
+            fuse.Build();
+            if (fuse.HasErrors() || !fuse.IsDone()) {
+                set_error(err, err_len, "the file's solids could not be joined into one");
+                return kModelFailed;
+            }
+            result = fuse.Shape();
+        }
+        if (!BRepCheck_Analyzer(result).IsValid()) {
+            ShapeFix_Shape fix(result);
+            fix.Perform();
+            result = fix.Shape();
+        }
+        if (!is_valid_solid(result, err, err_len)) {
+            set_error(err, err_len, "the file's solid is not valid, even after repair");
+            return kModelFailed;
+        }
+        auto made = std::make_unique<cndt_shape>();
+        made->shape = result;
+        *out = made.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
 int cndt_occt_write_step(const cndt_shape* shape, const char* path, char* err, std::size_t err_len) {
     if (shape == nullptr || path == nullptr) {
         set_error(err, err_len, "bad argument");

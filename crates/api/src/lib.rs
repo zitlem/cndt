@@ -202,6 +202,19 @@ pub enum Request {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Adds the solid in a STEP file to the timeline, joined to the part or
+    /// cut from it (decision 0017). The file's content is kept in the
+    /// project. Replies with the state.
+    ImportStep {
+        /// The STEP file.
+        path: PathBuf,
+        /// join (the default) or cut.
+        #[serde(default)]
+        operation: Option<String>,
+        /// The feature's name; the next ImportN if left out.
+        #[serde(default)]
+        name: Option<String>,
+    },
     /// A shipped post's TOML text, to start editing from. Replies
     /// `{text}`.
     PostSource {
@@ -748,6 +761,56 @@ impl Api {
         Ok(state)
     }
 
+    /// Imports a STEP file's solid (see [`Request::ImportStep`]).
+    fn import_step(
+        &mut self,
+        path: &Path,
+        operation: Option<String>,
+        name: Option<String>,
+    ) -> Result<Value, ApiError> {
+        let size = std::fs::metadata(path)
+            .map_err(|e| ApiError::new("io", format!("cannot read {}: {e}", path.display())))?
+            .len();
+        if size > cndt_model::MAX_IMPORT_BYTES {
+            return Err(ApiError::new(
+                "import",
+                format!(
+                    "{} is {size} bytes; the most an import may be is {}",
+                    path.display(),
+                    cndt_model::MAX_IMPORT_BYTES
+                ),
+            ));
+        }
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            ApiError::new(
+                "import",
+                format!("cannot read {} as STEP text: {e}", path.display()),
+            )
+        })?;
+        let source = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("import.step")
+            .to_owned();
+        let mut args = serde_json::Map::new();
+        args.insert(String::from("source"), Value::from(source));
+        args.insert(String::from("content"), Value::from(content));
+        if let Some(operation) = operation {
+            args.insert(String::from("operation"), Value::from(operation));
+        }
+        if let Some(name) = name {
+            args.insert(String::from("name"), Value::from(name));
+        }
+        let command = self
+            .registry
+            .build("feature.import", &Value::Object(args))
+            .map_err(ApiError::from)?;
+        self.session.execute(command).map_err(ApiError::from)?;
+        self.rollback = None;
+        self.refresh();
+        self.state()
+    }
+
     /// The post editor's preview (see [`Request::PostPreview`]).
     fn post_preview(
         &self,
@@ -1136,6 +1199,16 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::ImportStep {
+                path,
+                operation,
+                name,
+            } => {
+                return match self.import_step(&path, operation, name) {
+                    Ok(value) => success(value),
+                    Err(error) => failure(error),
+                };
+            }
             Request::PostSource { post } => {
                 return match PostRef::shipped_text(&post) {
                     Some(text) => success(serde_json::json!({ "text": text })),
@@ -1357,6 +1430,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ),
     ("export", &["path"]),
     ("import_dxf", &["path", "plane", "name"]),
+    ("import_step", &["path", "operation", "name"]),
     ("export_dxf", &["path", "sketch", "section"]),
     ("post_source", &["post"]),
     ("post_preview", &["definition", "setup", "setups"]),
@@ -1894,6 +1968,52 @@ mod tests {
     }
 
     #[test]
+    fn an_imported_step_solid_is_kept_in_the_project() {
+        let step =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/box-10x20x30.step");
+        let path = temp_file("imported.cndt");
+        let mut api = Api::new();
+        call(
+            &mut api,
+            json!({"method": "new_document", "name": "Imported"}),
+        );
+        let reply = call(&mut api, json!({"method": "import_step", "path": step}));
+        let result = &reply["result"];
+        assert_eq!(result["feature_status"]["0"]["state"], "ok", "{reply}");
+        let feature = &result["document"]["features"][0]["feature"];
+        assert_eq!(feature["type"], "import");
+        assert_eq!(feature["name"], "Import1");
+        assert_eq!(feature["source"], "box-10x20x30.step");
+        assert!(
+            feature.get("data").is_none(),
+            "the content never goes to the UI"
+        );
+        assert!((result["body"]["volume"].as_f64().unwrap() - 6000.0).abs() < 1e-6);
+        assert_eq!(result["undo"], "Import box-10x20x30.step");
+        call(&mut api, json!({"method": "save_as", "path": path}));
+
+        // Reopened without the original file being read again.
+        let mut other = Api::new();
+        let reply = call(&mut other, json!({"method": "open", "path": path}));
+        assert_eq!(
+            reply["result"]["feature_status"]["0"]["state"], "ok",
+            "{reply}"
+        );
+        assert!((reply["result"]["body"]["volume"].as_f64().unwrap() - 6000.0).abs() < 1e-6);
+
+        let reply = call(&mut api, json!({"method": "undo"}));
+        assert!(reply["result"]["body"].is_null(), "{reply}");
+
+        let text = temp_file("not-step.step");
+        std::fs::write(&text, "solid nothing\nendsolid\n").unwrap();
+        let reply = call(&mut api, json!({"method": "import_step", "path": text}));
+        let message = reply["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("not a STEP file"), "{reply}");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(text).unwrap();
+    }
+
+    #[test]
     fn extension_data_survives_open_and_save() {
         let path = temp_file("extensions.cndt");
         let mut project = Project::new(Document::new("Ext"));
@@ -1983,7 +2103,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 35, "{names:?}");
+        assert_eq!(names.len(), 36, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

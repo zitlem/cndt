@@ -50,7 +50,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 14: finishing allowances on pockets.
 /// - 15: setups turned about Y, and B table angles (decision 0015).
 /// - 16: measured tool assemblies (decision 0016).
-pub const SCHEMA_VERSION: u32 = 16;
+/// - 17: imported solids, their files under `design/imports/` (decision 0017).
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -58,6 +59,8 @@ pub const EXTENSION: &str = "cndt";
 const MANIFEST: &str = "manifest.json";
 const DOCUMENT: &str = "design/document.json";
 const EXTENSIONS: &str = "extensions/";
+/// Imported files, one entry per import feature: `design/imports/<id>.step`.
+const IMPORTS: &str = "design/imports/";
 
 /// The largest entry this build will read, after decompression.
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
@@ -174,6 +177,11 @@ pub fn write<W: Write + Seek>(project: &Project, writer: W) -> Result<(), Format
     let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     entries.insert(String::from(MANIFEST), to_json(&manifest)?);
     entries.insert(String::from(DOCUMENT), to_json(&project.document)?);
+    for entry in project.document.features() {
+        if let cndt_model::Feature::Import { data, .. } = &entry.feature {
+            entries.insert(import_entry(entry.id), data.0.as_ref().clone());
+        }
+    }
     for (name, data) in &project.extensions {
         check_entry_name(name)?;
         entries.insert(format!("{EXTENSIONS}{name}"), data.clone());
@@ -259,9 +267,37 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     let document_bytes = entries
         .remove(DOCUMENT)
         .ok_or_else(|| FormatError::Corrupt(format!("{DOCUMENT} is missing")))?;
-    let document: Document = serde_json::from_slice(&document_bytes)
+    let mut document: Document = serde_json::from_slice(&document_bytes)
         .map_err(|error| FormatError::Corrupt(format!("{DOCUMENT}: {error}")))?;
+    // Each import's file is its own entry.
+    let imports: Vec<cndt_model::FeatureId> = document
+        .features()
+        .iter()
+        .filter(|e| matches!(e.feature, cndt_model::Feature::Import { .. }))
+        .map(|e| e.id)
+        .collect();
+    for id in imports {
+        let name = import_entry(id);
+        let data = entries
+            .remove(&name)
+            .ok_or_else(|| FormatError::Corrupt(format!("{name} is missing")))?;
+        document
+            .load_import_data(id, cndt_model::ImportData(std::sync::Arc::new(data)))
+            .map_err(FormatError::InvalidContent)?;
+    }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 16 knew nothing of imported solids.
+    if manifest.schema_version < 17
+        && document
+            .features()
+            .iter()
+            .any(|e| matches!(e.feature, cndt_model::Feature::Import { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain imported solids",
+            manifest.schema_version
+        )));
+    }
     // Migrations. Version 1 knew nothing of sketches.
     if manifest.schema_version < 2 && !document.sketches().is_empty() {
         return Err(FormatError::Corrupt(String::from(
@@ -495,6 +531,11 @@ pub fn open(path: &Path) -> Result<Project, FormatError> {
     read(File::open(path)?)
 }
 
+/// Where an import feature's file is stored.
+fn import_entry(id: cndt_model::FeatureId) -> String {
+    format!("{IMPORTS}{}.step", id.0)
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".saving");
@@ -653,6 +694,89 @@ mod tests {
             read(Cursor::new(forged)),
             Err(FormatError::Corrupt(_))
         ));
+    }
+
+    fn imported(content: &str) -> Document {
+        let mut document = Document::new("Imported");
+        let data = cndt_model::ImportData(std::sync::Arc::new(content.as_bytes().to_vec()));
+        let (bytes, hash) = data.fingerprint();
+        document
+            .add_feature(cndt_model::Feature::Import {
+                name: String::from("Import1"),
+                source: String::from("bracket.step"),
+                operation: cndt_model::Operation::Join,
+                bytes,
+                hash,
+                data,
+            })
+            .unwrap();
+        document
+    }
+
+    #[test]
+    fn imported_files_are_stored_as_their_own_entries() {
+        let content = "ISO-10303-21;\nHEADER;\nENDSEC;\nEND-ISO-10303-21;\n";
+        let project = Project::new(imported(content));
+        let bytes = to_bytes(&project);
+        let back = read(Cursor::new(bytes.clone())).unwrap();
+        assert_eq!(back, project);
+        let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut stored = String::new();
+        zip.by_name("design/imports/0.step")
+            .unwrap()
+            .read_to_string(&mut stored)
+            .unwrap();
+        assert_eq!(stored, content);
+        // The JSON holds the fingerprint, never the content.
+        let mut json = String::new();
+        zip.by_name(DOCUMENT)
+            .unwrap()
+            .read_to_string(&mut json)
+            .unwrap();
+        assert!(
+            json.contains("bracket.step") && !json.contains("ENDSEC"),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_changed_import_is_refused() {
+        let json = serde_json::to_string(&imported("ISO-10303-21; one")).unwrap();
+        let missing = raw_zip(&[(MANIFEST, &manifest(17)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(missing)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("design/imports/0.step is missing"),
+            "{error}"
+        );
+        let changed = raw_zip(&[
+            (MANIFEST, &manifest(17)),
+            (DOCUMENT, &json),
+            ("design/imports/0.step", "ISO-10303-21; two"),
+        ]);
+        let error = read(Cursor::new(changed)).unwrap_err();
+        assert!(error.to_string().contains("does not match"), "{error}");
+        let stray = raw_zip(&[
+            (MANIFEST, &manifest(17)),
+            (DOCUMENT, &json),
+            ("design/imports/0.step", "ISO-10303-21; one"),
+            ("design/imports/5.step", "ISO-10303-21; five"),
+        ]);
+        let error = read(Cursor::new(stray)).unwrap_err();
+        assert!(error.to_string().contains("unexpected entry"), "{error}");
+    }
+
+    #[test]
+    fn imports_need_version_17() {
+        let json = serde_json::to_string(&imported("ISO-10303-21; one")).unwrap();
+        let v16 = raw_zip(&[
+            (MANIFEST, &manifest(16)),
+            (DOCUMENT, &json),
+            ("design/imports/0.step", "ISO-10303-21; one"),
+        ]);
+        let error = read(Cursor::new(v16)).unwrap_err();
+        assert!(error.to_string().contains("imported solids"), "{error}");
     }
 
     #[test]

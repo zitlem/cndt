@@ -104,7 +104,49 @@ pub enum Feature {
         /// Millimetres.
         radius: f64,
     },
+    /// A solid read from a STEP file, joined to the part or cut from it
+    /// (decision 0017). The file's content is kept in the project, so the
+    /// project opens without the original file.
+    Import {
+        /// Shown in the timeline, such as `Import1`.
+        name: String,
+        /// The original file's name, without its folder, for display.
+        source: String,
+        /// Join or cut.
+        operation: Operation,
+        /// The content's length in bytes, to check the stored copy.
+        bytes: u64,
+        /// The content's 64-bit FNV-1a hash in hex, to check the stored copy.
+        hash: String,
+        /// The file's content. Stored as its own entry in the project file,
+        /// not in the document JSON.
+        #[serde(skip)]
+        data: ImportData,
+    },
 }
+
+/// An imported file's content: shared, so copying the document for undo
+/// does not copy the file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportData(pub std::sync::Arc<Vec<u8>>);
+
+impl ImportData {
+    /// The content's length and hash, as an import feature records them.
+    #[must_use]
+    pub fn fingerprint(&self) -> (u64, String) {
+        (self.0.len() as u64, format!("{:016x}", fnv1a(&self.0)))
+    }
+}
+
+/// 64-bit FNV-1a.
+fn fnv1a(data: &[u8]) -> u64 {
+    data.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// The most an imported file may hold: 200 MB.
+pub const MAX_IMPORT_BYTES: u64 = 200 * 1024 * 1024;
 
 /// Edges to chamfer or fillet, by the names of the faces around them
 /// (decision 0012).
@@ -247,7 +289,8 @@ impl Feature {
             | Self::Hole { name, .. }
             | Self::Chamfer { name, .. }
             | Self::Pattern { name, .. }
-            | Self::Fillet { name, .. } => name,
+            | Self::Fillet { name, .. }
+            | Self::Import { name, .. } => name,
         }
     }
 
@@ -256,13 +299,38 @@ impl Feature {
     pub const fn sketch(&self) -> Option<SketchId> {
         match self {
             Self::Extrude { sketch, .. } | Self::Hole { sketch, .. } => Some(*sketch),
-            Self::Chamfer { .. } | Self::Fillet { .. } | Self::Pattern { .. } => None,
+            Self::Chamfer { .. }
+            | Self::Fillet { .. }
+            | Self::Pattern { .. }
+            | Self::Import { .. } => None,
         }
     }
 
     /// Checks the values the editing commands must keep.
     pub(crate) fn check(&self) -> Result<(), String> {
         match self {
+            Self::Import {
+                source,
+                bytes,
+                hash,
+                data,
+                ..
+            } => {
+                if data.0.is_empty() {
+                    return Err(format!("the imported file {source} has no content"));
+                }
+                if *bytes > MAX_IMPORT_BYTES {
+                    return Err(format!(
+                        "{source} is {bytes} bytes; the most an import may be is {MAX_IMPORT_BYTES}"
+                    ));
+                }
+                if data.fingerprint() != (*bytes, hash.clone()) {
+                    return Err(format!(
+                        "the stored copy of {source} does not match its recorded length and hash"
+                    ));
+                }
+                Ok(())
+            }
             Self::Extrude {
                 distance, profiles, ..
             } => {
@@ -396,6 +464,11 @@ pub enum FaceOrigin {
         /// Which surface.
         surface: HoleSurface,
     },
+    /// A face of an imported solid, by its number in the file's solid.
+    Imported {
+        /// The face number, the same for the same file.
+        face: u32,
+    },
 }
 
 /// The surfaces of a hole, from the top down.
@@ -459,6 +532,7 @@ impl fmt::Display for FaceName {
             FaceOrigin::Blend { between } => {
                 write!(f, "f{}/blend/{}+{}", self.feature.0, between.0, between.1)
             }
+            FaceOrigin::Imported { face } => write!(f, "f{}/import/{face}", self.feature.0),
             FaceOrigin::Hole { point, surface } => {
                 write!(
                     f,
@@ -1097,6 +1171,30 @@ fn pattern_tool(
     Ok((body, names, original.operation))
 }
 
+/// Reads an imported solid, naming each face by its number.
+fn import_tool(
+    kernel: &dyn Kernel,
+    id: FeatureId,
+    data: &ImportData,
+) -> Result<(Body, Names), String> {
+    let body = kernel
+        .read_step_solid(&data.0)
+        .map_err(|error| format!("the imported file cannot be read: {error}"))?;
+    let faces = kernel
+        .properties(&body)
+        .map_err(|error| error.to_string())?
+        .faces;
+    let names = (0..faces)
+        .map(|face| {
+            BTreeSet::from([FaceName {
+                feature: id,
+                origin: FaceOrigin::Imported { face },
+            }])
+        })
+        .collect();
+    Ok((body, names))
+}
+
 /// Joins a tool to the part or cuts it away, carrying names.
 fn apply_tool(
     kernel: &dyn Kernel,
@@ -1139,6 +1237,13 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
     for entry in features {
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
             let Some(sketch) = entry.feature.sketch() else {
+                if let Feature::Import {
+                    data, operation, ..
+                } = &entry.feature
+                {
+                    let (tool, names) = import_tool(kernel, entry.id, data)?;
+                    return apply_tool(kernel, part.as_ref(), &tool, &names, *operation).map(Some);
+                }
                 if let Feature::Pattern { .. } = &entry.feature {
                     let (tool, names, operation) =
                         pattern_tool(kernel, entry.id, &entry.feature, &tools)?;
@@ -1176,7 +1281,10 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                         hole_tool(document, kernel, entry.id, &entry.feature, &frame, body)?;
                     (tool, names, Operation::Cut)
                 }
-                Feature::Chamfer { .. } | Feature::Fillet { .. } | Feature::Pattern { .. } => {
+                Feature::Chamfer { .. }
+                | Feature::Fillet { .. }
+                | Feature::Pattern { .. }
+                | Feature::Import { .. } => {
                     return Err(String::from("this feature has no sketch"));
                 }
             };
@@ -1853,5 +1961,79 @@ mod tests {
             (size[1] - 5.0).abs() < 1e-6,
             "the fin goes +Y from the XZ plane: {size:?}"
         );
+    }
+
+    fn import(name: &str, content: Vec<u8>, operation: Operation) -> Feature {
+        let data = ImportData(std::sync::Arc::new(content));
+        let (bytes, hash) = data.fingerprint();
+        Feature::Import {
+            name: name.into(),
+            source: String::from("box-10x20x30.step"),
+            operation,
+            bytes,
+            hash,
+            data,
+        }
+    }
+
+    fn box_step() -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/box-10x20x30.step"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_imported_solid_names_its_faces_and_takes_later_features() {
+        let mut d = Document::new("Imported");
+        d.add_feature(import("Import1", box_step(), Operation::Join))
+            .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(r.status.get(&FeatureId(0)), Some(&FeatureStatus::Ok));
+        let tokens: Vec<String> = r.faces.iter().flatten().map(ToString::to_string).collect();
+        assert_eq!(
+            tokens,
+            (0..6).map(|n| format!("f0/import/{n}")).collect::<Vec<_>>()
+        );
+        let volume = r.properties.unwrap().volume;
+        assert!((volume - 6000.0).abs() < 1e-6, "{volume}");
+        // A chamfer on an imported face's edges builds, and names its faces.
+        d.add_feature(Feature::Chamfer {
+            name: "Chamfer1".into(),
+            edges: vec![EdgeTarget::Face(String::from("f0/import/0"))],
+            distance: 1.0,
+        })
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert!(
+            r.status.values().all(|s| *s == FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        assert!(r.properties.unwrap().volume < 6000.0);
+        assert_eq!(r.faces.len(), 10, "6 faces and 4 chamfers");
+    }
+
+    #[test]
+    fn an_unreadable_import_is_flagged_and_the_rest_still_build() {
+        let mut d = Document::new("Imported");
+        d.add_feature(import("Import1", box_step(), Operation::Join))
+            .unwrap();
+        d.add_feature(import(
+            "Import2",
+            b"ISO-10303-21; nothing".to_vec(),
+            Operation::Cut,
+        ))
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(r.status.get(&FeatureId(0)), Some(&FeatureStatus::Ok));
+        match r.status.get(&FeatureId(1)) {
+            Some(FeatureStatus::Failed { reason }) => {
+                assert!(reason.contains("cannot be read"), "{reason}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!((r.properties.unwrap().volume - 6000.0).abs() < 1e-6);
     }
 }

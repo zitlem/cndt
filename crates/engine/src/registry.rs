@@ -10,9 +10,9 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    AddBlend, AddExtrude, AddHole, BlendKind, Command, CommandError, CreateSketch, DeleteFeature,
-    DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole, EditSketch, Grid, PointRef,
-    RemoveParameter, RenameDocument, SetParameter, SetPattern, SketchEdit,
+    AddBlend, AddExtrude, AddHole, AddImport, BlendKind, Command, CommandError, CreateSketch,
+    DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole, EditSketch, Grid,
+    PointRef, RemoveParameter, RenameDocument, SetParameter, SetPattern, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, Thread};
@@ -347,6 +347,54 @@ impl Registry {
                     },
                 ],
                 build: |args| blend(args, BlendKind::Fillet, "radius"),
+            },
+            CommandSpec {
+                name: "feature.import",
+                description: "Add a solid from a STEP file, kept in the project.",
+                args: &[
+                    ArgSpec {
+                        name: "source",
+                        kind: ArgKind::Text,
+                        required: true,
+                        description: "The file's name, shown in the timeline.",
+                    },
+                    ArgSpec {
+                        name: "content",
+                        kind: ArgKind::Text,
+                        required: true,
+                        description: "The STEP file's text.",
+                    },
+                    ArgSpec {
+                        name: "operation",
+                        kind: ArgKind::Operation,
+                        required: false,
+                        description: "join (the default) or cut.",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next ImportN.",
+                    },
+                ],
+                build: |args| {
+                    let operation = if args.contains_key("operation") {
+                        operation(args)?
+                    } else {
+                        Operation::Join
+                    };
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(AddImport::new(
+                        text(args, "source")?,
+                        text(args, "content")?,
+                        operation,
+                        name,
+                    )))
+                },
             },
             CommandSpec {
                 name: "feature.edit_blend",
@@ -1864,6 +1912,10 @@ mod tests {
                 json!({"edges": [["f0/side/e4", "f0/side/e5"]], "radius": 3}),
             ),
             ("feature.edit_blend", json!({"feature": 3, "size": 1})),
+            (
+                "feature.import",
+                json!({"source": "bracket.step", "content": "ISO-10303-21;", "operation": "cut"}),
+            ),
             (
                 "feature.hole",
                 json!({"sketch": 0, "thread": "M6", "depth": 15}),

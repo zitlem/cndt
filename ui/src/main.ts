@@ -404,7 +404,10 @@ function renderFeatures(state: DocumentState): void {
     // The same icon as the tool that made it.
     const icon = globalThis.document.createElement("span");
     icon.className = "icon";
-    const tool = feature.type === "extrude" ? ui.extrudeButton : globalThis.document.getElementById(feature.type);
+    const tool =
+      feature.type === "extrude"
+        ? ui.extrudeButton
+        : globalThis.document.getElementById(feature.type === "import" ? "insert-step" : feature.type);
     const svg = tool?.querySelector("svg");
     if (svg) icon.append(svg.cloneNode(true));
     const name = globalThis.document.createElement("span");
@@ -421,6 +424,7 @@ function renderFeatures(state: DocumentState): void {
       guarded(async () => render(await execute("feature.delete", { feature: id })))();
     });
     item.addEventListener("click", () => {
+      if (feature.type === "import") return; // nothing to edit: re-import to change it
       if (feature.type === "pattern") openPattern(id);
       else if (feature.type === "hole") openHole(id);
       else if (feature.type === "extrude") openExtrude(id);
@@ -806,6 +810,10 @@ function featureDetail(feature: import("./api").Feature): string {
     return `${feature.count_x} × ${feature.count_y} of ${source}`;
   }
   if (feature.type === "fillet") return `R${formatNumber(feature.radius)}`;
+  if (feature.type === "import") {
+    const size = feature.bytes >= 1048576 ? `${formatNumber(feature.bytes / 1048576)} MB` : `${Math.ceil(feature.bytes / 1024)} kB`;
+    return `${feature.operation === "cut" ? "cut " : ""}${feature.source}, ${size}, kept in the project`;
+  }
   const { spec, points } = feature;
   const size = spec.thread ? spec.thread.size.replace(/x.*/, "") : `Ø${formatNumber(spec.diameter)}`;
   const depth = spec.depth === "through" ? "thru" : `${formatNumber(spec.depth.blind)} deep`;
@@ -1191,11 +1199,32 @@ element("save-as").addEventListener(
   }),
 );
 
+// A STEP solid into the design: a timeline feature, its file kept in the
+// project (decision 0017).
 element("import-step").addEventListener(
   "click",
   guarded(async () => {
     const path = await open({
-      title: "Import STEP",
+      title: "Import a STEP solid into the design",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "STEP", extensions: ["step", "stp", "STEP", "STP"] }],
+    });
+    if (typeof path !== "string") return;
+    ui.viewportHint.textContent = "Reading the file…";
+    ui.viewportHint.hidden = false;
+    const next = await request<DocumentState>({ method: "import_step", path });
+    render(next);
+    viewer.fit();
+  }),
+);
+
+// A STEP file shown on its own, not added to the design.
+element("preview-step").addEventListener(
+  "click",
+  guarded(async () => {
+    const path = await open({
+      title: "Look at a STEP file",
       multiple: false,
       directory: false,
       filters: [{ name: "STEP", extensions: ["step", "stp", "STEP", "STP"] }],

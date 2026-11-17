@@ -100,6 +100,7 @@ export type Feature =
   | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec }
   | { type: "chamfer"; name: string; edges: EdgeTarget[]; distance: number }
   | { type: "fillet"; name: string; edges: EdgeTarget[]; radius: number }
+  | { type: "import"; name: string; source: string; operation: "join" | "cut"; bytes: number; hash: string }
   | {
       type: "pattern";
       name: string;
