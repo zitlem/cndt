@@ -187,6 +187,14 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         from_above: bool,
     ) -> Result<Vec<Option<f64>>, KernelError>;
 
+    /// Every closed loop where the plane at height `z` cuts the body: its
+    /// true walls there, outside and holes, in model coordinates.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if nothing closed is there.
+    fn section_loops(&self, body: &Body, z: f64) -> Result<Vec<Vec<OutlineSegment>>, KernelError>;
+
     /// Writes the body to a STEP file, in millimetres.
     ///
     /// # Errors
@@ -496,6 +504,14 @@ impl Kernel for OpenCascade {
         from_above: bool,
     ) -> Result<Vec<Option<f64>>, KernelError> {
         cndt_occt_sys::heights(&body.0, points, from_above).map_err(modelling)
+    }
+
+    fn section_loops(&self, body: &Body, z: f64) -> Result<Vec<Vec<OutlineSegment>>, KernelError> {
+        Ok(cndt_occt_sys::section_loops(&body.0, z)
+            .map_err(modelling)?
+            .into_iter()
+            .map(outline_segments)
+            .collect())
     }
 
     fn write_step(&self, body: &Body, path: &Path) -> Result<(), KernelError> {

@@ -1572,4 +1572,63 @@ int cndt_occt_write_step(const cndt_shape* shape, const char* path, char* err, s
     }
 }
 
+// Every closed loop where the plane at height z cuts the solid: the true
+// walls there, outside and holes, as lines and arcs.
+int cndt_occt_section_loops(
+    const cndt_shape* shape,
+    double z,
+    cndt_segments** out,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || out == nullptr || !std::isfinite(z)) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        silence_console_output();
+        BRepAlgoAPI_Section section(shape->shape, gp_Pln(gp_Pnt(0.0, 0.0, z), gp_Dir(0.0, 0.0, 1.0)), Standard_False);
+        section.Build();
+        if (!section.IsDone()) {
+            set_error(err, err_len, "the part could not be cut through at that height");
+            return kModelFailed;
+        }
+        Handle(TopTools_HSequenceOfShape) edges = new TopTools_HSequenceOfShape();
+        for (TopExp_Explorer it(section.Shape(), TopAbs_EDGE); it.More(); it.Next()) {
+            edges->Append(it.Current());
+        }
+        if (edges->IsEmpty()) {
+            set_error(err, err_len, "the part has nothing at that height");
+            return kModelFailed;
+        }
+        Handle(TopTools_HSequenceOfShape) wires;
+        ShapeAnalysis_FreeBounds::ConnectEdgesToWires(edges, 1e-6, Standard_False, wires);
+        auto segments = std::make_unique<cndt_segments>();
+        std::int32_t n = 0;
+        for (int i = 1; i <= wires->Length(); ++i) {
+            const TopoDS_Wire wire = TopoDS::Wire(wires->Value(i));
+            if (!wire.Closed()) {
+                continue;
+            }
+            if (!append_wire(wire, n, *segments)) {
+                set_error(err, err_len, "a section edge could not be followed");
+                return kModelFailed;
+            }
+            ++n;
+        }
+        if (n == 0) {
+            set_error(err, err_len, "the section at that height has no closed loop");
+            return kModelFailed;
+        }
+        *out = segments.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
 }  // extern "C"

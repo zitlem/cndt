@@ -170,6 +170,13 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_section_loops(
+        shape: *const ShapeHandle,
+        z: f64,
+        out: *mut *mut SegmentsHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_write_step(
         shape: *const ShapeHandle,
         path: *const c_char,
@@ -854,9 +861,42 @@ pub fn face_loops(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Vec<Seg
     if code != status::OK || out.is_null() {
         return Err(status_error(code, &err));
     }
+    Ok(take_loops(out))
+}
+
+/// Every closed loop where the plane at height `z` cuts the solid: its true
+/// walls there, outside and holes.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] if nothing closed is there.
+pub fn section_loops(shape: &Shape, z: f64) -> Result<Vec<Vec<Segment>>, OcctError> {
+    let mut out: *mut SegmentsHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `out` is a valid out-pointer; `err` is
+    // writable for `err.len()` bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_section_loops(
+            shape.ptr.as_ptr(),
+            z,
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK || out.is_null() {
+        return Err(status_error(code, &err));
+    }
+    Ok(take_loops(out))
+}
+
+/// Copies segments the shim handed out, grouped by loop, and frees them.
+fn take_loops(out: *mut SegmentsHandle) -> Vec<Vec<Segment>> {
     let mut items: *const RawSegment = std::ptr::null();
     let mut len = 0_usize;
-    // SAFETY: `out` is a live handle; the out-pointers are valid locals.
+    // SAFETY: `out` is a live handle from a successful shim call; the
+    // out-pointers are valid locals.
     unsafe { cndt_occt_segments_view(out, &mut items, &mut len) };
     // SAFETY: the view points into `out`'s vector of `len` segments, which is
     // freed only after this copy.
@@ -885,7 +925,7 @@ pub fn face_loops(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Vec<Seg
             l.push(segment);
         }
     }
-    Ok(loops)
+    loops
 }
 
 /// Fuses or cuts two shapes.
@@ -1288,6 +1328,24 @@ mod tests {
         assert!(radii.iter().any(|r| (r - 4.0).abs() < 1e-7), "{radii:?}");
         assert!(radii.iter().all(|r| *r < 5.0), "a hole grew: {radii:?}");
         assert!(radii.iter().any(|r| (r - 1.0).abs() < 1e-7), "{radii:?}");
+    }
+
+    #[test]
+    fn a_section_has_every_loop() {
+        // A 20 x 10 block with a hole is two loops at mid-height.
+        let block = extrude(&[rectangle(20.0, 10.0)], Z, 5.0).unwrap();
+        let hole = vec![Curve::Circle {
+            center: [10.0, 5.0, -1.0],
+            radius: 2.0,
+        }];
+        let pin = extrude(&[hole], Z, 7.0).unwrap();
+        let holed = boolean(&block.shape, &pin.shape, BooleanOp::Cut).unwrap();
+        let loops = section_loops(&holed.shape, 2.5).unwrap();
+        assert_eq!(loops.len(), 2, "{loops:?}");
+        assert!(matches!(
+            section_loops(&holed.shape, 50.0),
+            Err(OcctError::ModelFailed(_))
+        ));
     }
 
     #[test]

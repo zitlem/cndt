@@ -17,6 +17,7 @@
 //! {"ok": true, "result": {"document": {...}, "dirty": true, ...}}
 //! ```
 
+mod dxf;
 mod export;
 mod simulate;
 mod verify;
@@ -171,6 +172,20 @@ pub enum Request {
     Export {
         /// The file to write.
         path: PathBuf,
+    },
+    /// Writes a DXF (R12, millimetres) of a sketch, exactly and in its own
+    /// coordinates, or of the part cut through at a height, seen from
+    /// above. Replies `{entities}`.
+    ExportDxf {
+        /// The file to write.
+        path: PathBuf,
+        /// A sketch's id.
+        #[serde(default)]
+        sketch: Option<u64>,
+        /// A model height to cut the part through at, instead of a sketch:
+        /// its true walls there, outside and holes.
+        #[serde(default)]
+        section: Option<f64>,
     },
     /// A shipped post's TOML text, to start editing from. Replies
     /// `{text}`.
@@ -1051,6 +1066,16 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::ExportDxf {
+                path,
+                sketch,
+                section,
+            } => {
+                return match self.export_dxf(&path, sketch, section) {
+                    Ok(value) => success(value),
+                    Err(error) => failure(error),
+                };
+            }
             Request::PostSource { post } => {
                 return match PostRef::shipped_text(&post) {
                     Some(text) => success(serde_json::json!({ "text": text })),
@@ -1271,6 +1296,7 @@ const FIELDS: &[(&str, &[&str])] = &[
         &["post", "definition", "machine", "setups", "cell", "path"],
     ),
     ("export", &["path"]),
+    ("export_dxf", &["path", "sketch", "section"]),
     ("post_source", &["post"]),
     ("post_preview", &["definition", "setup", "setups"]),
     ("read_post", &["path"]),
