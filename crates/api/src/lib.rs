@@ -17,6 +17,7 @@
 //! {"ok": true, "result": {"document": {...}, "dirty": true, ...}}
 //! ```
 
+mod export;
 mod simulate;
 mod verify;
 
@@ -163,6 +164,13 @@ pub enum Request {
         /// A file to write the report to.
         #[serde(default)]
         path: Option<PathBuf>,
+    },
+    /// Writes the part, as built at the history marker, to a file: STEP
+    /// (`.step`, `.stp`) or binary STL (`.stl`) by the extension. Replies
+    /// `{format}`, and for STL `triangles`.
+    Export {
+        /// The file to write.
+        path: PathBuf,
     },
     /// A shipped post's TOML text, to start editing from. Replies
     /// `{text}`.
@@ -1037,6 +1045,12 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::Export { path } => {
+                return match self.export(&path) {
+                    Ok(value) => success(value),
+                    Err(error) => failure(error),
+                };
+            }
             Request::PostSource { post } => {
                 return match PostRef::shipped_text(&post) {
                     Some(text) => success(serde_json::json!({ "text": text })),
@@ -1256,6 +1270,7 @@ const FIELDS: &[(&str, &[&str])] = &[
         "verify",
         &["post", "definition", "machine", "setups", "cell", "path"],
     ),
+    ("export", &["path"]),
     ("post_source", &["post"]),
     ("post_preview", &["definition", "setup", "setups"]),
     ("read_post", &["path"]),

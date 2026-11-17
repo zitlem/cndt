@@ -1008,6 +1008,44 @@ fn the_cndt_test_block() {
     let end = s.call(json!({"method": "rollback"}));
     assert_eq!(end["result"]["rollback"], Value::Null);
 
+    // Exported as STEP, the part reads back with the same faces and size;
+    // as STL, a binary mesh of whole triangles.
+    let step = std::env::temp_dir().join(format!("cndt-test-block-{}.step", std::process::id()));
+    let reply = s.call(json!({"method": "export", "path": step}));
+    assert_eq!(reply["result"]["format"], "step", "{reply}");
+    let info = s.call(json!({"method": "step_info", "path": step}));
+    assert_eq!(info["result"]["solids"], 1, "{info}");
+    assert_eq!(
+        info["result"]["faces"].as_u64().unwrap() as usize,
+        s.state()["body"]["faces"].as_array().unwrap().len(),
+        "{info}"
+    );
+    let size = |b: &Value| {
+        let (min, max) = (&b["min"], &b["max"]);
+        ["x", "y", "z"].map(|k| max[k].as_f64().unwrap() - min[k].as_f64().unwrap())
+    };
+    let (ours, theirs) = (
+        size(&s.state()["body"]["bounds"]),
+        size(&info["result"]["bounds"]),
+    );
+    for (a, b) in ours.iter().zip(theirs) {
+        assert!((a - b).abs() < 1e-3, "{ours:?} {theirs:?}");
+    }
+    let _ = std::fs::remove_file(&step);
+    let stl = std::env::temp_dir().join(format!("cndt-test-block-{}.stl", std::process::id()));
+    let reply = s.call(json!({"method": "export", "path": stl}));
+    let triangles = reply["result"]["triangles"].as_u64().unwrap() as usize;
+    let bytes = std::fs::read(&stl).unwrap();
+    assert_eq!(bytes.len(), 84 + 50 * triangles);
+    assert!(!bytes.starts_with(b"solid"));
+    assert_eq!(
+        u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize,
+        triangles
+    );
+    let _ = std::fs::remove_file(&stl);
+    let reply = s.call(json!({"method": "export", "path": "part.iges"}));
+    assert_eq!(reply["error"]["kind"], "bad_request", "{reply}");
+
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
     s.call(json!({"method": "save_as", "path": path}));

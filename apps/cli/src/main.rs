@@ -28,6 +28,7 @@ other:
                                             --setups, several sides in one program; a program
                                             verification finds problems in is refused unless
                                             --override, which the program header records
+  export <file.cndt> <out.step|out.stl>     write the part as STEP or STL
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
   version                                   show the CNDT and geometry kernel versions
@@ -87,6 +88,7 @@ fn main() -> ExitCode {
         ["exec", path, command, arguments] => exec(Path::new(path), command, arguments),
         ["commands"] => commands(),
         ["info", path] => info(Path::new(path)),
+        ["export", path, out] => export(Path::new(path), Path::new(out)),
         ["post", path] => post(Path::new(path), "fanuc-mill", &target, None),
         ["post", path, id] => post(Path::new(path), id, &target, None),
         ["post", path, id, setup] => match setup.parse::<u32>() {
@@ -184,6 +186,19 @@ fn post(path: &Path, id: &str, target: &Target<'_>, setup: Option<u32>) -> Resul
         }
     }
     print!("{}", result["gcode"].as_str().unwrap_or_default());
+    Ok(())
+}
+
+/// Writes the part to a STEP or STL file.
+fn export(path: &Path, out: &Path) -> Result<(), String> {
+    let mut api = Api::new();
+    open(&mut api, path)?;
+    let result = call(&mut api, &json!({"method": "export", "path": out}))?;
+    println!(
+        "wrote {} ({})",
+        out.display(),
+        result["format"].as_str().unwrap_or_default()
+    );
     Ok(())
 }
 
