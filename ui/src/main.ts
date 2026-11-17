@@ -99,6 +99,46 @@ const ui = {
 };
 
 const viewer = new Viewer(element("viewport"));
+
+// Theme: follows the system until a choice is made in the app bar, which
+// this computer remembers.
+type ThemeChoice = "system" | "light" | "dark";
+const THEME_KEY = "cndt.theme";
+const systemLight = globalThis.matchMedia?.("(prefers-color-scheme: light)");
+function savedTheme(): ThemeChoice {
+  try {
+    const value = globalThis.localStorage?.getItem(THEME_KEY);
+    return value === "light" || value === "dark" ? value : "system";
+  } catch {
+    return "system";
+  }
+}
+let themeChoice: ThemeChoice = savedTheme();
+function applyTheme(): void {
+  const root = globalThis.document.documentElement;
+  if (themeChoice === "system") delete root.dataset.theme;
+  else root.dataset.theme = themeChoice;
+  const light = themeChoice === "light" || (themeChoice === "system" && systemLight?.matches === true);
+  viewer.setTheme(light ? "light" : "dark");
+  const next: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
+  const label = { system: "follows the system", light: "light", dark: "dark" };
+  const button = element("theme");
+  button.title = `Theme: ${label[themeChoice]}. Click for ${label[next[themeChoice]]}.`;
+  button.setAttribute("aria-label", button.title);
+}
+element("theme").addEventListener("click", () => {
+  const next: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
+  themeChoice = next[themeChoice];
+  try {
+    if (themeChoice === "system") globalThis.localStorage?.removeItem(THEME_KEY);
+    else globalThis.localStorage?.setItem(THEME_KEY, themeChoice);
+  } catch {
+    // Not remembered; the choice still applies now.
+  }
+  applyTheme();
+});
+systemLight?.addEventListener("change", applyTheme);
+applyTheme();
 const editor = new SketchEditor(element("viewport"), {
   async execute(command, args) {
     const next = await execute(command, args);

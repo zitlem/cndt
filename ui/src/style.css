@@ -17,6 +17,14 @@
   --warning-border: #b25e1a;
   --warning-text: #ffd9b5;
   --danger: #ff7a70;
+  --on-accent: #ffffff;
+  --success: #9be3a8;
+  --toolpath: #4fd1c5;
+  --axis-x: #7a3b3b;
+  --axis-y: #3b6a43;
+  --flash-fill: #5a1f1c;
+  --face-reference: #2a3a52;
+  --shadow: rgb(0 0 0 / 40%);
   --radius: 14px;
   --radius-small: 10px;
   color-scheme: dark;
@@ -333,7 +341,7 @@ button:disabled {
   border: 0;
   border-radius: var(--radius-small);
   background: var(--accent-strong);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
   cursor: pointer;
 }
@@ -409,7 +417,7 @@ button:disabled {
   border-radius: var(--radius-small);
   background: var(--warning-bg);
   color: var(--warning-text);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  box-shadow: 0 8px 24px var(--shadow);
 }
 
 /* Sketch mode */
@@ -421,6 +429,80 @@ button:disabled {
   --sketch-construction: #c98a4b;
   --sketch-grid: #22272d;
   --sketch-grid-major: #2c3239;
+}
+
+/* The light theme: chosen in the app bar, or following the system when the
+   choice is "system" (no data-theme on the root). */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #e9ecef;
+    --panel: #ffffff;
+    --panel-raised: #f2f4f6;
+    --border: #d6dbe0;
+    --border-strong: #bcc3cb;
+    --text: #15181c;
+    --text-secondary: #333a42;
+    --text-muted: #59626c;
+    --accent: #1d5fd1;
+    --accent-strong: #2563eb;
+    --accent-soft: #dce7fb;
+    --accent-text: #123a85;
+    --warning-bg: #fff2e0;
+    --warning-border: #c46a1c;
+    --warning-text: #6a3505;
+    --danger: #c0281d;
+    --on-accent: #ffffff;
+    --success: #1d7a36;
+    --toolpath: #0e8379;
+    --axis-x: #d48c8c;
+    --axis-y: #82b78c;
+    --flash-fill: #f8d5d2;
+    --face-reference: #dbe6f6;
+    --shadow: rgb(20 30 45 / 18%);
+    --sketch-free: #1d5fd1;
+    --sketch-fixed: #15181c;
+    --sketch-over: #c0281d;
+    --sketch-selected: #c46a00;
+    --sketch-construction: #9a5a1c;
+    --sketch-grid: #e3e7eb;
+    --sketch-grid-major: #cfd5db;
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #e9ecef;
+  --panel: #ffffff;
+  --panel-raised: #f2f4f6;
+  --border: #d6dbe0;
+  --border-strong: #bcc3cb;
+  --text: #15181c;
+  --text-secondary: #333a42;
+  --text-muted: #59626c;
+  --accent: #1d5fd1;
+  --accent-strong: #2563eb;
+  --accent-soft: #dce7fb;
+  --accent-text: #123a85;
+  --warning-bg: #fff2e0;
+  --warning-border: #c46a1c;
+  --warning-text: #6a3505;
+  --danger: #c0281d;
+  --on-accent: #ffffff;
+  --success: #1d7a36;
+  --toolpath: #0e8379;
+  --axis-x: #d48c8c;
+  --axis-y: #82b78c;
+  --flash-fill: #f8d5d2;
+  --face-reference: #dbe6f6;
+  --shadow: rgb(20 30 45 / 18%);
+  --sketch-free: #1d5fd1;
+  --sketch-fixed: #15181c;
+  --sketch-over: #c0281d;
+  --sketch-selected: #c46a00;
+  --sketch-construction: #9a5a1c;
+  --sketch-grid: #e3e7eb;
+  --sketch-grid-major: #cfd5db;
+  color-scheme: light;
 }
 
 /* While sketching, the sketch toolbar replaces the main ribbon groups. */
@@ -448,7 +530,7 @@ button:disabled {
 }
 
 .tool.finish {
-  color: #9be3a8;
+  color: var(--success);
 }
 
 .constraint-buttons {
@@ -491,7 +573,7 @@ button:disabled {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   background: var(--panel-raised);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  box-shadow: 0 8px 24px var(--shadow);
 }
 
 .menu[hidden] {
@@ -539,11 +621,11 @@ button:disabled {
 }
 
 .sketch-surface .axis-x {
-  stroke: #7a3b3b;
+  stroke: var(--axis-x);
 }
 
 .sketch-surface .axis-y {
-  stroke: #3b6a43;
+  stroke: var(--axis-y);
 }
 
 .sketch-surface .curve {
@@ -623,7 +705,7 @@ button:disabled {
 }
 
 .sketch-surface .mark.flashed rect {
-  fill: #5a1f1c;
+  fill: var(--flash-fill);
   stroke: var(--sketch-over);
   stroke-width: 2;
 }
@@ -676,7 +758,7 @@ button:disabled {
 }
 
 .sketch-list .badge.fully {
-  color: #9be3a8;
+  color: var(--success);
 }
 
 .sketch-list .badge.over {
@@ -719,7 +801,7 @@ button:disabled {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   background: var(--panel);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  box-shadow: 0 8px 24px var(--shadow);
 }
 
 .dialog[hidden] {
@@ -885,8 +967,8 @@ button:disabled {
 
 /* The face a sketch is on, shown faintly under it. */
 .sketch-surface .reference {
-  fill: #2a3a52;
-  stroke: #2a3a52;
+  fill: var(--face-reference);
+  stroke: var(--face-reference);
   stroke-width: 0.5;
   pointer-events: none;
 }
@@ -958,7 +1040,7 @@ button:disabled {
 }
 
 .setup-list > li.showing {
-  border-color: #4fd1c5;
+  border-color: var(--toolpath);
 }
 
 .setup-list .head {
@@ -1295,7 +1377,7 @@ span.ribbon-label {
   bottom: 10px;
   z-index: 7;
   width: 280px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  box-shadow: 0 8px 24px var(--shadow);
   opacity: 0.97;
 }
 
@@ -1472,7 +1554,7 @@ span.ribbon-label {
   border-radius: 999px;
   background: var(--panel);
   transform: translateX(-50%);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+  box-shadow: 0 4px 16px var(--shadow);
 }
 
 .nav-bar .icon-button {
@@ -1695,4 +1777,9 @@ span.ribbon-label {
 
 .editor-status.error {
   color: var(--danger);
+}
+
+.theme-button .theme-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
 }
