@@ -2507,4 +2507,94 @@ mod tests {
             Err(CamError::NoSetups)
         );
     }
+
+    /// The block with a top and a bottom setup, both making holes.
+    fn two_sided(
+        top_index: Option<f64>,
+        bottom_index: Option<f64>,
+        offsets: (u8, u8),
+    ) -> (Document, u32, u32) {
+        let mut d = block_with_bottom_hole();
+        let add = |d: &mut Document, side, work_offset, index| {
+            let id = d
+                .edit_cam(CamEdit::AddSetup {
+                    name: String::new(),
+                    side,
+                    work_offset,
+                    flip_about: cndt_model::cam::FlipAxis::X,
+                    index,
+                })
+                .unwrap()
+                .unwrap();
+            d.edit_cam(CamEdit::AddOperation {
+                setup: id,
+                operation: OperationDef::Holes,
+            })
+            .unwrap();
+            id
+        };
+        let top = add(&mut d, Side::Top, offsets.0, top_index);
+        let under = add(&mut d, Side::Bottom, offsets.1, bottom_index);
+        (d, top, under)
+    }
+
+    #[test]
+    fn a_setup_listed_twice_cannot_share_a_program() {
+        let (d, _top, under) = two_sided(None, None, (1, 2));
+        let r = rebuild(&d, &OpenCascade);
+        let got = plan_setups(&d, &r, &OpenCascade, &[under, under]);
+        assert!(matches!(got, Err(CamError::Join(ref why)) if why.contains("listed twice")));
+        assert_eq!(
+            plan_setups(&d, &r, &OpenCascade, &[]),
+            Err(CamError::NoSetups)
+        );
+        assert_eq!(
+            plan_setups(&d, &r, &OpenCascade, &[under, 77]),
+            Err(CamError::UnknownSetup(77))
+        );
+    }
+
+    #[test]
+    fn two_table_turned_sides_need_their_own_work_offsets() {
+        let (d, top, under) = two_sided(Some(0.0), Some(180.0), (1, 1));
+        let r = rebuild(&d, &OpenCascade);
+        let got = plan_setups(&d, &r, &OpenCascade, &[top, under]);
+        assert!(matches!(got, Err(CamError::Join(ref why)) if why.contains("work offset")));
+    }
+
+    #[test]
+    fn joining_a_setup_with_nothing_to_make_says_so_every_time() {
+        let (d, top, under) = two_sided(None, None, (1, 2));
+        let r = rebuild(&d, &OpenCascade);
+        // The top has no hole facing the spindle, so only the bottom can be
+        // planned alone; joined, the failure must name its cause, not vanish.
+        let joined = plan_setups(&d, &r, &OpenCascade, &[under]);
+        let again = plan_setups(&d, &r, &OpenCascade, &[under]);
+        assert_eq!(joined, again);
+        assert!(joined.is_ok());
+        // Joined with the top, which has nothing to drill, the failure is the
+        // top's cause, said plainly, and the same every time.
+        let both = plan_setups(&d, &r, &OpenCascade, &[top, under]);
+        assert_eq!(both, Err(CamError::Nothing));
+        assert_eq!(both, plan_setups(&d, &r, &OpenCascade, &[top, under]));
+        // Order does not change the cause.
+        let flipped = plan_setups(&d, &r, &OpenCascade, &[under, top]);
+        assert_eq!(flipped, Err(CamError::Nothing));
+    }
+
+    #[test]
+    fn every_error_says_what_to_do_or_what_is_wrong() {
+        for e in [
+            CamError::NoPart,
+            CamError::NoTool("drill".into()),
+            CamError::Nothing,
+            CamError::UnknownSetup(3),
+            CamError::NoSetups,
+            CamError::NoStock,
+            CamError::Contour("open".into()),
+            CamError::Join("x".into()),
+        ] {
+            assert!(e.to_string().len() > 10, "{e:?}");
+        }
+    }
 }
