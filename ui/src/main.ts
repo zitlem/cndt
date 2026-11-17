@@ -4,6 +4,7 @@
 // an API request, so undo, redo and unsaved-change tracking come from the
 // core, not from here.
 
+import "./boot"; // first: fills the page's [[id]] markers before anything else runs
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -24,6 +25,7 @@ import {
   simulationMesh,
 } from "./api";
 import { SketchEditor, type Tool } from "./sketch";
+import { ui as text } from "./strings";
 import { type Layer, type ViewName, Viewer } from "./viewer";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -121,9 +123,8 @@ function applyTheme(): void {
   const light = themeChoice === "light" || (themeChoice === "system" && systemLight?.matches === true);
   viewer.setTheme(light ? "light" : "dark");
   const next: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
-  const label = { system: "follows the system", light: "light", dark: "dark" };
   const button = element("theme");
-  button.title = `Theme: ${label[themeChoice]}. Click for ${label[next[themeChoice]]}.`;
+  button.title = text.themeTitle(text.themeNames[themeChoice], text.themeNames[next[themeChoice]]);
   button.setAttribute("aria-label", button.title);
 }
 element("theme").addEventListener("click", () => {
@@ -161,13 +162,13 @@ function explain(error: unknown): string {
     const named = (error.details?.constraints?.length ?? 0) > 0;
     if (error.kind === "conflict") {
       return named
-        ? "That can't hold together with the constraints highlighted in red. Change or delete one of them first."
-        : "The constraints can't all hold at once.";
+        ? text.conflictNamed
+        : text.conflict;
     }
     if (error.kind === "redundant") {
       return named
-        ? "Not needed: the constraints highlighted in red already fix that."
-        : "Not needed: the existing constraints already fix that.";
+        ? text.redundantNamed
+        : text.redundant;
     }
   }
   return error instanceof Error ? error.message : String(error);
@@ -208,14 +209,14 @@ function render(next: DocumentState): void {
     ui.docName.value = doc.name;
   }
   element("tree-doc").textContent = doc.name;
-  ui.savedState.textContent = dirty ? "Unsaved changes" : "Saved";
+  ui.savedState.textContent = dirty ? text.unsaved : text.saved;
   ui.savedState.classList.toggle("dirty", dirty);
   ui.undo.disabled = undo === null;
-  ui.undo.title = undo ? `Undo ${undo}` : "Nothing to undo";
+  ui.undo.title = undo ? text.undoTitle(undo) : text.nothingToUndo;
   ui.redo.disabled = redo === null;
-  ui.redo.title = redo ? `Redo ${redo}` : "Nothing to redo";
-  ui.statusPath.textContent = path ?? "Not saved yet";
-  ui.statusUndo.textContent = undo ? `Last change: ${undo}` : "";
+  ui.redo.title = redo ? text.redoTitle(redo) : text.nothingToRedo;
+  ui.statusPath.textContent = path ?? text.notSavedYet;
+  ui.statusUndo.textContent = undo ? text.lastChange(undo) : "";
 
   ui.parameterList.replaceChildren();
   const entries = Object.entries(doc.parameters);
@@ -231,7 +232,7 @@ function render(next: DocumentState): void {
     value.textContent = `${formatNumber(parameter.value)}${unitSymbol[parameter.unit]}`;
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
-    remove.setAttribute("aria-label", `Remove ${name}`);
+    remove.setAttribute("aria-label", text.remove(name));
     remove.innerHTML =
       '<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" /></svg>';
     remove.addEventListener(
@@ -257,26 +258,26 @@ function render(next: DocumentState): void {
   editor.update(next);
   updateSketchUi();
 
-  const title = `${dirty ? "• " : ""}${doc.name} — CNDT`;
+  const title = text.windowTitle(doc.name, dirty);
   appWindow.setTitle(title).catch(() => {
     // The title is cosmetic; never interrupt work over it.
   });
 }
 
 const statusText: Record<string, string> = {
-  fully: "Fully constrained",
-  over: "Over-constrained",
-  unknown: "Too large to analyse",
+  fully: text.fullyConstrained,
+  over: text.overConstrained,
+  unknown: text.tooLarge,
 };
 
 function freedomText(id: string, state: DocumentState): string {
   const freedom = state.freedom[id];
   if (!freedom) return "";
   const entities = state.document.sketches?.[id]?.sketch.entities ?? {};
-  if (Object.keys(entities).length === 0) return "Empty";
+  if (Object.keys(entities).length === 0) return text.empty;
   if (freedom.status === "under") {
     const n = freedom.dof ?? 0;
-    return `${n} degree${n === 1 ? "" : "s"} of freedom`;
+    return text.degreesOfFreedom(n);
   }
   return statusText[freedom.status] ?? "";
 }
@@ -288,7 +289,7 @@ function renderSketches(state: DocumentState): void {
   for (const [id, record] of sketches) {
     const item = globalThis.document.createElement("li");
     item.classList.toggle("editing", editor.editing === Number(id));
-    item.title = "Click to edit";
+    item.title = text.clickToEdit;
     const name = globalThis.document.createElement("span");
     name.className = "name";
     name.textContent = record.name;
@@ -301,7 +302,7 @@ function renderSketches(state: DocumentState): void {
     badge.title = frame?.state === "failed" ? frame.reason : freedomText(id, state);
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
-    remove.setAttribute("aria-label", `Delete ${record.name}`);
+    remove.setAttribute("aria-label", text.delete(record.name));
     remove.innerHTML =
       '<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" /></svg>';
     remove.addEventListener("click", (event) => {
@@ -378,8 +379,8 @@ async function showReferences(state: DocumentState): Promise<void> {
     const feature = state.document.features?.find((f) => f.id === id)?.feature;
     const item = globalThis.document.createElement("li");
     const [x, y, z] = reference.size.map((v) => formatNumber(v));
-    item.textContent = `${feature?.name ?? "Mesh"}: ${x} × ${y} × ${z} mm`;
-    item.title = `${feature && "source" in feature ? feature.source : ""}, ${reference.triangles} triangles, from (${reference.bounds.min.x}, ${reference.bounds.min.y}, ${reference.bounds.min.z}) to (${reference.bounds.max.x}, ${reference.bounds.max.y}, ${reference.bounds.max.z}) mm`;
+    item.textContent = text.meshSize(feature?.name ?? text.mesh, x, y, z);
+    item.title = text.meshDetail(feature && "source" in feature ? feature.source : "", reference.triangles, reference.bounds.min, reference.bounds.max);
     list.append(item);
   }
   try {
@@ -428,9 +429,9 @@ function renderBodyInfo(state: DocumentState): void {
   const { min, max } = body.bounds;
   const size = [max.x - min.x, max.y - min.y, max.z - min.z].map((v) => formatNumber(Number(v.toFixed(3))));
   const rows: [string, string][] = [
-    ["Size", `${size.join(" × ")} mm`],
-    ["Volume", `${formatNumber(Number((body.volume / 1000).toFixed(3)))} cm³`],
-    ["Faces", String(body.faces.length)],
+    [text.size, text.mmSize(size)],
+    [text.volume, text.cm3(formatNumber(Number((body.volume / 1000).toFixed(3))))],
+    [text.faces, String(body.faces.length)],
   ];
   ui.modelInfo.replaceChildren(
     ...rows.flatMap(([term, detail]) => {
@@ -466,8 +467,8 @@ function renderFeatures(state: DocumentState): void {
     const failed = status?.state === "failed";
     item.classList.toggle("failed", failed);
     item.title = failed
-      ? `${feature.name}: needs repair. ${status.reason}`
-      : `${feature.name}: ${featureDetail(feature, id)}.${feature.type === "import" || feature.type === "reference" ? "" : " Click to edit."}`;
+      ? text.needsRepair(feature.name, status.reason)
+      : text.featureTitle(feature.name, featureDetail(feature, id), feature.type === "import" || feature.type === "reference");
     item.tabIndex = 0;
     // The same icon as the tool that made it.
     const icon = globalThis.document.createElement("span");
@@ -486,7 +487,7 @@ function renderFeatures(state: DocumentState): void {
     item.setAttribute("aria-label", item.title);
     const remove = globalThis.document.createElement("button");
     remove.type = "button";
-    remove.setAttribute("aria-label", `Delete ${feature.name}`);
+    remove.setAttribute("aria-label", text.delete(feature.name));
     remove.innerHTML =
       '<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" /></svg>';
     remove.addEventListener("click", (event) => {
@@ -524,8 +525,8 @@ async function rollTo(count: number): Promise<void> {
 function rollbackMarker(): HTMLLIElement {
   const marker = globalThis.document.createElement("li");
   marker.className = "rollback-marker";
-  marker.title = "Drag to see the part at an earlier point of its history";
-  marker.setAttribute("aria-label", "History marker");
+  marker.title = text.historyMarkerTitle;
+  marker.setAttribute("aria-label", text.historyMarker);
   marker.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     marker.setPointerCapture(event.pointerId);
@@ -571,17 +572,15 @@ interface SimReport {
 
 /** What a stock simulation found, in a sentence or two. */
 function simulationText(report: SimReport): string {
-  const mm = (v: number) => `${formatNumber(Math.round(v * 100) / 100)} mm`;
-  const list = (items: Finding[]) => items.map((f) => `${f.operation} (${mm(f.depth)})`).join(", ");
+  const mm = (v: number) => text.mm(formatNumber(Math.round(v * 100) / 100));
+  const list = (items: Finding[]) => items.map((f) => text.findingDepth(f.operation, mm(f.depth))).join(", ");
   const parts = [
-    report.collisions.length === 0
-      ? "No rapid touches the stock."
-      : `RAPIDS INTO THE STOCK: ${list(report.collisions)}.`,
-    report.gouges.length === 0 ? "Nothing cuts below the part." : `Cuts below the model (red): ${list(report.gouges)}.`,
-    report.left > 0.05 ? `Up to ${mm(report.left)} left on the part (yellow).` : "The part is machined to size.",
-    `Cutting time ${formatNumber(Math.round(report.cut_minutes * 10) / 10)} min.`,
+    report.collisions.length === 0 ? text.noRapidTouches : text.rapidsIntoStock(list(report.collisions)),
+    report.gouges.length === 0 ? text.nothingCutsBelow : text.cutsBelowModel(list(report.gouges)),
+    report.left > 0.05 ? text.materialLeft(mm(report.left)) : text.machinedToSize,
+    text.cuttingTime(formatNumber(Math.round(report.cut_minutes * 10) / 10)),
   ];
-  return `Simulated (UNVERIFIED): ${parts.join(" ")}`;
+  return text.simulated(parts.join(" "));
 }
 
 async function simulateSetup(setup: number | null): Promise<void> {
@@ -599,23 +598,23 @@ async function simulateSetup(setup: number | null): Promise<void> {
 function operationText(op: CamOperation): string {
   switch (op.type) {
     case "face":
-      return "Face the stock";
+      return text.opFace;
     case "contour":
-      return "Contour the outline";
+      return text.opContour;
     case "pocket":
-      return "Pocket to a floor";
+      return text.opPocket;
     case "holes":
-      return "Holes: spot, drill, tap, ream";
+      return text.opHoles;
     case "chamfer":
-      return `Chamfer ${formatNumber(op.width)} mm`;
+      return text.opChamfer(formatNumber(op.width));
   }
 }
 
 /** Faces for CAM operations are picked on the part: what to say while picking. */
 const pickPrompts: Record<string, string> = {
-  contour: "Click the face whose outline the contour follows (usually the bottom). Esc cancels.",
-  pocket: "Click the pocket's floor. Esc cancels.",
-  chamfer: "Click the face whose edges get the chamfer (usually the top). Esc cancels.",
+  contour: text.pickContour,
+  pocket: text.pickPocket,
+  chamfer: text.pickChamfer,
 };
 
 /** A CAM operation waiting for its face to be picked. */
@@ -670,9 +669,9 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
   const { post, machine, definition } = chosenTarget;
   const which = Array.isArray(setup) ? { setups: setup } : { setup };
   const path = await save({
-    title: "Save G-code",
+    title: text.saveGcode,
     defaultPath: `${name}.nc`,
-    filters: [{ name: "G-code", extensions: ["nc", "tap", "ngc"] }],
+    filters: [{ name: text.gcodeFiles, extensions: ["nc", "tap", "ngc"] }],
   });
   if (!path) return;
   // Every check first; the report goes next to the program.
@@ -688,9 +687,8 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
   if (report.verdict === "problems") {
     const list = report.problems.map((p) => `• ${p}`).join("\n");
     const go = await ask(
-      `The checks found ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}. ` +
-        `Do not run this program until they are resolved.\n\n${list}\n\nThe report is in ${reportPath}. Save the G-code anyway?`,
-      { title: "Verification found problems", kind: "warning", okLabel: "Save anyway", cancelLabel: "Don't save" },
+      text.checksFound(report.problems.length, list, reportPath),
+      { title: text.verificationProblems, kind: "warning", okLabel: text.saveAnyway, cancelLabel: text.dontSave },
     );
     if (!go) {
       showReport(report);
@@ -710,13 +708,11 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
   const lines = result.gcode.split("\n").length;
   const verdict =
     report.verdict === "problems"
-      ? "with PROBLEMS"
+      ? text.verdictProblems
       : report.verdict === "review"
-        ? `with ${report.review.length} finding${report.review.length === 1 ? "" : "s"} to review`
-        : "no problems found";
-  showError(
-    new Error(`Saved ${lines} lines of UNVERIFIED G-code. Verification: ${verdict}; report saved beside it. Prove it out carefully.`),
-  );
+        ? text.verdictReview(report.review.length)
+        : text.verdictClear;
+  showError(new Error(text.savedGcode(lines, verdict)));
 }
 
 interface Verification {
@@ -746,20 +742,20 @@ function renderSetups(state: DocumentState): void {
     head.className = "head";
     const name = globalThis.document.createElement("span");
     name.className = "name";
-    const table = setup.index === undefined ? "" : ` · B${setup.index}`;
-    name.textContent = `${setup.name} · G${53 + setup.work_offset}${table}`;
+    const table = setup.index === undefined ? "" : text.tableAngle(setup.index);
+    name.textContent = text.setupName(setup.name, 53 + setup.work_offset, table);
     const show = globalThis.document.createElement("button");
     show.type = "button";
     show.className = "secondary";
-    show.textContent = shownSetup === id ? "Hide" : "Show";
+    show.textContent = shownSetup === id ? text.hide : text.show;
     show.addEventListener("click", guarded(() => showToolpath(shownSetup === id ? null : id)));
     const post = globalThis.document.createElement("button");
     post.type = "button";
     post.className = "secondary";
-    post.textContent = "Post…";
+    post.textContent = text.post;
     post.addEventListener("click", guarded(() => postSetup(id, `${state.document.name} ${setup.name}`)));
     const controller = globalThis.document.createElement("select");
-    controller.title = "Machine or controller the Post… button writes for";
+    controller.title = text.controllerTitle;
     for (const target of TARGETS) {
       const option = globalThis.document.createElement("option");
       option.value = target.key;
@@ -775,7 +771,7 @@ function renderSetups(state: DocumentState): void {
     remove.type = "button";
     remove.className = "secondary";
     remove.textContent = "×";
-    remove.title = "Delete this setup";
+    remove.title = text.deleteSetup;
     remove.addEventListener(
       "click",
       guarded(async () => {
@@ -789,7 +785,7 @@ function renderSetups(state: DocumentState): void {
     for (const op of setup.operations) {
       const li = globalThis.document.createElement("li");
       li.textContent = operationText(op.operation);
-      li.title = "Double-click to delete";
+      li.title = text.doubleClickToDelete;
       li.addEventListener(
         "dblclick",
         guarded(async () => render(await execute("cam.remove_operation", { setup: id, operation: op.id }))),
@@ -800,11 +796,11 @@ function renderSetups(state: DocumentState): void {
     row.className = "row";
     const kind = globalThis.document.createElement("select");
     for (const [value, label] of [
-      ["face", "Face"],
-      ["contour", "Contour…"],
-      ["pocket", "Pocket…"],
-      ["holes", "Holes"],
-      ["chamfer", "Chamfer 0.5…"],
+      ["face", text.addFace],
+      ["contour", text.addContour],
+      ["pocket", text.addPocket],
+      ["holes", text.addHoles],
+      ["chamfer", text.addChamfer],
     ]) {
       const option = globalThis.document.createElement("option");
       option.value = value ?? "";
@@ -814,7 +810,7 @@ function renderSetups(state: DocumentState): void {
     const add = globalThis.document.createElement("button");
     add.type = "button";
     add.className = "secondary";
-    add.textContent = "Add";
+    add.textContent = text.add;
     add.addEventListener(
       "click",
       guarded(async () => {
@@ -834,8 +830,8 @@ function renderSetups(state: DocumentState): void {
     const detect = globalThis.document.createElement("button");
     detect.type = "button";
     detect.className = "secondary";
-    detect.textContent = "Detect";
-    detect.title = "Add operations for the holes, pockets and outside profile this setup can reach";
+    detect.textContent = text.detect;
+    detect.title = text.detectTitle;
     detect.addEventListener(
       "click",
       guarded(async () => {
@@ -846,8 +842,8 @@ function renderSetups(state: DocumentState): void {
         }
         const added =
           found.operations.length === 0
-            ? "Nothing new to add: the setup already has everything detection finds."
-            : `Added ${found.operations.length} operation${found.operations.length === 1 ? "" : "s"}.`;
+            ? text.nothingNew
+            : text.addedOperations(found.operations.length);
         if (found.notes.length > 0 || found.operations.length === 0) {
           showError(new Error(`${added} ${found.notes.join(" ")}`.trim()));
         }
@@ -856,8 +852,8 @@ function renderSetups(state: DocumentState): void {
     const simulate = globalThis.document.createElement("button");
     simulate.type = "button";
     simulate.className = "secondary";
-    simulate.textContent = simulatedSetup === id ? "Hide stock" : "Simulate";
-    simulate.title = "Cut the stock in simulation: rapids into material, cuts below the part, material left";
+    simulate.textContent = simulatedSetup === id ? text.hideStock : text.simulate;
+    simulate.title = text.simulateTitle;
     simulate.addEventListener(
       "click",
       guarded(() => simulateSetup(simulatedSetup === id ? null : id)),
@@ -872,27 +868,29 @@ function renderSetups(state: DocumentState): void {
 function featureDetail(feature: import("./api").Feature, id?: number): string {
   if (feature.type === "extrude") {
     const fx = feature.distance_expression ? "ƒ " : "";
-    return `${fx}${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
+    return text.extrudeDetail(fx, feature.operation === "cut", formatNumber(feature.distance));
   }
-  if (feature.type === "chamfer") return `${formatNumber(feature.distance)} × 45°`;
+  if (feature.type === "chamfer") return text.chamferDetail(formatNumber(feature.distance));
   if (feature.type === "pattern") {
     const source = current?.document.features?.find((f) => f.id === feature.feature)?.feature.name ?? "?";
-    return `${feature.count_x} × ${feature.count_y} of ${source}`;
+    return text.patternDetail(feature.count_x, feature.count_y, source);
   }
-  if (feature.type === "fillet") return `R${formatNumber(feature.radius)}`;
+  if (feature.type === "fillet") return text.filletDetail(formatNumber(feature.radius));
   if (feature.type === "reference") {
     const triangles = id === undefined ? undefined : current?.references?.[String(id)]?.triangles;
-    return `mesh ${feature.source}${triangles === undefined ? "" : `, ${triangles} triangles`}, for reference only`;
+    return text.referenceDetail(feature.source, triangles);
   }
   if (feature.type === "import") {
-    const size = feature.bytes >= 1048576 ? `${formatNumber(feature.bytes / 1048576)} MB` : `${Math.ceil(feature.bytes / 1024)} kB`;
-    return `${feature.operation === "cut" ? "cut " : ""}${feature.source}, ${size}, kept in the project`;
+    const size =
+      feature.bytes >= 1048576
+        ? text.megabytes(formatNumber(feature.bytes / 1048576))
+        : text.kilobytes(Math.ceil(feature.bytes / 1024));
+    return text.importDetail(feature.operation === "cut", feature.source, size);
   }
   const { spec, points } = feature;
   const size = spec.thread ? spec.thread.size.replace(/x.*/, "") : `Ø${formatNumber(spec.diameter)}`;
-  const depth = spec.depth === "through" ? "thru" : `${formatNumber(spec.depth.blind)} deep`;
-  const cb = spec.counterbore ? " cbore" : "";
-  return `${points.length} × ${size}${cb} ${depth}`;
+  const depth = spec.depth === "through" ? text.thru : text.deep(formatNumber(spec.depth.blind));
+  return text.holeDetail(points.length, size, Boolean(spec.counterbore), depth);
 }
 
 /** Points no curve is drawn from: where holes go. */
@@ -932,7 +930,7 @@ function openPattern(feature: number | null): void {
   );
   const existing = features.find((f) => f.id === feature)?.feature;
   if (existing?.type === "pattern") {
-    ui.patternTitle.textContent = `Edit ${existing.name}`;
+    ui.patternTitle.textContent = text.edit(existing.name);
     ui.patternSource.value = String(existing.feature);
     ui.patternSource.disabled = true;
     ui.patternCountX.value = String(existing.count_x);
@@ -940,7 +938,7 @@ function openPattern(feature: number | null): void {
     ui.patternCountY.value = String(existing.count_y);
     ui.patternSpacingY.value = String(existing.spacing_y);
   } else {
-    ui.patternTitle.textContent = "Pattern";
+    ui.patternTitle.textContent = text.pattern;
     ui.patternSource.disabled = false;
     const last = ui.patternSource.options[ui.patternSource.options.length - 1];
     if (last) ui.patternSource.value = last.value;
@@ -964,17 +962,17 @@ function syncBlend(): void {
   const faces = blending.faces.length;
   const edges = blending.edges.length;
   const picked = [
-    faces ? `${faces} face${faces === 1 ? "" : "s"}` : "",
-    edges ? `${edges} edge${edges === 1 ? "" : "s"}` : "",
+    faces ? text.faceCount(faces) : "",
+    edges ? text.edgeCount(edges) : "",
   ]
     .filter(Boolean)
-    .join(" and ");
+    .join(text.and);
   ui.blendPicked.textContent =
     blending.editing !== null
-      ? "The edges stay as picked."
+      ? text.edgesStay
       : picked === ""
-        ? "Click edges, or faces to take all their edges. Click again to unpick."
-        : `${picked} picked. Click more, or OK.`;
+        ? text.pickEdges
+        : text.pickedMore(picked);
   viewer.highlightFaces(blending.faces);
   viewer.highlightEdges(blending.edges);
 }
@@ -985,9 +983,9 @@ function openBlend(kind: "chamfer" | "fillet", feature: number | null): void {
   closeHole();
   const existing = current.document.features?.find((f) => f.id === feature)?.feature;
   blending = { kind, faces: [], edges: [], editing: feature };
-  const label = kind === "chamfer" ? "Chamfer" : "Fillet";
-  ui.blendTitle.textContent = existing ? `Edit ${existing.name}` : label;
-  ui.blendSizeLabel.textContent = kind === "chamfer" ? "Distance (mm)" : "Radius (mm)";
+  const label = kind === "chamfer" ? text.chamfer : text.fillet;
+  ui.blendTitle.textContent = existing ? text.edit(existing.name) : label;
+  ui.blendSizeLabel.textContent = kind === "chamfer" ? text.distanceMm : text.radiusMm;
   if (existing?.type === "chamfer") ui.blendSize.value = String(existing.distance);
   else if (existing?.type === "fillet") ui.blendSize.value = String(existing.radius);
   else ui.blendSize.value = kind === "chamfer" ? "0.5" : "2";
@@ -1014,10 +1012,10 @@ function syncHoleFields(): void {
   const count = current ? freePoints(id, current).length : 0;
   ui.holePoints.textContent =
     editingHole !== null
-      ? "The hole keeps its points."
+      ? text.holeKeepsPoints
       : count === 0
-        ? "This sketch has no free-standing points. Add points where the holes go."
-        : `${count} hole${count === 1 ? "" : "s"}, one at each free-standing point.`;
+        ? text.noFreePoints
+        : text.holesAtPoints(count);
 }
 
 function openHole(feature: number | null): void {
@@ -1035,14 +1033,14 @@ function openHole(feature: number | null): void {
     ...sketches.map(([id, record]) => {
       const option = globalThis.document.createElement("option");
       option.value = id;
-      option.textContent = `${record.name} (${planeLabel(record.plane)}, ${freePoints(id, current!).length} points)`;
+      option.textContent = text.sketchWithPoints(record.name, planeLabel(record.plane), freePoints(id, current!).length);
       return option;
     }),
   );
   const existing = current.document.features?.find((f) => f.id === feature)?.feature;
   if (existing?.type === "hole") {
     const { spec } = existing;
-    ui.holeTitle.textContent = `Edit ${existing.name}`;
+    ui.holeTitle.textContent = text.edit(existing.name);
     ui.holeSketch.value = String(existing.sketch);
     ui.holeSketch.disabled = true;
     ui.holeType.value = spec.thread ? "tapped" : spec.counterbore ? "counterbore" : "simple";
@@ -1060,7 +1058,7 @@ function openHole(feature: number | null): void {
     ui.holeTip.value = String(spec.tip_angle);
     ui.holeFit.value = spec.fit ?? "";
   } else {
-    ui.holeTitle.textContent = "Hole";
+    ui.holeTitle.textContent = text.hole;
     ui.holeSketch.disabled = false;
     // The newest sketch with points is the likely one.
     const withPoints = sketches.filter(([id]) => freePoints(id, current!).length > 0).at(-1) ?? sketches.at(-1);
@@ -1115,19 +1113,19 @@ function openExtrude(feature: number | null): void {
     ...sketches.map(([id, record]) => {
       const option = globalThis.document.createElement("option");
       option.value = id;
-      option.textContent = `${record.name} (${planeLabel(record.plane)})`;
+      option.textContent = text.sketchInPlane(record.name, planeLabel(record.plane));
       return option;
     }),
   );
   const existing = current.document.features?.find((f) => f.id === feature)?.feature;
   if (existing?.type === "extrude") {
-    ui.extrudeTitle.textContent = `Edit ${existing.name}`;
+    ui.extrudeTitle.textContent = text.edit(existing.name);
     ui.extrudeSketch.value = String(existing.sketch);
     ui.extrudeSketch.disabled = true;
     ui.extrudeDistance.value = existing.distance_expression ?? String(existing.distance);
     ui.extrudeOperation.value = existing.operation;
   } else {
-    ui.extrudeTitle.textContent = "Extrude";
+    ui.extrudeTitle.textContent = text.extrude;
     ui.extrudeSketch.disabled = false;
     // The most recent sketch is the likely one.
     const last = sketches.at(-1);
@@ -1170,7 +1168,7 @@ function updateSketchUi(): void {
   const id = String(editing);
   const index = Object.keys(current.document.sketches ?? {}).indexOf(id);
   ui.sketchList.querySelectorAll("li")[index]?.classList.add("editing");
-  const name = current.document.sketches?.[id]?.name ?? "Sketch";
+  const name = current.document.sketches?.[id]?.name ?? text.sketch;
   ui.statusSketch.textContent = `${name}: ${freedomText(id, current)}`;
   ui.statusSketch.hidden = false;
 }
@@ -1178,19 +1176,19 @@ function updateSketchUi(): void {
 /** Asks before throwing away unsaved changes. Returns true to go ahead. */
 async function confirmDiscard(action: string): Promise<boolean> {
   if (!current?.dirty) return true;
-  return ask(`The document has unsaved changes. ${action} anyway and lose them?`, {
-    title: "Unsaved changes",
+  return ask(text.unsavedQuestion(action), {
+    title: text.unsaved,
     kind: "warning",
-    okLabel: "Discard changes",
-    cancelLabel: "Cancel",
+    okLabel: text.discardChanges,
+    cancelLabel: text.cancel,
   });
 }
 
 async function saveAs(): Promise<boolean> {
   const path = await save({
-    title: "Save project",
-    defaultPath: `${current?.document.name ?? "Untitled"}.cndt`,
-    filters: [{ name: "CNDT project", extensions: ["cndt"] }],
+    title: text.saveProject,
+    defaultPath: `${current?.document.name ?? text.untitled}.cndt`,
+    filters: [{ name: text.cndtProject, extensions: ["cndt"] }],
   });
   if (!path) return false;
   render(await request<DocumentState>({ method: "save_as", path }));
@@ -1205,16 +1203,16 @@ async function saveCurrent(): Promise<boolean> {
 
 function showModel(info: StepInfo, path: string): void {
   const rows: [string, string][] = [
-    ["File", path.split(/[\\/]/).pop() ?? path],
-    ["Solids", String(info.solids)],
-    ["Faces", String(info.faces)],
-    ["Edges", String(info.edges)],
-    ["Vertices", String(info.vertices)],
+    [text.file, path.split(/[\\/]/).pop() ?? path],
+    [text.solids, String(info.solids)],
+    [text.faces, String(info.faces)],
+    [text.edges, String(info.edges)],
+    [text.vertices, String(info.vertices)],
   ];
   if (info.bounds) {
     const { min, max } = info.bounds;
     const size = [max.x - min.x, max.y - min.y, max.z - min.z].map((v) => v.toFixed(2));
-    rows.push(["Size", `${size.join(" × ")} mm`]);
+    rows.push([text.size, text.mmSize(size)]);
   }
   ui.modelInfo.replaceChildren(
     ...rows.flatMap(([term, detail]) => {
@@ -1234,11 +1232,11 @@ function showModel(info: StepInfo, path: string): void {
 element("new").addEventListener(
   "click",
   guarded(async () => {
-    if (!(await confirmDiscard("Start a new document"))) return;
+    if (!(await confirmDiscard(text.startNewDocument))) return;
     render(
       await request<DocumentState>({
         method: "new_document",
-        name: "Untitled",
+        name: text.untitled,
         discard_changes: true,
       }),
     );
@@ -1249,13 +1247,13 @@ element("open").addEventListener(
   "click",
   guarded(async () => {
     const path = await open({
-      title: "Open project",
+      title: text.openProject,
       multiple: false,
       directory: false,
-      filters: [{ name: "CNDT project", extensions: ["cndt"] }],
+      filters: [{ name: text.cndtProject, extensions: ["cndt"] }],
     });
     if (!path) return;
-    if (!(await confirmDiscard("Open another project"))) return;
+    if (!(await confirmDiscard(text.openAnotherProject))) return;
     render(await request<DocumentState>({ method: "open", path, discard_changes: true }));
   }),
 );
@@ -1279,13 +1277,13 @@ element("import-step").addEventListener(
   "click",
   guarded(async () => {
     const path = await open({
-      title: "Import a STEP or IGES solid into the design",
+      title: text.importStepTitle,
       multiple: false,
       directory: false,
-      filters: [{ name: "STEP or IGES", extensions: ["step", "stp", "STEP", "STP", "igs", "iges", "IGS", "IGES"] }],
+      filters: [{ name: text.stepOrIges, extensions: ["step", "stp", "STEP", "STP", "igs", "iges", "IGS", "IGES"] }],
     });
     if (typeof path !== "string") return;
-    ui.viewportHint.textContent = "Reading the file…";
+    ui.viewportHint.textContent = text.readingFile;
     ui.viewportHint.hidden = false;
     const next = await request<DocumentState>({ method: "import_step", path });
     render(next);
@@ -1298,10 +1296,10 @@ element("import-mesh").addEventListener(
   "click",
   guarded(async () => {
     const path = await open({
-      title: "Import an STL mesh for reference",
+      title: text.importMeshTitle,
       multiple: false,
       directory: false,
-      filters: [{ name: "STL", extensions: ["stl", "STL"] }],
+      filters: [{ name: text.stlFiles, extensions: ["stl", "STL"] }],
     });
     if (typeof path !== "string") return;
     render(await request<DocumentState>({ method: "import_mesh", path }));
@@ -1315,20 +1313,20 @@ element("preview-step").addEventListener(
   "click",
   guarded(async () => {
     const path = await open({
-      title: "Look at a STEP file",
+      title: text.lookAtStepTitle,
       multiple: false,
       directory: false,
-      filters: [{ name: "STEP", extensions: ["step", "stp", "STEP", "STP"] }],
+      filters: [{ name: text.stepFiles, extensions: ["step", "stp", "STEP", "STP"] }],
     });
     if (!path) return;
-    ui.viewportHint.textContent = "Reading the file…";
+    ui.viewportHint.textContent = text.readingFile;
     ui.viewportHint.hidden = false;
     try {
       const info = await request<StepInfo>({ method: "step_info", path });
       viewer.show(await stepPreview(path));
       showModel(info, path);
     } catch (error) {
-      ui.viewportHint.textContent = "Import a STEP file to see it here.";
+      ui.viewportHint.textContent = text.importStepHint;
       throw error;
     }
   }),
@@ -1433,12 +1431,12 @@ function uniqueFaceName(face: number): string | null {
 element("sketch-on-face").addEventListener("click", () => {
   ui.planeMenu.hidden = true;
   if (!current?.body) {
-    showError(new Error("There is no part yet. Extrude a sketch first, then sketch on one of its faces."));
+    showError(new Error(text.noPartYet));
     return;
   }
   pickingFace = true;
   viewer.canvas.style.cursor = "pointer";
-  ui.viewportHint.textContent = "Click a flat face to sketch on. Esc cancels.";
+  ui.viewportHint.textContent = text.clickFlatFace;
   ui.viewportHint.hidden = false;
 });
 
@@ -1504,7 +1502,7 @@ element("cam-post-all").addEventListener(
     const setups = current?.document.cam?.setups ?? [];
     await postSetup(
       setups.map((s) => s.id),
-      `${current?.document.name ?? "part"} all sides`,
+      text.allSides(current?.document.name ?? text.part),
     );
   }),
 );
@@ -1522,7 +1520,7 @@ viewer.canvas.addEventListener("click", (event) => {
   ui.viewportHint.hidden = true;
   guarded(async () => {
     const name = uniqueFaceName(face);
-    if (!name) throw new Error("That face has no name of its own yet.");
+    if (!name) throw new Error(text.faceNoName);
     const args: Record<string, unknown> = { setup: pick.setup, type: pick.type };
     if (pick.type === "pocket") args["floor"] = name;
     else args["face"] = name;
@@ -1576,11 +1574,11 @@ ui.blendDialog.addEventListener("submit", (event) => {
       next = await execute("feature.edit_blend", { feature: blending.editing, size });
     } else {
       if (blending.faces.length === 0 && blending.edges.length === 0) {
-        throw new Error("Pick at least one edge or face on the part first.");
+        throw new Error(text.pickOne);
       }
       const faces = blending.faces.map((f) => {
         const name = uniqueFaceName(f);
-        if (!name) throw new Error("One of the picked faces has no name of its own yet.");
+        if (!name) throw new Error(text.pickedFaceNoName);
         return name;
       });
       // An edge is named by its two faces; that pair must meet only there.
@@ -1591,7 +1589,7 @@ ui.blendDialog.addEventListener("submit", (event) => {
         const nb = uniqueFaceName(b);
         const same = joins.filter(([x, y]) => (x === a && y === b) || (x === b && y === a)).length;
         if (!na || !nb || a === b || same !== 1) {
-          throw new Error("One of the picked edges can't be named on its own yet (its faces meet at more than one edge). Pick its face instead.");
+          throw new Error(text.pickedEdgeNoName);
         }
         return [na, nb];
       });
@@ -1613,7 +1611,7 @@ viewer.canvas.addEventListener("click", (event) => {
   stopPicking();
   guarded(async () => {
     const name = uniqueFaceName(face);
-    if (!name) throw new Error("That face has no name of its own yet, so a sketch could not find it again.");
+    if (!name) throw new Error(text.faceNoNameForSketch);
     const next = await execute("sketch.create", { face: name });
     const ids = Object.keys(next.document.sketches ?? {}).map(Number);
     const created = Math.max(...ids);
@@ -1621,7 +1619,7 @@ viewer.canvas.addEventListener("click", (event) => {
     if (frame?.state === "failed") {
       // Not a flat face: take the sketch back out and say why.
       render(await request<DocumentState>({ method: "undo" }));
-      throw new Error(`Can't sketch there: ${frame.reason}.`);
+      throw new Error(text.cantSketchThere(frame.reason));
     }
     render(next);
     editSketch(created, next);
@@ -1755,7 +1753,7 @@ window.addEventListener("keydown", (event) => {
 // Never lose work by closing the window.
 appWindow
   .onCloseRequested(async (event) => {
-    if (!(await confirmDiscard("Close"))) event.preventDefault();
+    if (!(await confirmDiscard(text.close))) event.preventDefault();
   })
   .catch(showError);
 
@@ -1932,7 +1930,7 @@ element("cam-simulate").addEventListener(
   guarded(async () => {
     const setups = current?.document.cam?.setups ?? [];
     const target = shownSetup ?? setups[0]?.id;
-    if (target === undefined) throw new Error("Add a setup first, from SETUP in the ribbon.");
+    if (target === undefined) throw new Error(text.addSetupFirst);
     await simulateSetup(target);
   }),
 );
@@ -1942,7 +1940,7 @@ element("cam-verify").addEventListener(
   "click",
   guarded(async () => {
     const setups = (current?.document.cam?.setups ?? []).map((s) => s.id);
-    if (setups.length === 0) throw new Error("Add a setup first, from SETUP in the ribbon.");
+    if (setups.length === 0) throw new Error(text.addSetupFirst);
     const { post, machine, definition } = chosenTarget;
     showReport(await request<Verification>({ method: "verify", post, definition, machine, setups }));
   }),
@@ -1960,15 +1958,19 @@ function renderTools(state: DocumentState): void {
     const item = globalThis.document.createElement("li");
     const name = globalThis.document.createElement("span");
     name.className = "name";
-    name.textContent = `T${number} ${tool.description}`;
+    name.textContent = text.toolName(number, tool.description);
     const detail = globalThis.document.createElement("span");
     detail.className = "detail";
     if (a) {
-      detail.textContent = `${formatNumber(a.stickout)} out`;
-      item.title =
-        `Flutes ${formatNumber(a.flute_length)} mm, sticks out ${formatNumber(a.stickout)} mm, ` +
-        `shank Ø${formatNumber(a.shank_diameter)}, holder Ø${formatNumber(a.holder_diameter)} × ${formatNumber(a.holder_length)} mm` +
-        (a.measured ? " (measured)" : " (typical sizes, not measured: measure the tool and enter it)");
+      detail.textContent = text.stickoutDetail(formatNumber(a.stickout));
+      item.title = text.toolTitle(
+        formatNumber(a.flute_length),
+        formatNumber(a.stickout),
+        formatNumber(a.shank_diameter),
+        formatNumber(a.holder_diameter),
+        formatNumber(a.holder_length),
+        a.measured,
+      );
       item.classList.toggle("typical", !a.measured);
     }
     item.append(name, detail);
@@ -1991,7 +1993,7 @@ async function refreshPostPreview(): Promise<void> {
   const setups = current?.document.cam?.setups ?? [];
   const setup = shownSetup ?? setups[0]?.id;
   if (setup === undefined) {
-    editorStatus.textContent = "Add a setup to see its program here.";
+    editorStatus.textContent = text.addSetupForProgram;
     editorPreview.replaceChildren();
     return;
   }
@@ -2015,9 +2017,9 @@ async function refreshPostPreview(): Promise<void> {
     editorStatus.classList.remove("error");
     editorStatus.textContent = preview.base
       ? count === 0
-        ? `Same output as the shipped ${preview.base}.`
-        : `${count} line${count === 1 ? "" : "s"} differ from the shipped ${preview.base} (highlighted). Review every one.`
-      : "A post not shipped with CNDT: every line is its own. Review all of it.";
+        ? text.sameAsShipped(preview.base)
+        : text.differsFromShipped(count, preview.base)
+      : text.notShipped;
   } catch (error) {
     editorStatus.classList.add("error");
     editorStatus.textContent = error instanceof Error ? error.message : String(error);
@@ -2056,7 +2058,7 @@ editorText.addEventListener("input", () => {
 element("post-editor-load").addEventListener(
   "click",
   guarded(async () => {
-    const path = await open({ title: "Open a post", filters: [{ name: "Post", extensions: ["toml"] }] });
+    const path = await open({ title: text.openPost, filters: [{ name: text.postFiles, extensions: ["toml"] }] });
     if (typeof path !== "string") return;
     editorText.value = (await request<{ text: string }>({ method: "read_post", path })).text;
     await refreshPostPreview();
@@ -2065,10 +2067,10 @@ element("post-editor-load").addEventListener(
 element("post-editor-save").addEventListener(
   "click",
   guarded(async () => {
-    const path = await save({ title: "Save the post", defaultPath: "my-post.toml", filters: [{ name: "Post", extensions: ["toml"] }] });
+    const path = await save({ title: text.savePost, defaultPath: "my-post.toml", filters: [{ name: text.postFiles, extensions: ["toml"] }] });
     if (!path) return;
     await request({ method: "write_post", definition: editorText.value, path });
-    editorStatus.textContent = `Saved to ${path}.`;
+    editorStatus.textContent = text.savedTo(path);
   }),
 );
 element("post-editor-use").addEventListener(
@@ -2077,7 +2079,7 @@ element("post-editor-use").addEventListener(
     // Checked by the engine before it is offered for posting.
     await request({ method: "post_preview", definition: editorText.value });
     const id = /^\s*id\s*=\s*"([^"]*)"/m.exec(editorText.value)?.[1] ?? "custom";
-    const custom: Target = { key: "edited", label: `Edited: ${id}`, post: id, definition: editorText.value };
+    const custom: Target = { key: "edited", label: text.editedPost(id), post: id, definition: editorText.value };
     // Same post id as the chosen machine's: the machine still checks it.
     if (chosenTarget.post === id && chosenTarget.machine) custom.machine = chosenTarget.machine;
     const at = TARGETS.findIndex((t) => t.key === "edited");
@@ -2085,7 +2087,7 @@ element("post-editor-use").addEventListener(
     TARGETS.push(custom);
     chosenTarget = custom;
     if (current) renderSetups(current);
-    editorStatus.textContent = `Post… and Verify now use this edited post ("${custom.label}" in each setup's list).`;
+    editorStatus.textContent = text.usingEditedPost(custom.label);
   }),
 );
 
@@ -2093,20 +2095,20 @@ element("post-editor-use").addEventListener(
 element("export").addEventListener(
   "click",
   guarded(async () => {
-    const name = current?.document.name ?? "part";
+    const name = current?.document.name ?? text.part;
     const path = await save({
-      title: "Export the part",
+      title: text.exportPart,
       defaultPath: `${name}.step`,
       filters: [
-        { name: "STEP", extensions: ["step", "stp"] },
-        { name: "STL mesh", extensions: ["stl"] },
+        { name: text.stepFiles, extensions: ["step", "stp"] },
+        { name: text.stlMesh, extensions: ["stl"] },
       ],
     });
     if (!path) return;
     const result = await request<{ format: string; triangles?: number }>({ method: "export", path });
-    const what = result.format === "stl" ? `an STL mesh of ${result.triangles ?? 0} triangles` : "STEP";
-    const rolled = current?.rollback !== null && current?.rollback !== undefined ? " (as rolled back in the timeline)" : "";
-    showError(new Error(`Exported the part${rolled} as ${what} to ${path}.`));
+    const what = result.format === "stl" ? text.anStlMesh(result.triangles ?? 0) : text.stepFiles;
+    const rolled = current?.rollback !== null && current?.rollback !== undefined;
+    showError(new Error(text.exportedPart(rolled, what, path)));
   }),
 );
 
@@ -2114,29 +2116,29 @@ element("export").addEventListener(
 element("export-dxf").addEventListener("click", () => {
   const exportDxf = async (choice: { sketch?: number; section?: number }, name: string) => {
     const path = await save({
-      title: "Export DXF",
+      title: text.exportDxf,
       defaultPath: `${name}.dxf`,
-      filters: [{ name: "DXF", extensions: ["dxf"] }],
+      filters: [{ name: text.dxfFiles, extensions: ["dxf"] }],
     });
     if (!path) return;
     const result = await request<{ entities: number }>({ method: "export_dxf", path, ...choice });
-    showError(new Error(`Exported ${result.entities} lines, arcs and circles to ${path}.`));
+    showError(new Error(text.exportedDxf(result.entities, path)));
   };
   const doc = current?.document;
   const items = [
     {
-      label: "Part profile, cut at mid-height",
-      title: "The part's true walls at half its height, outside and through holes, seen from above",
+      label: text.profileLabel,
+      title: text.profileTitle,
       disabled: !current?.body,
       run: guarded(() => {
         const bounds = current?.body?.bounds;
         const z = bounds ? (bounds.min.z + bounds.max.z) / 2 : 0;
-        return exportDxf({ section: z }, `${doc?.name ?? "part"} profile`);
+        return exportDxf({ section: z }, text.profileName(doc?.name ?? text.part));
       }),
     },
     ...Object.entries(doc?.sketches ?? {}).map(([id, record]) => ({
-      label: `Sketch: ${record.name}`,
-      title: "Exactly as drawn; construction lines on their own layer",
+      label: text.sketchLabel(record.name),
+      title: text.sketchExportTitle,
       disabled: false,
       run: guarded(() => exportDxf({ sketch: Number(id) }, record.name)),
     })),
@@ -2148,12 +2150,12 @@ element("export-dxf").addEventListener("click", () => {
 element("import-dxf").addEventListener(
   "click",
   guarded(async () => {
-    const path = await open({ title: "Import a DXF drawing", filters: [{ name: "DXF", extensions: ["dxf"] }] });
+    const path = await open({ title: text.importDxfTitle, filters: [{ name: text.dxfFiles, extensions: ["dxf"] }] });
     if (typeof path !== "string") return;
     const next = await request<DocumentState & { import_notes?: string[] }>({ method: "import_dxf", path });
     render(next);
     viewer.fit();
     const notes = next.import_notes ?? [];
-    showError(new Error(`Imported the drawing as a sketch on the XY plane.${notes.length > 0 ? ` ${notes.join(" ")}` : ""}`));
+    showError(new Error(text.importedDrawing(notes)));
   }),
 );
