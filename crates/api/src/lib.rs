@@ -88,8 +88,14 @@ pub enum Request {
     /// there.
     Post {
         /// `fanuc-mill`, `haas-mill`, `linuxcnc-mill`, `mazak-smoothg` or
-        /// `grbl`.
+        /// `grbl`. Not needed with `definition`.
+        #[serde(default)]
         post: String,
+        /// A post definition as TOML text, instead of a shipped post: one
+        /// edited in the post editor. If it is a shipped post changed, or
+        /// not shipped at all, the program header says so.
+        #[serde(default)]
+        definition: Option<String>,
         /// A shipped machine, such as `mazak-hcn-5000`, to check the program
         /// against first (decision 0015). A program that breaks one of its
         /// limits produces no G-code.
@@ -140,7 +146,11 @@ pub enum Request {
     /// there.
     Verify {
         /// A shipped post, as for `post`.
+        #[serde(default)]
         post: String,
+        /// A post definition as TOML text, as for `post`.
+        #[serde(default)]
+        definition: Option<String>,
         /// A shipped machine, as for `post`.
         #[serde(default)]
         machine: Option<String>,
@@ -153,6 +163,41 @@ pub enum Request {
         /// A file to write the report to.
         #[serde(default)]
         path: Option<PathBuf>,
+    },
+    /// A shipped post's TOML text, to start editing from. Replies
+    /// `{text}`.
+    PostSource {
+        /// The shipped post's id.
+        post: String,
+    },
+    /// The post editor's preview: a setup (or several) posted through a
+    /// definition being edited, without verifying. Replies `{gcode,
+    /// changed, base}`: `changed` lists the lines (from 0) that differ from
+    /// what the shipped post of the same id gives, `base` names that post
+    /// (`null` for a post not shipped).
+    PostPreview {
+        /// The definition as TOML text.
+        definition: String,
+        /// The setup's id; the first setup if left out.
+        #[serde(default)]
+        setup: Option<u32>,
+        /// Several setups in one program, instead of `setup`.
+        #[serde(default)]
+        setups: Option<Vec<u32>>,
+    },
+    /// Reads a post definition file. Replies `{text}`; a file that is not a
+    /// valid post is refused with the reason.
+    ReadPost {
+        /// The `.toml` file.
+        path: PathBuf,
+    },
+    /// Writes a post definition to a file, after checking it is a valid
+    /// post. Replies `{}`.
+    WritePost {
+        /// The definition as TOML text.
+        definition: String,
+        /// The file to write.
+        path: PathBuf,
     },
     /// Moves the history marker: the part is rebuilt from the first `to`
     /// features only, as it was at that point, or from all of them when
@@ -389,6 +434,119 @@ fn shipped_machine(id: &str) -> Result<cndt_cam_core::Machine, ApiError> {
     cndt_cam_core::Machine::from_toml(text).map_err(|e| ApiError::new("internal", e.to_string()))
 }
 
+/// Which post to use: a shipped one by id, or a definition given as TOML
+/// text, such as one edited in the post editor.
+#[derive(Debug, Clone)]
+pub(crate) struct PostRef {
+    id: String,
+    definition: Option<String>,
+}
+
+impl PostRef {
+    fn shipped_text(id: &str) -> Option<&'static str> {
+        SHIPPED_POSTS
+            .iter()
+            .find(|(name, _)| *name == id)
+            .map(|(_, text)| *text)
+    }
+
+    /// The loaded post, its id, and a header line saying it is not a
+    /// shipped post as shipped, if so.
+    fn load(&self) -> Result<(cndt_post::Post, String, Option<String>), ApiError> {
+        match &self.definition {
+            None => {
+                let text = Self::shipped_text(&self.id).ok_or_else(|| {
+                    let names: Vec<&str> = SHIPPED_POSTS.iter().map(|(name, _)| *name).collect();
+                    ApiError::new(
+                        "unknown_post",
+                        format!(
+                            "there is no post {:?}; use one of {}",
+                            self.id,
+                            names.join(", ")
+                        ),
+                    )
+                })?;
+                let post = cndt_post::Post::from_toml(text)
+                    .map_err(|e| ApiError::new("internal", e.to_string()))?;
+                Ok((post, self.id.clone(), None))
+            }
+            Some(text) => {
+                let post = cndt_post::Post::from_toml(text)
+                    .map_err(|e| ApiError::new("post_definition", e.to_string()))?;
+                let id = post.definition().post.id.clone();
+                let note = match Self::shipped_text(&id) {
+                    Some(shipped) if shipped == text => None,
+                    Some(_) => Some(format!("EDITED POST: CHANGED FROM THE SHIPPED {id}")),
+                    None => Some(format!("CUSTOM POST {id}: NOT SHIPPED WITH CNDT")),
+                };
+                Ok((post, id, note))
+            }
+        }
+    }
+
+    /// Identifies the post for caching: its id and, for a definition, a
+    /// hash of its text.
+    fn key(&self) -> String {
+        match &self.definition {
+            None => self.id.clone(),
+            Some(text) => {
+                // FNV-1a: stable on every platform.
+                let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+                    (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+                });
+                format!("{}#{hash:016x}", self.id)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for PostRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.load() {
+            Ok((_, id, Some(_))) => write!(f, "{id} (edited)"),
+            Ok((_, id, None)) => f.write_str(&id),
+            Err(_) => f.write_str(&self.id),
+        }
+    }
+}
+
+/// Line numbers (from 0) of `new` that are not in a longest common
+/// subsequence with `old`: what an edit changed. `None` if too long to
+/// compare.
+fn changed_lines(old: &str, new: &str) -> Option<Vec<usize>> {
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    if a.len().saturating_mul(b.len()) > 25_000_000 {
+        return None;
+    }
+    // lcs[i][j]: the longest common subsequence of a[i..] and b[j..].
+    let width = b.len() + 1;
+    let mut lcs = vec![0_u32; (a.len() + 1) * width];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i * width + j] = if a[i] == b[j] {
+                lcs[(i + 1) * width + j + 1] + 1
+            } else {
+                lcs[(i + 1) * width + j].max(lcs[i * width + j + 1])
+            };
+        }
+    }
+    let (mut i, mut j) = (0, 0);
+    let mut changed = Vec::new();
+    while j < b.len() {
+        if i < a.len() && a[i] == b[j] {
+            i += 1;
+            j += 1;
+        } else if i < a.len() && lcs[(i + 1) * width + j] >= lcs[i * width + j + 1] {
+            i += 1;
+        } else {
+            changed.push(j);
+            j += 1;
+        }
+    }
+    Some(changed)
+}
+
 /// The first bytes of a toolpath preview buffer.
 pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH1";
 
@@ -470,7 +628,7 @@ impl Api {
     /// then the header lists what was overridden.
     fn post(
         &mut self,
-        id: &str,
+        id: &PostRef,
         machine: Option<&str>,
         setup: Option<u32>,
         setups: Option<&[u32]>,
@@ -513,15 +671,44 @@ impl Api {
         self.post_program(id, machine, setup, setups, path, &notes)
     }
 
+    /// The post editor's preview (see [`Request::PostPreview`]).
+    fn post_preview(
+        &self,
+        definition: String,
+        setup: Option<u32>,
+        setups: Option<&[u32]>,
+    ) -> Result<Value, ApiError> {
+        let edited = PostRef {
+            id: String::new(),
+            definition: Some(definition),
+        };
+        let (_, id, _) = edited.load()?;
+        let ours = self.post_program(&edited, None, setup, setups, None, &[])?;
+        let gcode = ours["gcode"].as_str().unwrap_or_default().to_owned();
+        let base = PostRef {
+            id: id.clone(),
+            definition: None,
+        };
+        let (changed, base_id) = match self.post_program(&base, None, setup, setups, None, &[]) {
+            Ok(theirs) => (
+                changed_lines(theirs["gcode"].as_str().unwrap_or_default(), &gcode),
+                Some(id),
+            ),
+            // Not a shipped post: every line is its own.
+            Err(_) => (Some((0..gcode.lines().count()).collect()), None),
+        };
+        Ok(serde_json::json!({ "gcode": gcode, "changed": changed, "base": base_id }))
+    }
+
     /// The verification of these setups through this post and machine,
     /// reusing the last one if nothing has changed since.
     fn verification(
         &mut self,
-        post: &str,
+        post: &PostRef,
         machine: Option<&str>,
         ids: &[u32],
     ) -> Result<verify::Verification, ApiError> {
-        let key = format!("{}|{post}|{machine:?}|{ids:?}", self.revision);
+        let key = format!("{}|{}|{machine:?}|{ids:?}", self.revision, post.key());
         if let Some((kept, report)) = &self.verified
             && *kept == key
         {
@@ -536,26 +723,17 @@ impl Api {
     /// header comment.
     pub(crate) fn post_program(
         &self,
-        id: &str,
+        post_ref: &PostRef,
         machine: Option<&str>,
         setup: Option<u32>,
         setups: Option<&[u32]>,
         path: Option<&Path>,
         header: &[String],
     ) -> Result<Value, ApiError> {
-        let text = SHIPPED_POSTS
-            .iter()
-            .find(|(name, _)| *name == id)
-            .map(|(_, text)| *text)
-            .ok_or_else(|| {
-                let names: Vec<&str> = SHIPPED_POSTS.iter().map(|(name, _)| *name).collect();
-                ApiError::new(
-                    "unknown_post",
-                    format!("there is no post {id:?}; use one of {}", names.join(", ")),
-                )
-            })?;
-        let post = cndt_post::Post::from_toml(text)
-            .map_err(|e| ApiError::new("internal", e.to_string()))?;
+        let (post, id, edited) = post_ref.load()?;
+        let id = id.as_str();
+        let header: Vec<String> = edited.into_iter().chain(header.iter().cloned()).collect();
+        let header = header.as_slice();
         let planned = match (setup, setups) {
             (Some(_), Some(_)) => {
                 return Err(ApiError::new(
@@ -775,12 +953,17 @@ impl Api {
             }
             Request::Post {
                 post,
+                definition,
                 machine,
                 setup,
                 setups,
                 override_problems,
                 path,
             } => {
+                let post = PostRef {
+                    id: post,
+                    definition,
+                };
                 return match self.post(
                     &post,
                     machine.as_deref(),
@@ -814,11 +997,16 @@ impl Api {
             }
             Request::Verify {
                 post,
+                definition,
                 machine,
                 setups,
                 cell,
                 path,
             } => {
+                let post = PostRef {
+                    id: post,
+                    definition,
+                };
                 return match self.verify(
                     &post,
                     machine.as_deref(),
@@ -835,8 +1023,9 @@ impl Api {
                                     cam.setups.iter().map(|s| s.id).collect()
                                 });
                                 let key = format!(
-                                    "{}|{post}|{:?}|{ids:?}",
+                                    "{}|{}|{:?}|{ids:?}",
                                     self.revision,
+                                    post.key(),
                                     machine.as_deref()
                                 );
                                 self.verified = Some((key, report));
@@ -846,6 +1035,52 @@ impl Api {
                         Err(error) => failure(ApiError::new("internal", error.to_string())),
                     },
                     Err(error) => failure(error),
+                };
+            }
+            Request::PostSource { post } => {
+                return match PostRef::shipped_text(&post) {
+                    Some(text) => success(serde_json::json!({ "text": text })),
+                    None => failure(ApiError::new(
+                        "unknown_post",
+                        format!("there is no shipped post {post:?}"),
+                    )),
+                };
+            }
+            Request::PostPreview {
+                definition,
+                setup,
+                setups,
+            } => {
+                return match self.post_preview(definition, setup, setups.as_deref()) {
+                    Ok(value) => success(value),
+                    Err(error) => failure(error),
+                };
+            }
+            Request::ReadPost { path } => {
+                return match std::fs::read_to_string(&path) {
+                    Ok(text) => match cndt_post::Post::from_toml(&text) {
+                        Ok(_) => success(serde_json::json!({ "text": text })),
+                        Err(e) => failure(ApiError::new(
+                            "post_definition",
+                            format!("{} is not a valid post: {e}", path.display()),
+                        )),
+                    },
+                    Err(e) => failure(ApiError::new(
+                        "io",
+                        format!("cannot read {}: {e}", path.display()),
+                    )),
+                };
+            }
+            Request::WritePost { definition, path } => {
+                if let Err(e) = cndt_post::Post::from_toml(&definition) {
+                    return failure(ApiError::new("post_definition", e.to_string()));
+                }
+                return match std::fs::write(&path, definition) {
+                    Ok(()) => success(serde_json::json!({})),
+                    Err(e) => failure(ApiError::new(
+                        "io",
+                        format!("cannot write {}: {e}", path.display()),
+                    )),
                 };
             }
             Request::Detect { setup } => {
@@ -1004,12 +1239,27 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("step_info", &["path"]),
     (
         "post",
-        &["post", "machine", "setup", "setups", "override", "path"],
+        &[
+            "post",
+            "definition",
+            "machine",
+            "setup",
+            "setups",
+            "override",
+            "path",
+        ],
     ),
     ("detect", &["setup"]),
     ("simulate", &["setup", "cell", "after"]),
     ("rollback", &["to"]),
-    ("verify", &["post", "machine", "setups", "cell", "path"]),
+    (
+        "verify",
+        &["post", "definition", "machine", "setups", "cell", "path"],
+    ),
+    ("post_source", &["post"]),
+    ("post_preview", &["definition", "setup", "setups"]),
+    ("read_post", &["path"]),
+    ("write_post", &["definition", "path"]),
 ];
 
 /// Parses a request, refusing fields the method does not accept, so a typo

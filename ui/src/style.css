@@ -1636,3 +1636,63 @@ span.ribbon-label {
   content: " ·typ";
   color: var(--warning-text);
 }
+
+.post-editor {
+  top: 12px;
+  left: 12px;
+  right: 124px;
+  bottom: 60px;
+  width: auto;
+  z-index: 8;
+}
+
+.post-editor .report-head {
+  gap: 8px;
+}
+
+.post-editor .report-head h3 {
+  flex: 1;
+}
+
+.editor-base {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px !important;
+}
+
+.editor-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-body textarea,
+.editor-preview {
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  overflow: auto;
+  resize: none;
+  white-space: pre;
+}
+
+.editor-preview .changed {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.editor-status {
+  margin: 0;
+}
+
+.editor-status.error {
+  color: var(--danger);
+}

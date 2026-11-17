@@ -572,6 +572,8 @@ interface Target {
   label: string;
   post: string;
   machine?: string;
+  /** A post definition from the post editor, used instead of `post`. */
+  definition?: string;
 }
 const MAZAK_HCN_5000: Target = {
   key: "mazak-hcn-5000",
@@ -591,7 +593,7 @@ let chosenTarget = MAZAK_HCN_5000;
 
 /** Posts one setup, or all of them as one program when `setup` is a list. */
 async function postSetup(setup: number | number[], name: string): Promise<void> {
-  const { post, machine } = chosenTarget;
+  const { post, machine, definition } = chosenTarget;
   const which = Array.isArray(setup) ? { setups: setup } : { setup };
   const path = await save({
     title: "Save G-code",
@@ -604,6 +606,7 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
   const report = await request<Verification>({
     method: "verify",
     post,
+    definition,
     machine,
     setups: Array.isArray(setup) ? setup : [setup],
     path: reportPath,
@@ -624,6 +627,7 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
   const result = await request<{ gcode: string; notes: string[] }>({
     method: "post",
     post,
+    definition,
     machine,
     ...which,
     path,
@@ -1819,8 +1823,8 @@ element("cam-verify").addEventListener(
   guarded(async () => {
     const setups = (current?.document.cam?.setups ?? []).map((s) => s.id);
     if (setups.length === 0) throw new Error("Add a setup first, from SETUP in the ribbon.");
-    const { post, machine } = chosenTarget;
-    showReport(await request<Verification>({ method: "verify", post, machine, setups }));
+    const { post, machine, definition } = chosenTarget;
+    showReport(await request<Verification>({ method: "verify", post, definition, machine, setups }));
   }),
 );
 element("report-close").addEventListener("click", () => {
@@ -1851,3 +1855,116 @@ function renderTools(state: DocumentState): void {
     list.append(item);
   }
 }
+
+// ---------------------------------------------------------------- post editor
+
+const editorPanel = element("post-editor");
+const editorText = element<HTMLTextAreaElement>("post-editor-text");
+const editorPreview = element("post-editor-preview");
+const editorStatus = element("post-editor-status");
+const editorBase = element<HTMLSelectElement>("post-editor-base");
+let previewTimer: number | undefined;
+
+/** Shows the setup posted through the definition being edited, the lines
+ * that differ from the shipped post marked. */
+async function refreshPostPreview(): Promise<void> {
+  const setups = current?.document.cam?.setups ?? [];
+  const setup = shownSetup ?? setups[0]?.id;
+  if (setup === undefined) {
+    editorStatus.textContent = "Add a setup to see its program here.";
+    editorPreview.replaceChildren();
+    return;
+  }
+  try {
+    const preview = await request<{ gcode: string; changed: number[] | null; base: string | null }>({
+      method: "post_preview",
+      definition: editorText.value,
+      setup,
+    });
+    const changed = new Set(preview.changed ?? []);
+    const lines = preview.gcode.replace(/\n$/, "").split("\n");
+    editorPreview.replaceChildren(
+      ...lines.map((line, i) => {
+        const row = globalThis.document.createElement("div");
+        row.textContent = line || " ";
+        if (changed.has(i)) row.className = "changed";
+        return row;
+      }),
+    );
+    const count = changed.size;
+    editorStatus.classList.remove("error");
+    editorStatus.textContent = preview.base
+      ? count === 0
+        ? `Same output as the shipped ${preview.base}.`
+        : `${count} line${count === 1 ? "" : "s"} differ from the shipped ${preview.base} (highlighted). Review every one.`
+      : "A post not shipped with CNDT: every line is its own. Review all of it.";
+  } catch (error) {
+    editorStatus.classList.add("error");
+    editorStatus.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function loadBase(id: string): Promise<void> {
+  const source = await request<{ text: string }>({ method: "post_source", post: id });
+  editorText.value = source.text;
+  await refreshPostPreview();
+}
+
+element("cam-post-editor").addEventListener(
+  "click",
+  guarded(async () => {
+    editorPanel.hidden = false;
+    if (editorText.value === "") {
+      editorBase.value = chosenTarget.post;
+      await loadBase(chosenTarget.post);
+    } else {
+      await refreshPostPreview();
+    }
+  }),
+);
+element("post-editor-close").addEventListener("click", () => {
+  editorPanel.hidden = true;
+});
+editorBase.addEventListener(
+  "change",
+  guarded(() => loadBase(editorBase.value)),
+);
+editorText.addEventListener("input", () => {
+  window.clearTimeout(previewTimer);
+  previewTimer = window.setTimeout(() => void refreshPostPreview(), 400);
+});
+element("post-editor-load").addEventListener(
+  "click",
+  guarded(async () => {
+    const path = await open({ title: "Open a post", filters: [{ name: "Post", extensions: ["toml"] }] });
+    if (typeof path !== "string") return;
+    editorText.value = (await request<{ text: string }>({ method: "read_post", path })).text;
+    await refreshPostPreview();
+  }),
+);
+element("post-editor-save").addEventListener(
+  "click",
+  guarded(async () => {
+    const path = await save({ title: "Save the post", defaultPath: "my-post.toml", filters: [{ name: "Post", extensions: ["toml"] }] });
+    if (!path) return;
+    await request({ method: "write_post", definition: editorText.value, path });
+    editorStatus.textContent = `Saved to ${path}.`;
+  }),
+);
+element("post-editor-use").addEventListener(
+  "click",
+  guarded(async () => {
+    // Checked by the engine before it is offered for posting.
+    await request({ method: "post_preview", definition: editorText.value });
+    const id = /^\s*id\s*=\s*"([^"]*)"/m.exec(editorText.value)?.[1] ?? "custom";
+    const custom: Target = { key: "edited", label: `Edited: ${id}`, post: id, definition: editorText.value };
+    // Same post id as the chosen machine's: the machine still checks it.
+    if (chosenTarget.post === id && chosenTarget.machine) custom.machine = chosenTarget.machine;
+    const at = TARGETS.findIndex((t) => t.key === "edited");
+    if (at >= 0) TARGETS.splice(at, 1);
+    TARGETS.push(custom);
+    chosenTarget = custom;
+    if (current) renderSetups(current);
+    editorStatus.textContent = `Post… and Verify now use this edited post ("${custom.label}" in each setup's list).`;
+  }),
+);

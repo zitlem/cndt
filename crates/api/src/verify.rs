@@ -52,7 +52,7 @@ impl Api {
     /// report to `path` if given.
     pub(crate) fn verify(
         &self,
-        post: &str,
+        post: &crate::PostRef,
         machine: Option<&str>,
         setups: Option<&[u32]>,
         cell: Option<f64>,
