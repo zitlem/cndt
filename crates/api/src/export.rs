@@ -65,7 +65,8 @@ fn stl(mesh: &cndt_geom::TriangleMesh, name: &str) -> Result<Vec<u8>, ApiError> 
             mesh.positions.get(i + 2).copied().unwrap_or_default(),
         ]
     };
-    for triangle in mesh.indices.chunks_exact(3) {
+    let (triangles, _) = mesh.indices.as_chunks::<3>();
+    for triangle in triangles {
         let [a, b, c] = [
             corner(triangle[0]),
             corner(triangle[1]),
