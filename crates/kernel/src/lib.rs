@@ -202,15 +202,15 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// A kernel error if the file cannot be written.
     fn write_step(&self, body: &Body, path: &Path) -> Result<(), KernelError>;
 
-    /// Reads STEP data held in memory as one solid, in millimetres. Several
-    /// solids are fused into one; closed surface shells are made solid.
-    /// Face numbers are the same for the same data on every run.
+    /// Reads STEP or IGES data held in memory as one solid, in millimetres.
+    /// Several solids are fused into one; closed surface shells are made
+    /// solid. Face numbers are the same for the same data on every run.
     ///
     /// # Errors
     ///
-    /// [`KernelError::Modelling`] when the data is not STEP or holds no
-    /// valid closed solid, saying which.
-    fn read_step_solid(&self, data: &[u8]) -> Result<Body, KernelError>;
+    /// [`KernelError::Modelling`] when the data is not in that format or
+    /// holds no valid closed solid, saying which.
+    fn read_solid(&self, data: &[u8], format: SolidFormat) -> Result<Body, KernelError>;
 
     /// Every boundary loop of flat face `face` (parallel to XY), offset with
     /// the face by `distance`: positive grows the face, so the outer loop
@@ -347,11 +347,21 @@ pub enum BooleanOp {
     Cut,
 }
 
-/// How many imported solids [`OpenCascade::read_step_solid`] keeps.
+/// A file format solids are exchanged in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SolidFormat {
+    /// STEP, ISO 10303-21.
+    Step,
+    /// IGES 5.3.
+    Iges,
+}
+
+/// How many imported solids [`OpenCascade::read_solid`] keeps.
 const IMPORT_CACHE: usize = 4;
 
-/// Recently imported solids: `((length, hash), (data, body))`, oldest first.
-type ImportCache = Vec<((usize, u64), (Vec<u8>, Body))>;
+/// Recently imported solids: `((format, length, hash), (data, body))`,
+/// oldest first.
+type ImportCache = Vec<((SolidFormat, usize, u64), (Vec<u8>, Body))>;
 
 static IMPORTED: std::sync::Mutex<ImportCache> = std::sync::Mutex::new(Vec::new());
 
@@ -543,11 +553,11 @@ impl Kernel for OpenCascade {
         cndt_occt_sys::write_step(&body.0, path).map_err(modelling)
     }
 
-    fn read_step_solid(&self, data: &[u8]) -> Result<Body, KernelError> {
+    fn read_solid(&self, data: &[u8], format: SolidFormat) -> Result<Body, KernelError> {
         // Every rebuild reads the imported file again, and a large one takes
         // seconds, so the last few are kept. The key is the whole content,
         // compared in full, so a hit is always the same data.
-        let key = (data.len(), fnv1a(data));
+        let key = (format, data.len(), fnv1a(data));
         if let Ok(cache) = IMPORTED.lock()
             && let Some((_, (_, body))) = cache
                 .iter()
@@ -555,13 +565,20 @@ impl Kernel for OpenCascade {
         {
             return Ok(body.clone());
         }
-        let body = Body(Arc::new(cndt_occt_sys::read_step_solid(data).map_err(
-            |error| match error {
+        let body = Body(Arc::new(
+            cndt_occt_sys::read_solid(
+                data,
+                match format {
+                    SolidFormat::Step => cndt_occt_sys::Exchange::Step,
+                    SolidFormat::Iges => cndt_occt_sys::Exchange::Iges,
+                },
+            )
+            .map_err(|error| match error {
                 cndt_occt_sys::OcctError::ModelFailed(reason)
                 | cndt_occt_sys::OcctError::Kernel(reason) => KernelError::Modelling(reason),
                 other => KernelError::Modelling(other.to_string()),
-            },
-        )?));
+            })?,
+        ));
         if let Ok(mut cache) = IMPORTED.lock() {
             if cache.len() >= IMPORT_CACHE {
                 cache.remove(0);
@@ -717,14 +734,31 @@ mod tests {
     #[test]
     fn reads_a_step_solid_from_memory() {
         let data = std::fs::read(fixture("box-10x20x30.step")).unwrap();
-        let body = OpenCascade.read_step_solid(&data).unwrap();
+        let body = OpenCascade.read_solid(&data, SolidFormat::Step).unwrap();
         let properties = OpenCascade.properties(&body).unwrap();
         assert!((properties.volume - 6000.0).abs() < 1e-6, "{properties:?}");
         assert_eq!((properties.faces, properties.solids), (6, 1));
         // Read again: the same face order, served from the cache.
-        let again = OpenCascade.read_step_solid(&data).unwrap();
+        let again = OpenCascade.read_solid(&data, SolidFormat::Step).unwrap();
         assert_eq!(OpenCascade.properties(&again).unwrap(), properties);
-        let error = OpenCascade.read_step_solid(b"not a step file").unwrap_err();
+        let error = OpenCascade
+            .read_solid(b"not a step file", SolidFormat::Step)
+            .unwrap_err();
+        assert!(matches!(error, KernelError::Modelling(_)), "{error}");
+    }
+
+    #[test]
+    fn reads_an_iges_file_of_surfaces_as_a_solid() {
+        // Written by OpenCascade's IGES writer in faces-only mode, so the
+        // reader has to sew the six faces into a solid.
+        let data = std::fs::read(fixture("box-10x20x30-surfaces.igs")).unwrap();
+        let body = OpenCascade.read_solid(&data, SolidFormat::Iges).unwrap();
+        let properties = OpenCascade.properties(&body).unwrap();
+        assert!((properties.volume - 6000.0).abs() < 1e-3, "{properties:?}");
+        assert_eq!((properties.faces, properties.solids), (6, 1));
+        let error = OpenCascade
+            .read_solid(b"not an iges file", SolidFormat::Iges)
+            .unwrap_err();
         assert!(matches!(error, KernelError::Modelling(_)), "{error}");
     }
 

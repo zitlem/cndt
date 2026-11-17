@@ -111,3 +111,9 @@ Import features (decision 0017): `{"type": "import", "name", "source", "operatio
 - **Why a version bump:** a version 16 build would refuse the unknown feature type and the unknown entries; with the bump it says to update instead.
 - **Migration:** none needed. A version 16 or older file that contains an import is refused as damaged.
 
+## Version 18 (2026-11-17)
+
+An import feature may hold `"format": "iges"` (left out for STEP), and its copy is then stored as `design/imports/<feature id>.igs`.
+
+- **Why a version bump:** a version 17 build refuses the unknown `format` field as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 17 or older file with an IGES import is refused as damaged.

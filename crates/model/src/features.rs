@@ -104,14 +104,17 @@ pub enum Feature {
         /// Millimetres.
         radius: f64,
     },
-    /// A solid read from a STEP file, joined to the part or cut from it
-    /// (decision 0017). The file's content is kept in the project, so the
+    /// A solid read from a STEP or IGES file, joined to the part or cut
+    /// from it (decision 0017). The file's content is kept in the project, so the
     /// project opens without the original file.
     Import {
         /// Shown in the timeline, such as `Import1`.
         name: String,
         /// The original file's name, without its folder, for display.
         source: String,
+        /// STEP or IGES. Left out for STEP.
+        #[serde(default, skip_serializing_if = "ImportFormat::is_step")]
+        format: ImportFormat,
         /// Join or cut.
         operation: Operation,
         /// The content's length in bytes, to check the stored copy.
@@ -123,6 +126,45 @@ pub enum Feature {
         #[serde(skip)]
         data: ImportData,
     },
+}
+
+/// The exchange format of an imported file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportFormat {
+    /// STEP, ISO 10303-21.
+    #[default]
+    Step,
+    /// IGES.
+    Iges,
+}
+
+impl ImportFormat {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes fields by reference
+    const fn is_step(&self) -> bool {
+        matches!(self, Self::Step)
+    }
+
+    /// The file extension its stored copy takes.
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Step => "step",
+            Self::Iges => "igs",
+        }
+    }
+
+    /// Recognises a file by its content: STEP starts `ISO-10303-21`, IGES
+    /// has its fixed 80-column lines with the section letter `S` in column
+    /// 73 of the first.
+    #[must_use]
+    pub fn sniff(content: &str) -> Option<Self> {
+        if content.trim_start().starts_with("ISO-10303-21") {
+            return Some(Self::Step);
+        }
+        let first = content.lines().next()?;
+        (first.len() >= 73 && first.as_bytes().get(72) == Some(&b'S')).then_some(Self::Iges)
+    }
 }
 
 /// An imported file's content: shared, so copying the document for undo
@@ -1176,9 +1218,14 @@ fn import_tool(
     kernel: &dyn Kernel,
     id: FeatureId,
     data: &ImportData,
+    format: ImportFormat,
 ) -> Result<(Body, Names), String> {
+    let format = match format {
+        ImportFormat::Step => cndt_kernel::SolidFormat::Step,
+        ImportFormat::Iges => cndt_kernel::SolidFormat::Iges,
+    };
     let body = kernel
-        .read_step_solid(&data.0)
+        .read_solid(&data.0, format)
         .map_err(|error| format!("the imported file cannot be read: {error}"))?;
     let faces = kernel
         .properties(&body)
@@ -1238,10 +1285,13 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
             let Some(sketch) = entry.feature.sketch() else {
                 if let Feature::Import {
-                    data, operation, ..
+                    data,
+                    operation,
+                    format,
+                    ..
                 } = &entry.feature
                 {
-                    let (tool, names) = import_tool(kernel, entry.id, data)?;
+                    let (tool, names) = import_tool(kernel, entry.id, data, *format)?;
                     return apply_tool(kernel, part.as_ref(), &tool, &names, *operation).map(Some);
                 }
                 if let Feature::Pattern { .. } = &entry.feature {
@@ -1969,6 +2019,7 @@ mod tests {
         Feature::Import {
             name: name.into(),
             source: String::from("box-10x20x30.step"),
+            format: ImportFormat::Step,
             operation,
             bytes,
             hash,

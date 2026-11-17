@@ -35,6 +35,10 @@ const CORE_LIBS: &[&str] = &[
 const STEP_LIB_NEW: &str = "TKDESTEP";
 const STEP_LIBS_OLD: &[&str] = &["TKSTEP", "TKSTEPBase", "TKSTEPAttr", "TKSTEP209"];
 
+/// IGES support: one library from 7.8 on, one by another name before.
+const IGES_LIB_NEW: &str = "TKDEIGES";
+const IGES_LIB_OLD: &str = "TKIGES";
+
 struct BuildError(String);
 
 impl fmt::Debug for BuildError {
@@ -73,6 +77,11 @@ fn main() -> Result<(), BuildError> {
         for lib in STEP_LIBS_OLD {
             println!("cargo:rustc-link-lib=dylib={lib}");
         }
+    }
+    if has_library(&occt.lib, IGES_LIB_NEW) {
+        println!("cargo:rustc-link-lib=dylib={IGES_LIB_NEW}");
+    } else {
+        println!("cargo:rustc-link-lib=dylib={IGES_LIB_OLD}");
     }
     if target_os != "windows" {
         // Let test and app binaries find the libraries without extra setup.

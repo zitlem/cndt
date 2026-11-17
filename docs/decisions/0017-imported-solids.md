@@ -16,7 +16,7 @@ An **import feature** in the timeline: `{"type": "import", "name", "source", "op
 - **One solid.** Several solids in a file are fused into one. A file of surfaces only (common from surface modellers) is sewn at 0.001 mm and each closed shell becomes a solid. A file with no closed solid is refused, saying how many faces it held. An invalid result is repaired once with OpenCascade's shape healing, and refused if still invalid.
 - **Face names** (decision 0012): `f<feature>/import/<n>`, where `n` is the face's number in the file's solid. It is the same for the same file and OpenCascade version, so sketches, chamfers and setups on imported faces survive reopening. Re-importing a changed file is a new feature, and references to the old one's faces fail visibly, as the timeline already shows for a deleted face.
 - **Size.** An import may be at most 200 MB, under the project's 256 MB entry limit.
-- **STEP first.** IGES and STL are not in this slice. IGES needs another OpenCascade library linked on all three CI systems. An STL mesh is not an exact solid and would need its own decision (a reference body that can be seen and measured, but not machined to).
+- **STEP and IGES.** STEP came first. IGES followed on 2026-11-17 (file version 18): the feature records `"format": "iges"`, its copy is stored as `design/imports/<id>.igs`, and the format is told from the content (STEP starts `ISO-10303-21`; IGES has `S` in column 73 of its first line). OpenCascade reads IGES from files only, so the stored copy is written to a private temporary file for the read and removed after. IGES files are often surfaces only, which the sewing above turns into a solid. An STL mesh is not an exact solid and would need its own decision (a reference body that can be seen and measured, but not machined to).
 
 ## Options considered
 
@@ -28,6 +28,6 @@ An **import feature** in the timeline: `{"type": "import", "name", "source", "op
 
 - File version 17. Version 16 builds refuse these projects with the update message.
 - Project files grow by the size of each imported file (compressed).
-- The kernel trait gains `read_step_solid` (STEP data held in memory).
+- The kernel trait gains `read_solid` (STEP or IGES data held in memory), and the build links OpenCascade's IGES library (`TKDEIGES`, or `TKIGES` before 7.8).
 - The `feature.import` command carries the file's text, so undo and redo need no file.
-- The `import_step` API request, and File → Import STEP into the design. Looking at a STEP file without importing it stays, as File → Look at a STEP file.
+- The `import_step` API request (STEP or IGES), and File → Import STEP or IGES into the design. Looking at a STEP file without importing it stays, as File → Look at a STEP file.

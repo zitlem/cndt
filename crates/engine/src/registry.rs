@@ -350,7 +350,7 @@ impl Registry {
             },
             CommandSpec {
                 name: "feature.import",
-                description: "Add a solid from a STEP file, kept in the project.",
+                description: "Add a solid from a STEP or IGES file, kept in the project.",
                 args: &[
                     ArgSpec {
                         name: "source",
@@ -362,7 +362,7 @@ impl Registry {
                         name: "content",
                         kind: ArgKind::Text,
                         required: true,
-                        description: "The STEP file's text.",
+                        description: "The STEP or IGES file's text.",
                     },
                     ArgSpec {
                         name: "operation",

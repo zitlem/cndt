@@ -70,6 +70,7 @@
 #include <Message_PrinterOStream.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
+#include <IGESControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <ShapeAnalysis.hxx>
 #include <Standard_Failure.hxx>
@@ -1549,38 +1550,54 @@ int cndt_occt_heights(
 }
 
 // Writes the shape to a STEP file (AP214), in millimetres.
-// Reads STEP data held in memory (`len` bytes, not NUL-terminated) as one
-// solid, in millimetres. Several solids are fused into one. A file of
+// Reads STEP (`format` 0) or IGES (`format` 1) as one solid, in
+// millimetres: from `path` when it is not null, else from the `len` bytes at
+// `data` (not NUL-terminated; STEP only, since OpenCascade's IGES reader
+// reads files only). Several solids are fused into one. A file of
 // surfaces only is sewn, and each closed shell becomes a solid; a file
 // with no closed solid at all is refused with how many faces it held.
 // Face numbers of the result are its face map order, which is the same
 // for the same data on every run.
-int cndt_occt_read_step_solid(
+int cndt_occt_read_solid(
     const std::uint8_t* data,
     std::size_t len,
+    std::int32_t format,
+    const char* path,
     cndt_shape** out,
     char* err,
     std::size_t err_len) {
-    if (data == nullptr || out == nullptr || len == 0) {
+    if (out == nullptr || format < 0 || format > 1 || (path == nullptr && (data == nullptr || len == 0 || format != 0))) {
         set_error(err, err_len, "bad argument");
         return kBadArgument;
     }
     *out = nullptr;
     try {
         silence_console_output();
-        STEPControl_Reader reader;
+        std::unique_ptr<XSControl_Reader> reader;
+        if (format == 0) {
+            reader = std::make_unique<STEPControl_Reader>();
+        } else {
+            reader = std::make_unique<IGESControl_Reader>();
+        }
+        // Set after the reader exists, because creating it registers this.
         Interface_Static::SetCVal("xstep.cascade.unit", "MM");
-        std::istringstream stream(std::string(reinterpret_cast<const char*>(data), len));
-        if (reader.ReadStream("import.step", stream) != IFSelect_RetDone) {
-            set_error(err, err_len, "the file could not be read as STEP");
+        IFSelect_ReturnStatus read = IFSelect_RetVoid;
+        if (path != nullptr) {
+            read = reader->ReadFile(path);
+        } else {
+            std::istringstream stream(std::string(reinterpret_cast<const char*>(data), len));
+            read = reader->ReadStream("import.step", stream);
+        }
+        if (read != IFSelect_RetDone) {
+            set_error(err, err_len, format == 0 ? "the file could not be read as STEP" : "the file could not be read as IGES");
             return kReadFailed;
         }
-        reader.TransferRoots();
-        if (reader.NbShapes() == 0) {
+        reader->TransferRoots();
+        if (reader->NbShapes() == 0) {
             set_error(err, err_len, "the file contains no shapes");
             return kNoShapes;
         }
-        const TopoDS_Shape shape = reader.OneShape();
+        const TopoDS_Shape shape = reader->OneShape();
         std::vector<TopoDS_Shape> solids;
         for (TopExp_Explorer it(shape, TopAbs_SOLID); it.More(); it.Next()) {
             solids.push_back(it.Current());

@@ -202,11 +202,12 @@ pub enum Request {
         #[serde(default)]
         name: Option<String>,
     },
-    /// Adds the solid in a STEP file to the timeline, joined to the part or
-    /// cut from it (decision 0017). The file's content is kept in the
+    /// Adds the solid in a STEP or IGES file to the timeline, joined to the
+    /// part or cut from it (decision 0017); which format is told from the
+    /// content. The file's content is kept in the
     /// project. Replies with the state.
     ImportStep {
-        /// The STEP file.
+        /// The STEP or IGES file.
         path: PathBuf,
         /// join (the default) or cut.
         #[serde(default)]
@@ -784,7 +785,7 @@ impl Api {
         let content = std::fs::read_to_string(path).map_err(|e| {
             ApiError::new(
                 "import",
-                format!("cannot read {} as STEP text: {e}", path.display()),
+                format!("cannot read {} as STEP or IGES text: {e}", path.display()),
             )
         })?;
         let source = path
@@ -2004,11 +2005,37 @@ mod tests {
         let reply = call(&mut api, json!({"method": "undo"}));
         assert!(reply["result"]["body"].is_null(), "{reply}");
 
+        // An IGES file of surfaces, cut from the box: sewn into a solid.
+        let mut api = Api::new();
+        call(&mut api, json!({"method": "new_document", "name": "Iges"}));
+        let iges = step.with_file_name("box-10x20x30-surfaces.igs");
+        let reply = call(&mut api, json!({"method": "import_step", "path": iges}));
+        assert_eq!(
+            reply["result"]["feature_status"]["0"]["state"], "ok",
+            "{reply}"
+        );
+        assert_eq!(
+            reply["result"]["document"]["features"][0]["feature"]["format"],
+            "iges"
+        );
+        assert!((reply["result"]["body"]["volume"].as_f64().unwrap() - 6000.0).abs() < 1e-3);
+        let iges_project = temp_file("iges.cndt");
+        call(&mut api, json!({"method": "save_as", "path": iges_project}));
+        let reply = call(
+            &mut Api::new(),
+            json!({"method": "open", "path": iges_project}),
+        );
+        assert_eq!(
+            reply["result"]["feature_status"]["0"]["state"], "ok",
+            "{reply}"
+        );
+        std::fs::remove_file(iges_project).unwrap();
+
         let text = temp_file("not-step.step");
         std::fs::write(&text, "solid nothing\nendsolid\n").unwrap();
         let reply = call(&mut api, json!({"method": "import_step", "path": text}));
         let message = reply["error"]["message"].as_str().unwrap_or_default();
-        assert!(message.contains("not a STEP file"), "{reply}");
+        assert!(message.contains("not a STEP or IGES file"), "{reply}");
         std::fs::remove_file(path).unwrap();
         std::fs::remove_file(text).unwrap();
     }
