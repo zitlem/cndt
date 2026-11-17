@@ -51,7 +51,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 15: setups turned about Y, and B table angles (decision 0015).
 /// - 16: measured tool assemblies (decision 0016).
 /// - 17: imported solids, their files under `design/imports/` (decision 0017).
-pub const SCHEMA_VERSION: u32 = 17;
+/// - 18: imported IGES files.
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -59,7 +60,8 @@ pub const EXTENSION: &str = "cndt";
 const MANIFEST: &str = "manifest.json";
 const DOCUMENT: &str = "design/document.json";
 const EXTENSIONS: &str = "extensions/";
-/// Imported files, one entry per import feature: `design/imports/<id>.step`.
+/// Imported files, one entry per import feature: `design/imports/<id>.step`
+/// or `.igs`.
 const IMPORTS: &str = "design/imports/";
 
 /// The largest entry this build will read, after decompression.
@@ -179,7 +181,10 @@ pub fn write<W: Write + Seek>(project: &Project, writer: W) -> Result<(), Format
     entries.insert(String::from(DOCUMENT), to_json(&project.document)?);
     for entry in project.document.features() {
         if let cndt_model::Feature::Import { data, .. } = &entry.feature {
-            entries.insert(import_entry(entry.id), data.0.as_ref().clone());
+            entries.insert(
+                import_entry(&entry.feature, entry.id),
+                data.0.as_ref().clone(),
+            );
         }
     }
     for (name, data) in &project.extensions {
@@ -270,14 +275,13 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     let mut document: Document = serde_json::from_slice(&document_bytes)
         .map_err(|error| FormatError::Corrupt(format!("{DOCUMENT}: {error}")))?;
     // Each import's file is its own entry.
-    let imports: Vec<cndt_model::FeatureId> = document
+    let imports: Vec<(cndt_model::FeatureId, String)> = document
         .features()
         .iter()
         .filter(|e| matches!(e.feature, cndt_model::Feature::Import { .. }))
-        .map(|e| e.id)
+        .map(|e| (e.id, import_entry(&e.feature, e.id)))
         .collect();
-    for id in imports {
-        let name = import_entry(id);
+    for (id, name) in imports {
         let data = entries
             .remove(&name)
             .ok_or_else(|| FormatError::Corrupt(format!("{name} is missing")))?;
@@ -286,6 +290,23 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 17 knew nothing of IGES imports.
+    if manifest.schema_version < 18
+        && document.features().iter().any(|e| {
+            matches!(
+                e.feature,
+                cndt_model::Feature::Import {
+                    format: cndt_model::ImportFormat::Iges,
+                    ..
+                }
+            )
+        })
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain imported IGES files",
+            manifest.schema_version
+        )));
+    }
     // Version 16 knew nothing of imported solids.
     if manifest.schema_version < 17
         && document
@@ -532,8 +553,12 @@ pub fn open(path: &Path) -> Result<Project, FormatError> {
 }
 
 /// Where an import feature's file is stored.
-fn import_entry(id: cndt_model::FeatureId) -> String {
-    format!("{IMPORTS}{}.step", id.0)
+fn import_entry(feature: &cndt_model::Feature, id: cndt_model::FeatureId) -> String {
+    let extension = match feature {
+        cndt_model::Feature::Import { format, .. } => format.extension(),
+        _ => "step",
+    };
+    format!("{IMPORTS}{}.{extension}", id.0)
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -704,6 +729,7 @@ mod tests {
             .add_feature(cndt_model::Feature::Import {
                 name: String::from("Import1"),
                 source: String::from("bracket.step"),
+                format: cndt_model::ImportFormat::Step,
                 operation: cndt_model::Operation::Join,
                 bytes,
                 hash,
@@ -765,6 +791,38 @@ mod tests {
         ]);
         let error = read(Cursor::new(stray)).unwrap_err();
         assert!(error.to_string().contains("unexpected entry"), "{error}");
+    }
+
+    #[test]
+    fn iges_imports_need_version_18_and_keep_their_extension() {
+        let mut document = imported("ISO-10303-21; one");
+        let data = cndt_model::ImportData(std::sync::Arc::new(b"iges".to_vec()));
+        let (bytes, hash) = data.fingerprint();
+        document
+            .add_feature(cndt_model::Feature::Import {
+                name: String::from("Import2"),
+                source: String::from("plate.igs"),
+                format: cndt_model::ImportFormat::Iges,
+                operation: cndt_model::Operation::Cut,
+                bytes,
+                hash,
+                data,
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        let bytes = to_bytes(&project);
+        assert_eq!(read(Cursor::new(bytes.clone())).unwrap(), project);
+        let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert!(zip.by_name("design/imports/1.igs").is_ok());
+        let json = serde_json::to_string(&document).unwrap();
+        let v17 = raw_zip(&[
+            (MANIFEST, &manifest(17)),
+            (DOCUMENT, &json),
+            ("design/imports/0.step", "ISO-10303-21; one"),
+            ("design/imports/1.igs", "iges"),
+        ]);
+        let error = read(Cursor::new(v17)).unwrap_err();
+        assert!(error.to_string().contains("IGES"), "{error}");
     }
 
     #[test]

@@ -1205,10 +1205,10 @@ element("import-step").addEventListener(
   "click",
   guarded(async () => {
     const path = await open({
-      title: "Import a STEP solid into the design",
+      title: "Import a STEP or IGES solid into the design",
       multiple: false,
       directory: false,
-      filters: [{ name: "STEP", extensions: ["step", "stp", "STEP", "STP"] }],
+      filters: [{ name: "STEP or IGES", extensions: ["step", "stp", "STEP", "STP", "igs", "iges", "IGS", "IGES"] }],
     });
     if (typeof path !== "string") return;
     ui.viewportHint.textContent = "Reading the file…";

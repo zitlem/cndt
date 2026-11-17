@@ -3,8 +3,8 @@
 
 use cndt_model::sketch::{EntityId, Geometry, ProfileKey};
 use cndt_model::{
-    Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ImportData, ModelError,
-    Operation, SketchId, default_profiles,
+    Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ImportData, ImportFormat,
+    ModelError, Operation, SketchId, default_profiles,
 };
 
 use crate::{Command, CommandError};
@@ -114,7 +114,7 @@ impl Command for AddExtrude {
     }
 }
 
-/// Adds a solid read from a STEP file at the end of the timeline (decision
+/// Adds a solid read from a STEP or IGES file at the end of the timeline (decision
 /// 0017). The file's content goes into the document, so the project opens
 /// without the original file.
 #[derive(Debug, Clone)]
@@ -128,7 +128,8 @@ pub struct AddImport {
 }
 
 impl AddImport {
-    /// Imports `content`, the STEP text of a file called `source`.
+    /// Imports `content`, the STEP or IGES text of a file called `source`;
+    /// which one is told from the content.
     #[must_use]
     pub const fn new(
         source: String,
@@ -173,12 +174,13 @@ impl Command for AddImport {
                 ModelError::InvalidFeature(String::from("an imported file needs a name")).into(),
             );
         }
-        if !self.content.trim_start().starts_with("ISO-10303-21") {
+        let Some(format) = ImportFormat::sniff(&self.content) else {
             return Err(ModelError::InvalidFeature(format!(
-                "{source} is not a STEP file: it does not start with ISO-10303-21"
+                "{source} is not a STEP or IGES file: it neither starts with ISO-10303-21 \
+                 nor has IGES's start section"
             ))
             .into());
-        }
+        };
         let data = ImportData(std::sync::Arc::new(self.content.as_bytes().to_vec()));
         let (bytes, hash) = data.fingerprint();
         let name = match &self.name {
@@ -188,6 +190,7 @@ impl Command for AddImport {
         let feature = Feature::Import {
             name,
             source,
+            format,
             operation: self.operation,
             bytes,
             hash,

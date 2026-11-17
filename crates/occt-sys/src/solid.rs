@@ -177,9 +177,11 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
-    fn cndt_occt_read_step_solid(
+    fn cndt_occt_read_solid(
         data: *const u8,
         len: usize,
+        format: c_int,
+        path: *const c_char,
         out: *mut *mut ShapeHandle,
         err: *mut c_char,
         err_len: usize,
@@ -751,25 +753,85 @@ pub fn write_step(shape: &Shape, path: &std::path::Path) -> Result<(), OcctError
     Ok(())
 }
 
-/// Reads STEP data held in memory as one solid, in millimetres: several
-/// solids are fused, and closed surface shells are made solid. Face
-/// numbers follow OpenCascade's face map, the same for the same data.
+/// An exchange format a solid can be read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exchange {
+    /// ISO 10303-21.
+    Step,
+    /// IGES 5.3.
+    Iges,
+}
+
+/// Reads STEP or IGES data held in memory as one solid, in millimetres:
+/// several solids are fused, and closed surface shells are made solid.
+/// Face numbers follow OpenCascade's face map, the same for the same data.
 ///
 /// # Errors
 ///
 /// [`OcctError::ModelFailed`] when the data holds no closed solid or an
-/// invalid one; a kernel error when it is not STEP.
-pub fn read_step_solid(data: &[u8]) -> Result<Shape, OcctError> {
+/// invalid one; a kernel error when it is not in that format.
+pub fn read_solid(data: &[u8], format: Exchange) -> Result<Shape, OcctError> {
+    if format == Exchange::Iges {
+        // OpenCascade reads IGES from files only: a private temporary copy,
+        // removed whatever happens.
+        let file = TemporaryFile::new("igs", data)?;
+        return read_solid_from(data, format, Some(&super::c_path(&file.0)?));
+    }
+    read_solid_from(data, format, None)
+}
+
+/// A file in the system's temporary folder, removed when dropped.
+struct TemporaryFile(std::path::PathBuf);
+
+impl TemporaryFile {
+    fn new(extension: &str, data: &[u8]) -> Result<Self, OcctError> {
+        use std::io::Write;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "cndt-import-{}-{n}.{extension}",
+            std::process::id()
+        ));
+        let io = |e: std::io::Error| OcctError::Kernel(format!("cannot stage the file: {e}"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(io)?;
+        let staged = Self(path);
+        file.write_all(data).map_err(io)?;
+        Ok(staged)
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        // Best effort: a leftover file in the temporary folder is harmless.
+        let _ignored = std::fs::remove_file(&self.0);
+    }
+}
+
+fn read_solid_from(
+    data: &[u8],
+    format: Exchange,
+    path: Option<&std::ffi::CStr>,
+) -> Result<Shape, OcctError> {
     let mut out: *mut ShapeHandle = std::ptr::null_mut();
     let mut err = [0_u8; ERROR_BUFFER];
     let _guard = lock();
     // SAFETY: `data` is valid for `data.len()` bytes for the whole call;
-    // `out` is a valid out-pointer; `err` is writable for its length; the
-    // shim catches exceptions.
+    // `path` is null or a NUL-terminated string outliving the call; `out` is
+    // a valid out-pointer; `err` is writable for its length; the shim
+    // catches exceptions.
     let code = unsafe {
-        cndt_occt_read_step_solid(
+        cndt_occt_read_solid(
             data.as_ptr(),
             data.len(),
+            match format {
+                Exchange::Step => 0,
+                Exchange::Iges => 1,
+            },
+            path.map_or(std::ptr::null(), std::ffi::CStr::as_ptr),
             &mut out,
             err.as_mut_ptr().cast::<c_char>(),
             err.len(),

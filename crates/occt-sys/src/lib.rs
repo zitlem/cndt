@@ -20,9 +20,9 @@
 mod solid;
 
 pub use solid::{
-    Blend, BooleanOp, Curve, Made, Properties, Segment, Shape, blend, boolean, edge_polylines,
-    edges, extrude, face_loops, face_outline, face_plane, heights, mesh, properties,
-    read_step_solid, revolve, section_loops, section_outline, translate, write_step,
+    Blend, BooleanOp, Curve, Exchange, Made, Properties, Segment, Shape, blend, boolean,
+    edge_polylines, edges, extrude, face_loops, face_outline, face_plane, heights, mesh,
+    properties, read_solid, revolve, section_loops, section_outline, translate, write_step,
 };
 
 use std::ffi::{CStr, CString, c_char, c_int};
