@@ -100,6 +100,7 @@ export type Feature =
   | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec }
   | { type: "chamfer"; name: string; edges: EdgeTarget[]; distance: number }
   | { type: "fillet"; name: string; edges: EdgeTarget[]; radius: number }
+  | { type: "reference"; name: string; source: string; bytes: number; hash: string }
   | {
       type: "import";
       name: string;
@@ -173,6 +174,8 @@ export interface DocumentState {
   body_revision: number;
   /** How many timeline features are built while the history is rolled back. */
   rollback: number | null;
+  /** Each reference mesh that read: its size, for measuring (decision 0018). */
+  references?: Record<string, { triangles: number; bounds: { min: Point3; max: Point3 }; size: [number, number, number] }>;
   /** Each library tool's assembly as the checks use it. */
   tool_assemblies: Record<
     string,
@@ -322,6 +325,16 @@ export async function bodyEdges(): Promise<Float32Array[]> {
 export interface Toolpath {
   rapids: Float32Array;
   cuts: Float32Array;
+}
+
+/** A reference mesh's triangles (decision 0018). */
+export async function referenceMesh(feature: number): Promise<Mesh> {
+  try {
+    return decodeMesh(await invoke<ArrayBuffer>("reference_mesh", { feature }));
+  } catch (error) {
+    if (error instanceof ApiFailure) throw error;
+    throw new ApiFailure("reference", String(error));
+  }
 }
 
 /** A setup's simulated stock, from the last `simulate` of it (decision 0016). */

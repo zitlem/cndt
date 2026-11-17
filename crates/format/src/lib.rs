@@ -52,7 +52,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 16: measured tool assemblies (decision 0016).
 /// - 17: imported solids, their files under `design/imports/` (decision 0017).
 /// - 18: imported IGES files.
-pub const SCHEMA_VERSION: u32 = 18;
+/// - 19: STL reference meshes (decision 0018).
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -180,7 +181,9 @@ pub fn write<W: Write + Seek>(project: &Project, writer: W) -> Result<(), Format
     entries.insert(String::from(MANIFEST), to_json(&manifest)?);
     entries.insert(String::from(DOCUMENT), to_json(&project.document)?);
     for entry in project.document.features() {
-        if let cndt_model::Feature::Import { data, .. } = &entry.feature {
+        if let cndt_model::Feature::Import { data, .. }
+        | cndt_model::Feature::Reference { data, .. } = &entry.feature
+        {
             entries.insert(
                 import_entry(&entry.feature, entry.id),
                 data.0.as_ref().clone(),
@@ -278,7 +281,12 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     let imports: Vec<(cndt_model::FeatureId, String)> = document
         .features()
         .iter()
-        .filter(|e| matches!(e.feature, cndt_model::Feature::Import { .. }))
+        .filter(|e| {
+            matches!(
+                e.feature,
+                cndt_model::Feature::Import { .. } | cndt_model::Feature::Reference { .. }
+            )
+        })
         .map(|e| (e.id, import_entry(&e.feature, e.id)))
         .collect();
     for (id, name) in imports {
@@ -290,6 +298,18 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 18 knew nothing of reference meshes.
+    if manifest.schema_version < 19
+        && document
+            .features()
+            .iter()
+            .any(|e| matches!(e.feature, cndt_model::Feature::Reference { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain reference meshes",
+            manifest.schema_version
+        )));
+    }
     // Version 17 knew nothing of IGES imports.
     if manifest.schema_version < 18
         && document.features().iter().any(|e| {
@@ -556,6 +576,7 @@ pub fn open(path: &Path) -> Result<Project, FormatError> {
 fn import_entry(feature: &cndt_model::Feature, id: cndt_model::FeatureId) -> String {
     let extension = match feature {
         cndt_model::Feature::Import { format, .. } => format.extension(),
+        cndt_model::Feature::Reference { .. } => "stl",
         _ => "step",
     };
     format!("{IMPORTS}{}.{extension}", id.0)
@@ -823,6 +844,47 @@ mod tests {
         ]);
         let error = read(Cursor::new(v17)).unwrap_err();
         assert!(error.to_string().contains("IGES"), "{error}");
+    }
+
+    #[test]
+    fn reference_meshes_are_stored_as_stl_and_need_version_19() {
+        let mut document = Document::new("Mesh");
+        let data = cndt_model::ImportData(std::sync::Arc::new(vec![0, 1, 2, 255]));
+        let (bytes, hash) = data.fingerprint();
+        document
+            .add_feature(cndt_model::Feature::Reference {
+                name: String::from("Mesh1"),
+                source: String::from("scan.stl"),
+                bytes,
+                hash,
+                data,
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        let bytes = to_bytes(&project);
+        assert_eq!(read(Cursor::new(bytes.clone())).unwrap(), project);
+        let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut stored = Vec::new();
+        zip.by_name("design/imports/0.stl")
+            .unwrap()
+            .read_to_end(&mut stored)
+            .unwrap();
+        assert_eq!(stored, vec![0, 1, 2, 255], "binary content kept exactly");
+        let json = serde_json::to_string(&document).unwrap();
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, content) in [
+            (MANIFEST, manifest(18).into_bytes()),
+            (DOCUMENT, json.into_bytes()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(&content).unwrap();
+        }
+        zip.start_file("design/imports/0.stl", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&[0, 1, 2, 255]).unwrap();
+        let v18 = zip.finish().unwrap().into_inner();
+        let error = read(Cursor::new(v18)).unwrap_err();
+        assert!(error.to_string().contains("reference meshes"), "{error}");
     }
 
     #[test]

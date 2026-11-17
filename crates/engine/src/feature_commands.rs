@@ -207,6 +207,85 @@ impl Command for AddImport {
     }
 }
 
+/// Adds a reference mesh read from an STL file at the end of the timeline
+/// (decision 0018): shown and measured, never joined to the solid.
+#[derive(Debug, Clone)]
+pub struct AddReference {
+    source: String,
+    content: std::sync::Arc<Vec<u8>>,
+    name: Option<String>,
+    created: Option<FeatureId>,
+    undone: Option<(usize, FeatureEntry)>,
+}
+
+impl AddReference {
+    /// Adds `content`, the bytes of an STL file called `source`.
+    #[must_use]
+    pub fn new(source: String, content: Vec<u8>, name: Option<String>) -> Self {
+        Self {
+            source,
+            content: std::sync::Arc::new(content),
+            name,
+            created: None,
+            undone: None,
+        }
+    }
+}
+
+impl Command for AddReference {
+    fn name(&self) -> &'static str {
+        "feature.reference"
+    }
+
+    fn label(&self) -> String {
+        format!("Mesh {}", self.source)
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        if let Some((index, entry)) = self.undone.take() {
+            document.restore_feature(index, entry);
+            return Ok(());
+        }
+        let source = self
+            .source
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if source.is_empty() {
+            return Err(ModelError::InvalidFeature(String::from(
+                "a reference mesh needs a file name",
+            ))
+            .into());
+        }
+        // Refuse what cannot be read now, not on every rebuild.
+        cndt_geom::stl::read(&self.content)
+            .map_err(|reason| ModelError::InvalidFeature(format!("{source}: {reason}")))?;
+        let data = ImportData(self.content.clone());
+        let (bytes, hash) = data.fingerprint();
+        let name = match &self.name {
+            Some(name) => name.clone(),
+            None => document.next_feature_name("Mesh"),
+        };
+        let feature = Feature::Reference {
+            name,
+            source,
+            bytes,
+            hash,
+            data,
+        };
+        self.created = Some(document.add_feature(feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let id = self.created.ok_or(CommandError::NotApplied)?;
+        self.undone = Some(document.remove_feature(id)?);
+        Ok(())
+    }
+}
+
 /// Changes an extrusion's values.
 #[derive(Debug, Clone)]
 pub struct EditExtrude {

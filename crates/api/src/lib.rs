@@ -216,6 +216,17 @@ pub enum Request {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Adds an STL file's triangles to the timeline as a reference mesh
+    /// (decision 0018): shown and measured beside the part, never joined to
+    /// it or machined. The file's content is kept in the project. Replies
+    /// with the state.
+    ImportMesh {
+        /// The STL file, binary or ASCII, in millimetres.
+        path: PathBuf,
+        /// The feature's name; the next MeshN if left out.
+        #[serde(default)]
+        name: Option<String>,
+    },
     /// A shipped post's TOML text, to start editing from. Replies
     /// `{text}`.
     PostSource {
@@ -390,6 +401,18 @@ struct StateView<'a> {
     /// Each library tool's assembly as the checks use it, and whether it
     /// was measured or is typical for the tool.
     tool_assemblies: BTreeMap<u32, ToolAssemblyView>,
+    /// Each reference mesh that read (decision 0018): its size, for
+    /// measuring. Its triangles come from `reference_mesh`.
+    references: BTreeMap<FeatureId, ReferenceView>,
+}
+
+/// A reference mesh in the state.
+#[derive(Debug, Serialize)]
+struct ReferenceView {
+    triangles: usize,
+    bounds: cndt_geom::BoundingBox,
+    /// Millimetres along X, Y and Z.
+    size: [f64; 3],
 }
 
 /// A tool's assembly in the state.
@@ -812,6 +835,37 @@ impl Api {
         self.state()
     }
 
+    /// Adds an STL reference mesh (see [`Request::ImportMesh`]).
+    fn import_mesh(&mut self, path: &Path, name: Option<String>) -> Result<Value, ApiError> {
+        let io =
+            |e: std::io::Error| ApiError::new("io", format!("cannot read {}: {e}", path.display()));
+        let size = std::fs::metadata(path).map_err(io)?.len();
+        if size > cndt_model::MAX_IMPORT_BYTES {
+            return Err(ApiError::new(
+                "import",
+                format!(
+                    "{} is {size} bytes; the most an import may be is {}",
+                    path.display(),
+                    cndt_model::MAX_IMPORT_BYTES
+                ),
+            ));
+        }
+        let content = std::fs::read(path).map_err(io)?;
+        let source = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("mesh.stl")
+            .to_owned();
+        self.session
+            .execute(Box::new(cndt_engine::AddReference::new(
+                source, content, name,
+            )))
+            .map_err(ApiError::from)?;
+        self.rollback = None;
+        self.refresh();
+        self.state()
+    }
+
     /// The post editor's preview (see [`Request::PostPreview`]).
     fn post_preview(
         &self,
@@ -989,6 +1043,26 @@ impl Api {
             .ok_or_else(|| ApiError::new("no_body", "there is no solid yet"))?;
         let mesh = self.kernel.mesh(body, self.deflection())?;
         encode_mesh(&mesh)
+    }
+
+    /// A reference mesh's triangles (decision 0018), in the layout
+    /// documented on [`Api::step_preview`], all one face.
+    ///
+    /// # Errors
+    ///
+    /// `unknown_feature` when `feature` is not a reference mesh that read.
+    pub fn reference_mesh(&self, feature: u32) -> Result<Vec<u8>, ApiError> {
+        let reference = self
+            .rebuilt
+            .references
+            .get(&FeatureId(feature))
+            .ok_or_else(|| {
+                ApiError::new(
+                    "unknown_feature",
+                    format!("feature {feature} is not a reference mesh that read"),
+                )
+            })?;
+        encode_mesh(&reference.mesh)
     }
 
     /// The geometry kernel's name and version, such as `OpenCascade 7.9.3`.
@@ -1210,6 +1284,12 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::ImportMesh { path, name } => {
+                return match self.import_mesh(&path, name) {
+                    Ok(value) => success(value),
+                    Err(error) => failure(error),
+                };
+            }
             Request::PostSource { post } => {
                 return match PostRef::shipped_text(&post) {
                     Some(text) => success(serde_json::json!({ "text": text })),
@@ -1347,6 +1427,21 @@ impl Api {
                     )
                 })
                 .collect(),
+            references: self
+                .rebuilt
+                .references
+                .iter()
+                .map(|(id, reference)| {
+                    (
+                        *id,
+                        ReferenceView {
+                            triangles: reference.mesh.triangle_count(),
+                            bounds: reference.bounds,
+                            size: reference.bounds.size(),
+                        },
+                    )
+                })
+                .collect(),
         };
         serde_json::to_value(view).map_err(|error| ApiError::new("internal", error.to_string()))
     }
@@ -1432,6 +1527,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("export", &["path"]),
     ("import_dxf", &["path", "plane", "name"]),
     ("import_step", &["path", "operation", "name"]),
+    ("import_mesh", &["path", "name"]),
     ("export_dxf", &["path", "sketch", "section"]),
     ("post_source", &["post"]),
     ("post_preview", &["definition", "setup", "setups"]),
@@ -2038,6 +2134,80 @@ mod tests {
         assert!(message.contains("not a STEP or IGES file"), "{reply}");
         std::fs::remove_file(path).unwrap();
         std::fs::remove_file(text).unwrap();
+    }
+
+    #[test]
+    fn a_reference_mesh_is_shown_and_measured_but_never_joins_the_part() {
+        // A binary STL tetrahedron, 10 × 20 × 30 mm, beside an imported box.
+        let mut stl = vec![0_u8; 80];
+        let corners: [[f32; 3]; 4] = [
+            [50.0, 0.0, 0.0],
+            [60.0, 0.0, 0.0],
+            [50.0, 20.0, 0.0],
+            [50.0, 0.0, 30.0],
+        ];
+        let faces = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+        stl.extend_from_slice(&4_u32.to_le_bytes());
+        for face in faces {
+            stl.extend_from_slice(&[0_u8; 12]);
+            for corner in face {
+                for value in corners[corner] {
+                    stl.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            stl.extend_from_slice(&[0, 0]);
+        }
+        let mesh_path = temp_file("tetra.stl");
+        std::fs::write(&mesh_path, &stl).unwrap();
+        let step =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/box-10x20x30.step");
+        let project = temp_file("reference.cndt");
+
+        let mut api = Api::new();
+        call(&mut api, json!({"method": "new_document", "name": "Mesh"}));
+        call(&mut api, json!({"method": "import_step", "path": step}));
+        let reply = call(
+            &mut api,
+            json!({"method": "import_mesh", "path": mesh_path}),
+        );
+        let result = &reply["result"];
+        assert_eq!(result["feature_status"]["1"]["state"], "ok", "{reply}");
+        assert_eq!(
+            result["document"]["features"][1]["feature"]["type"],
+            "reference"
+        );
+        assert_eq!(
+            result["document"]["features"][1]["feature"]["name"],
+            "Mesh1"
+        );
+        assert_eq!(result["references"]["1"]["triangles"], 4);
+        assert_eq!(result["references"]["1"]["size"], json!([10.0, 20.0, 30.0]));
+        // The part is the box alone.
+        assert!((result["body"]["volume"].as_f64().unwrap() - 6000.0).abs() < 1e-6);
+        assert_eq!(result["undo"], "Mesh tetra.stl");
+        assert_eq!(api.reference_mesh(1).unwrap().len(), 20 + 4 * (36 + 12 + 4));
+        assert_eq!(api.reference_mesh(0).unwrap_err().kind, "unknown_feature");
+
+        call(&mut api, json!({"method": "save_as", "path": project}));
+        let mut other = Api::new();
+        let reply = call(&mut other, json!({"method": "open", "path": project}));
+        assert_eq!(
+            reply["result"]["references"]["1"]["triangles"], 4,
+            "{reply}"
+        );
+
+        std::fs::write(&mesh_path, "ISO-10303-21;").unwrap();
+        let reply = call(
+            &mut api,
+            json!({"method": "import_mesh", "path": mesh_path}),
+        );
+        let message = reply["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("tetra.stl: the file is not STL"),
+            "{reply}"
+        );
+        std::fs::remove_file(project).unwrap();
+        std::fs::remove_file(mesh_path).unwrap();
     }
 
     #[test]

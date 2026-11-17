@@ -10,6 +10,7 @@ import {
   ApiFailure,
   bodyEdges,
   bodyMesh,
+  referenceMesh,
   type DocumentState,
   planeLabel,
   toolpathPreview,
@@ -322,10 +323,37 @@ function editSketch(id: number, state: DocumentState): void {
   editor.fit();
 }
 
+/** The reference meshes being fetched, so a caller can fit the view after. */
+let referencesShown: Promise<void> = Promise.resolve();
+
+/** Fetches and shows the reference meshes, and lists them with their sizes. */
+async function showReferences(state: DocumentState): Promise<void> {
+  const references = state.references ?? {};
+  const ids = Object.keys(references).map(Number);
+  const list = element("reference-list");
+  list.replaceChildren();
+  element("references-node").hidden = ids.length === 0;
+  for (const id of ids) {
+    const reference = references[String(id)]!;
+    const feature = state.document.features?.find((f) => f.id === id)?.feature;
+    const item = globalThis.document.createElement("li");
+    const [x, y, z] = reference.size.map((v) => formatNumber(v));
+    item.textContent = `${feature?.name ?? "Mesh"}: ${x} × ${y} × ${z} mm`;
+    item.title = `${feature && "source" in feature ? feature.source : ""}, ${reference.triangles} triangles, from (${reference.bounds.min.x}, ${reference.bounds.min.y}, ${reference.bounds.min.z}) to (${reference.bounds.max.x}, ${reference.bounds.max.y}, ${reference.bounds.max.z}) mm`;
+    list.append(item);
+  }
+  try {
+    viewer.setReferences(await Promise.all(ids.map((id) => referenceMesh(id))));
+  } catch (error) {
+    showError(error);
+  }
+}
+
 /** Fetches and shows the rebuilt part when it changed. */
 async function showBody(state: DocumentState): Promise<void> {
   if (state.body_revision === shownRevision) return;
   shownRevision = state.body_revision;
+  referencesShown = showReferences(state);
   if (!state.body) {
     bodyTriangles = null;
     if (bodyShown) viewer.clear();
@@ -399,7 +427,7 @@ function renderFeatures(state: DocumentState): void {
     item.classList.toggle("failed", failed);
     item.title = failed
       ? `${feature.name}: needs repair. ${status.reason}`
-      : `${feature.name}: ${featureDetail(feature)}. Click to edit.`;
+      : `${feature.name}: ${featureDetail(feature, id)}.${feature.type === "import" || feature.type === "reference" ? "" : " Click to edit."}`;
     item.tabIndex = 0;
     // The same icon as the tool that made it.
     const icon = globalThis.document.createElement("span");
@@ -407,7 +435,9 @@ function renderFeatures(state: DocumentState): void {
     const tool =
       feature.type === "extrude"
         ? ui.extrudeButton
-        : globalThis.document.getElementById(feature.type === "import" ? "insert-step" : feature.type);
+        : globalThis.document.getElementById(
+            feature.type === "import" ? "insert-step" : feature.type === "reference" ? "import-mesh" : feature.type,
+          );
     const svg = tool?.querySelector("svg");
     if (svg) icon.append(svg.cloneNode(true));
     const name = globalThis.document.createElement("span");
@@ -424,7 +454,7 @@ function renderFeatures(state: DocumentState): void {
       guarded(async () => render(await execute("feature.delete", { feature: id })))();
     });
     item.addEventListener("click", () => {
-      if (feature.type === "import") return; // nothing to edit: re-import to change it
+      if (feature.type === "import" || feature.type === "reference") return; // nothing to edit: re-import to change it
       if (feature.type === "pattern") openPattern(id);
       else if (feature.type === "hole") openHole(id);
       else if (feature.type === "extrude") openExtrude(id);
@@ -799,7 +829,7 @@ function renderSetups(state: DocumentState): void {
 }
 
 /** One line about a feature for the timeline. */
-function featureDetail(feature: import("./api").Feature): string {
+function featureDetail(feature: import("./api").Feature, id?: number): string {
   if (feature.type === "extrude") {
     const fx = feature.distance_expression ? "ƒ " : "";
     return `${fx}${feature.operation === "cut" ? "cut " : ""}${formatNumber(feature.distance)} mm`;
@@ -810,6 +840,10 @@ function featureDetail(feature: import("./api").Feature): string {
     return `${feature.count_x} × ${feature.count_y} of ${source}`;
   }
   if (feature.type === "fillet") return `R${formatNumber(feature.radius)}`;
+  if (feature.type === "reference") {
+    const triangles = id === undefined ? undefined : current?.references?.[String(id)]?.triangles;
+    return `mesh ${feature.source}${triangles === undefined ? "" : `, ${triangles} triangles`}, for reference only`;
+  }
   if (feature.type === "import") {
     const size = feature.bytes >= 1048576 ? `${formatNumber(feature.bytes / 1048576)} MB` : `${Math.ceil(feature.bytes / 1024)} kB`;
     return `${feature.operation === "cut" ? "cut " : ""}${feature.source}, ${size}, kept in the project`;
@@ -1215,6 +1249,23 @@ element("import-step").addEventListener(
     ui.viewportHint.hidden = false;
     const next = await request<DocumentState>({ method: "import_step", path });
     render(next);
+    viewer.fit();
+  }),
+);
+
+// An STL mesh beside the part, for reference and measuring (decision 0018).
+element("import-mesh").addEventListener(
+  "click",
+  guarded(async () => {
+    const path = await open({
+      title: "Import an STL mesh for reference",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "STL", extensions: ["stl", "STL"] }],
+    });
+    if (typeof path !== "string") return;
+    render(await request<DocumentState>({ method: "import_mesh", path }));
+    await referencesShown;
     viewer.fit();
   }),
 );
