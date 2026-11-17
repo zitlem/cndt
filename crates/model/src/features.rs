@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use cndt_geom::Point3;
+use cndt_geom::{BoundingBox, Point3, TriangleMesh};
 use cndt_kernel::{Blend, Body, BodyProperties, BooleanOp, Curve, Kernel, Made};
 use cndt_sketch::{EntityId, Geometry, Loop, ProfileKey, Sketch};
 use serde::{Deserialize, Serialize};
@@ -123,6 +123,22 @@ pub enum Feature {
         hash: String,
         /// The file's content. Stored as its own entry in the project file,
         /// not in the document JSON.
+        #[serde(skip)]
+        data: ImportData,
+    },
+    /// A triangle mesh read from an STL file, shown beside the part for
+    /// reference and measuring (decision 0018). It never joins the solid,
+    /// and nothing machines to it. Its file is kept in the project.
+    Reference {
+        /// Shown in the timeline, such as `Mesh1`.
+        name: String,
+        /// The original file's name, without its folder, for display.
+        source: String,
+        /// The content's length in bytes, to check the stored copy.
+        bytes: u64,
+        /// The content's 64-bit FNV-1a hash in hex, to check the stored copy.
+        hash: String,
+        /// The file's content, stored as its own entry in the project file.
         #[serde(skip)]
         data: ImportData,
     },
@@ -332,7 +348,8 @@ impl Feature {
             | Self::Chamfer { name, .. }
             | Self::Pattern { name, .. }
             | Self::Fillet { name, .. }
-            | Self::Import { name, .. } => name,
+            | Self::Import { name, .. }
+            | Self::Reference { name, .. } => name,
         }
     }
 
@@ -344,7 +361,8 @@ impl Feature {
             Self::Chamfer { .. }
             | Self::Fillet { .. }
             | Self::Pattern { .. }
-            | Self::Import { .. } => None,
+            | Self::Import { .. }
+            | Self::Reference { .. } => None,
         }
     }
 
@@ -352,6 +370,13 @@ impl Feature {
     pub(crate) fn check(&self) -> Result<(), String> {
         match self {
             Self::Import {
+                source,
+                bytes,
+                hash,
+                data,
+                ..
+            }
+            | Self::Reference {
                 source,
                 bytes,
                 hash,
@@ -616,6 +641,56 @@ pub struct Rebuilt {
     /// Where each sketch sits: for a sketch a feature uses, as placed for
     /// the first such feature; otherwise on the finished part.
     pub frames: BTreeMap<SketchId, FrameStatus>,
+    /// Each reference mesh that read, by its feature (decision 0018).
+    pub references: BTreeMap<FeatureId, ReferenceMesh>,
+}
+
+/// A reference mesh as rebuilt: its triangles and its size.
+#[derive(Debug, Clone)]
+pub struct ReferenceMesh {
+    /// The triangles, shared.
+    pub mesh: std::sync::Arc<TriangleMesh>,
+    /// The box around it.
+    pub bounds: BoundingBox,
+}
+
+/// The last few meshes read, by the content they were read from (the same
+/// shared buffer), so an edit elsewhere does not read a large file again.
+static MESHES: std::sync::Mutex<Vec<(std::sync::Arc<Vec<u8>>, ReferenceMesh)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Reads a reference mesh, or takes it from [`MESHES`].
+fn reference_mesh(data: &ImportData) -> Result<ReferenceMesh, String> {
+    if let Ok(cache) = MESHES.lock()
+        && let Some((_, mesh)) = cache
+            .iter()
+            .find(|(bytes, _)| std::sync::Arc::ptr_eq(bytes, &data.0))
+    {
+        return Ok(mesh.clone());
+    }
+    let mesh = cndt_geom::stl::read(&data.0)?;
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for corner in mesh.positions.as_chunks::<3>().0 {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(f64::from(corner[axis]));
+            max[axis] = max[axis].max(f64::from(corner[axis]));
+        }
+    }
+    let reference = ReferenceMesh {
+        mesh: std::sync::Arc::new(mesh),
+        bounds: BoundingBox {
+            min: Point3::new(min[0], min[1], min[2]),
+            max: Point3::new(max[0], max[1], max[2]),
+        },
+    };
+    if let Ok(mut cache) = MESHES.lock() {
+        if cache.len() >= 4 {
+            cache.remove(0);
+        }
+        cache.push((data.0.clone(), reference.clone()));
+    }
+    Ok(reference)
 }
 
 /// Faces named after an operation: result face → names.
@@ -1279,11 +1354,18 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
     let mut status = BTreeMap::new();
     let mut frames = BTreeMap::new();
     let mut tools: BTreeMap<FeatureId, Tool> = BTreeMap::new();
+    let mut references = BTreeMap::new();
     let features = document.features();
     let features = &features[..count.map_or(features.len(), |n| n.min(features.len()))];
     for entry in features {
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
             let Some(sketch) = entry.feature.sketch() else {
+                if let Feature::Reference { data, .. } = &entry.feature {
+                    let mesh = reference_mesh(data)
+                        .map_err(|reason| format!("the mesh cannot be read: {reason}"))?;
+                    references.insert(entry.id, mesh);
+                    return Ok(part.clone());
+                }
                 if let Feature::Import {
                     data,
                     operation,
@@ -1334,7 +1416,8 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                 Feature::Chamfer { .. }
                 | Feature::Fillet { .. }
                 | Feature::Pattern { .. }
-                | Feature::Import { .. } => {
+                | Feature::Import { .. }
+                | Feature::Reference { .. } => {
                     return Err(String::from("this feature has no sketch"));
                 }
             };
@@ -1381,6 +1464,7 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
         status,
         properties,
         frames,
+        references,
     }
 }
 
@@ -2086,5 +2170,41 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!((r.properties.unwrap().volume - 6000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_reference_mesh_never_changes_the_part() {
+        let stl = "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 40 0 0\nvertex 0 30 5\nendloop\nendfacet\nendsolid t\n";
+        let reference = |name: &str, content: &[u8]| {
+            let data = ImportData(std::sync::Arc::new(content.to_vec()));
+            let (bytes, hash) = data.fingerprint();
+            Feature::Reference {
+                name: name.into(),
+                source: String::from("scan.stl"),
+                bytes,
+                hash,
+                data,
+            }
+        };
+        let mut d = Document::new("Mesh");
+        d.add_feature(reference("Mesh1", stl.as_bytes())).unwrap();
+        d.add_feature(import("Import1", box_step(), Operation::Join))
+            .unwrap();
+        d.add_feature(reference("Mesh2", b"not a mesh")).unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(r.status.get(&FeatureId(0)), Some(&FeatureStatus::Ok));
+        assert_eq!(r.status.get(&FeatureId(1)), Some(&FeatureStatus::Ok));
+        assert!(matches!(
+            r.status.get(&FeatureId(2)),
+            Some(FeatureStatus::Failed { reason }) if reason.contains("cannot be read")
+        ));
+        assert!((r.properties.unwrap().volume - 6000.0).abs() < 1e-6);
+        assert_eq!(r.faces.len(), 6, "the mesh adds no faces");
+        let mesh = &r.references[&FeatureId(0)];
+        assert_eq!(mesh.mesh.triangle_count(), 1);
+        assert_eq!(mesh.bounds.size(), [40.0, 30.0, 5.0]);
+        assert_eq!(r.references.len(), 1);
+        // Rolled back to before it, the mesh is not there.
+        assert!(rebuild_to(&d, &OpenCascade, Some(0)).references.is_empty());
     }
 }

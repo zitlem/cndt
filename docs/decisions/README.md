@@ -29,6 +29,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0015](0015-machine-definitions.md) | Machine definitions | Accepted |
 | [0016](0016-phase-3-plan.md) | Phase 3 plan: trust before the first cut | Accepted |
 | [0017](0017-imported-solids.md) | Imported solids in the timeline | Accepted |
+| [0018](0018-reference-meshes.md) | STL files as reference meshes | Accepted |
 
 ## Open decisions
 

@@ -75,7 +75,7 @@ export const VIEWS = {
 export type ViewName = keyof typeof VIEWS;
 
 /** What can be shown or hidden, like layers. */
-export type Layer = "bodies" | "sketches" | "toolpaths" | "grid";
+export type Layer = "bodies" | "sketches" | "toolpaths" | "grid" | "references";
 
 /** A face of the view cube: its label, and the view it turns to. */
 const CUBE_FACES: { name: ViewName; label: string }[] = [
@@ -172,6 +172,8 @@ export class Viewer {
   private wireframe = false;
   private readonly raycaster = new THREE.Raycaster();
   private sketches = new THREE.Group();
+  /** Reference meshes (decision 0018): shown beside the part, never part of it. */
+  private references = new THREE.Group();
 
   constructor(private readonly host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -197,6 +199,7 @@ export class Viewer {
     this.scene.add(this.grid);
     this.scene.add(new THREE.AxesHelper(20));
     this.scene.add(this.sketches);
+    this.scene.add(this.references);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -523,6 +526,39 @@ export class Viewer {
     if (layer === "sketches") this.sketches.visible = visible;
     if (layer === "toolpaths" && this.toolpath) this.toolpath.visible = visible;
     if (layer === "grid") this.grid.visible = visible;
+    if (layer === "references") this.references.visible = visible;
+    this.render();
+  }
+
+  /** Replaces the reference meshes: see-through, so the part shows inside. */
+  setReferences(meshes: Mesh[]): void {
+    for (const child of [...this.references.children]) {
+      this.references.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        (child.material as THREE.Material).dispose();
+      }
+    }
+    for (const mesh of meshes) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
+      geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+      geometry.computeVertexNormals();
+      this.references.add(
+        new THREE.Mesh(
+          geometry,
+          new THREE.MeshStandardMaterial({
+            color: 0x4fb3a9,
+            transparent: true,
+            opacity: 0.4,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            roughness: 0.8,
+          }),
+        ),
+      );
+    }
+    this.references.visible = !this.hidden.has("references");
     this.render();
   }
 
@@ -553,6 +589,7 @@ export class Viewer {
     const box = new THREE.Box3();
     if (this.model) box.expandByObject(this.model);
     if (this.sketches.children.length > 0) box.expandByObject(this.sketches);
+    if (this.references.visible && this.references.children.length > 0) box.expandByObject(this.references);
     if (box.isEmpty()) box.set(new THREE.Vector3(-50, -50, 0), new THREE.Vector3(50, 50, 50));
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const radius = Math.max(sphere.radius, 1);

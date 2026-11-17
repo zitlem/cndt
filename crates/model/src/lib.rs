@@ -21,7 +21,8 @@ pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 pub use features::{
     Counterbore, EdgeTarget, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus,
     Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, ImportData, ImportFormat,
-    MAX_IMPORT_BYTES, Operation, Rebuilt, Thread, default_profiles, rebuild, rebuild_to,
+    MAX_IMPORT_BYTES, Operation, Rebuilt, ReferenceMesh, Thread, default_profiles, rebuild,
+    rebuild_to,
 };
 use serde::{Deserialize, Serialize};
 
@@ -619,7 +620,7 @@ impl Document {
     ) -> Result<(), ModelError> {
         match self.features.iter_mut().find(|e| e.id == id) {
             Some(FeatureEntry {
-                feature: Feature::Import { data, .. },
+                feature: Feature::Import { data, .. } | Feature::Reference { data, .. },
                 ..
             }) => {
                 *data = content;

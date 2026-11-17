@@ -117,3 +117,10 @@ An import feature may hold `"format": "iges"` (left out for STEP), and its copy 
 
 - **Why a version bump:** a version 17 build refuses the unknown `format` field as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 17 or older file with an IGES import is refused as damaged.
+
+## Version 19 (2026-11-17)
+
+Reference meshes (decision 0018): `{"type": "reference", "name", "source", "bytes", "hash"}`, the STL file's exact bytes stored as `design/imports/<feature id>.stl` and checked as imports are.
+
+- **Why a version bump:** a version 18 build refuses the unknown feature type as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 18 or older file with a reference mesh is refused as damaged.

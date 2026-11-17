@@ -391,6 +391,7 @@ dependencies = [
 name = "cndt-engine"
 version = "0.0.0"
 dependencies = [
+ "cndt-geom",
  "cndt-model",
  "serde",
  "serde_json",
