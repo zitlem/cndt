@@ -1989,3 +1989,37 @@ element("export").addEventListener(
     showError(new Error(`Exported the part${rolled} as ${what} to ${path}.`));
   }),
 );
+
+// DXF of a sketch, or of the part's top or bottom face, for 2D cutting.
+element("export-dxf").addEventListener("click", () => {
+  const exportDxf = async (choice: { sketch?: number; section?: number }, name: string) => {
+    const path = await save({
+      title: "Export DXF",
+      defaultPath: `${name}.dxf`,
+      filters: [{ name: "DXF", extensions: ["dxf"] }],
+    });
+    if (!path) return;
+    const result = await request<{ entities: number }>({ method: "export_dxf", path, ...choice });
+    showError(new Error(`Exported ${result.entities} lines, arcs and circles to ${path}.`));
+  };
+  const doc = current?.document;
+  const items = [
+    {
+      label: "Part profile, cut at mid-height",
+      title: "The part's true walls at half its height, outside and through holes, seen from above",
+      disabled: !current?.body,
+      run: guarded(() => {
+        const bounds = current?.body?.bounds;
+        const z = bounds ? (bounds.min.z + bounds.max.z) / 2 : 0;
+        return exportDxf({ section: z }, `${doc?.name ?? "part"} profile`);
+      }),
+    },
+    ...Object.entries(doc?.sketches ?? {}).map(([id, record]) => ({
+      label: `Sketch: ${record.name}`,
+      title: "Exactly as drawn; construction lines on their own layer",
+      disabled: false,
+      run: guarded(() => exportDxf({ sketch: Number(id) }, record.name)),
+    })),
+  ];
+  popup(element("file-menu-button"), items);
+});

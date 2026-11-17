@@ -1046,6 +1046,33 @@ fn the_cndt_test_block() {
     let reply = s.call(json!({"method": "export", "path": "part.iges"}));
     assert_eq!(reply["error"]["kind"], "bad_request", "{reply}");
 
+    // DXF: the outline sketch exactly (lines and corner arcs), and the part
+    // cut through at mid-height: its true outline, 96 x 56, with the
+    // through holes as circles.
+    let dxf = std::env::temp_dir().join(format!("cndt-test-block-{}.dxf", std::process::id()));
+    let reply = s.call(json!({"method": "export_dxf", "path": dxf, "sketch": 0}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let text = std::fs::read_to_string(&dxf).unwrap();
+    assert!(text.starts_with("  0\nSECTION\n"), "{text}");
+    assert!(text.ends_with("  0\nEOF\n"));
+    assert_eq!(text.matches("\nLINE\n").count(), 4, "{text}");
+    assert_eq!(text.matches("\nARC\n").count(), 4, "{text}");
+    let reply = s.call(json!({"method": "export_dxf", "path": dxf, "section": 10}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let text = std::fs::read_to_string(&dxf).unwrap();
+    let circles = text.matches("\nCIRCLE\n").count();
+    assert!(circles >= 10, "{circles} circles\n{text}");
+    assert!(text.contains("\nPROFILE\n"));
+    // The true outline: a line along the back edge, the full 56 mm up.
+    assert!(text.contains(" 20\n56.000000\n"), "{text}");
+    // Deterministic: the same file again.
+    s.call(json!({"method": "export_dxf", "path": dxf, "section": 10}));
+    assert_eq!(std::fs::read_to_string(&dxf).unwrap(), text);
+    let _ = std::fs::remove_file(&dxf);
+    let reply =
+        s.call(json!({"method": "export_dxf", "path": "x.dxf", "sketch": 0, "section": 10}));
+    assert_eq!(reply["error"]["kind"], "bad_request", "{reply}");
+
     // And it saves and opens again, bit for bit.
     let path = std::env::temp_dir().join(format!("cndt-test-block-{}.cndt", std::process::id()));
     s.call(json!({"method": "save_as", "path": path}));
