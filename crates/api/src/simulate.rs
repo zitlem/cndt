@@ -22,6 +22,11 @@ pub(crate) struct Simulated {
     part: Vec<Option<f64>>,
     floors: Vec<f64>,
     placed: cndt_process_mill::Setup,
+    /// What the simulation started from, so another program (the posted
+    /// G-code read back) can be simulated on exactly the same stock.
+    pub(crate) input: cndt_sim::Setup,
+    /// The tools, by number.
+    pub(crate) tools: BTreeMap<u32, cndt_sim::Tool>,
 }
 
 /// The colour classes of the simulated stock mesh, as its "faces".
@@ -241,9 +246,11 @@ impl Api {
             revision: self.revision,
             setup: Some(id),
             report,
-            part: input.part,
-            floors: input.floors,
+            part: input.part.clone(),
+            floors: input.floors.clone(),
             placed,
+            input,
+            tools,
         })
     }
 

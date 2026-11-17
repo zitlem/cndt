@@ -45,7 +45,53 @@ fn at(p: cndt_geom::Point3) -> String {
     format!("X{:.2} Y{:.2} Z{:.2}", p.x, p.y, p.z)
 }
 
+/// How far the stock the posted G-code leaves may differ from what the
+/// toolpath leaves before it is a problem, in millimetres: the posts round
+/// to 0.001 mm.
+const READ_BACK_TOLERANCE: f64 = 0.01;
+
 impl Api {
+    /// Posts one setup alone, reads the G-code back and simulates it on the
+    /// stock `sim` started from. `Ok(None)` when it cuts what the toolpath
+    /// cuts; `Ok(Some(problem))` when it does not; `Err` when it could not
+    /// be checked (a post that writes no tool numbers, say).
+    fn read_back_check(
+        &self,
+        post: &crate::PostRef,
+        machine: Option<&str>,
+        id: u32,
+        sim: &crate::simulate::Simulated,
+    ) -> Result<Option<String>, String> {
+        let posted = self
+            .post_program(post, machine, Some(id), None, crate::Output::default(), &[])
+            .map_err(|e| e.message)?;
+        let gcode = posted["gcode"].as_str().unwrap_or_default();
+        let back = cndt_post::read_back(gcode).map_err(|e| e.to_string())?;
+        let report = cndt_sim::simulate(&back, &sim.tools, &sim.input)
+            .map_err(|e| format!("it could not be simulated: {e}"))?;
+        let worst = report
+            .heights
+            .iter()
+            .zip(&sim.report.heights)
+            .enumerate()
+            .map(|(c, (a, b))| (c, (a - b).abs()))
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        Ok(match worst {
+            Some((c, d)) if d > READ_BACK_TOLERANCE => {
+                let [x, y] = sim.input.grid.centres()[c];
+                Some(format!(
+                    "the posted G-code does not cut what was planned: the stock it leaves \
+                     differs by {} at program X{x:.2} Y{y:.2}. The post may be wrong; do not run it.",
+                    mm(d)
+                ))
+            }
+            _ if report.heights.len() != sim.report.heights.len() => Some(String::from(
+                "the posted G-code could not be compared with the plan",
+            )),
+            _ => None,
+        })
+    }
+
     /// Verifies the given setups (all of them, in order, if `None`) as one
     /// program through `post`, on `machine` if given: plans, machine
     /// limits, posting and a stock simulation of each setup. Writes the
@@ -227,6 +273,20 @@ impl Api {
                             "{name}: up to {} of material is left on the part{place}.",
                             mm(report.left)
                         ));
+                    }
+                    // The G-code as posted, read back and simulated on the
+                    // same stock: it must cut exactly what was planned.
+                    match self.read_back_check(post, machine, *id, &sim) {
+                        Ok(None) => {
+                            let _ = writeln!(
+                                sections,
+                                "  Posted G-code read back and simulated: it cuts what was planned"
+                            );
+                        }
+                        Ok(Some(problem)) => problems.push(format!("{name}: {problem}")),
+                        Err(reason) => review.push(format!(
+                            "{name}: the posted G-code was not read back to check it: {reason}"
+                        )),
                     }
                     let _ = writeln!(
                         sections,

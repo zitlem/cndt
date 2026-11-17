@@ -40,9 +40,15 @@ What is checked today (decisions 0015 and 0016): rapid moves through material, s
 - A lift too small to clear the stock (the lowest point within 5 mm of the stock top) is refused, saying how far is enough.
 - It shows the motion, the order and the tool changes. It does not check the work offset or the tool lengths: if those are wrong by more than the lift, the air cut hits the part too. Check them first.
 
+## Posted G-code is read back
+
+Simulating the internal toolpath alone would let a post bug through: the plan is right, the G-code is not. So `verify` (and therefore `post`) posts each setup, reads the G-code back into a toolpath (`cndt_post::read_back`), simulates it on exactly the same stock, and compares the stock both leave, cell by cell. A difference over 0.01 mm is a **problem**: the G-code does not cut what was planned. The report says "Posted G-code read back and simulated: it cuts what was planned" for each setup that passed.
+
+The reader reads what the shipped posts write: G0 to G3 with I and J, canned cycles with G98 (G81, G82, G83, G84, G84.2, G85), LinuxCNC's G33.1, homing (G28, G30, G53), work offsets, tool changes with T and M6, spindle, coolant and table turns. It never guesses. A program it cannot read (an arc by radius, an incremental move, G99, a cut before any tool number) is listed for **review** as not read back, with the line and the reason; the GRBL post writes no tool numbers, so its programs are always reported so.
+
 ## Known gap
 
-Early versions simulate the internal toolpath, not the posted G-code. A post bug can therefore pass simulation. Verified posts and golden-file tests cover this until simulation of posted G-code exists.
+The read-back compares material removed. A difference that removes no material (a rapid in a different but harmless place, a feed rate) is not caught by it; the golden-file tests and verified posts cover those.
 
 ## Rules for contributors
 

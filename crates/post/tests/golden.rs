@@ -16,7 +16,7 @@ use cndt_cam_core::{
     Step,
 };
 use cndt_geom::Point3;
-use cndt_post::{Post, PostError};
+use cndt_post::{Post, PostError, UNKNOWN_HEIGHT, read_back};
 
 /// A fixed version, so golden files do not change with every release.
 const APP_VERSION: &str = "0.0.0-golden";
@@ -479,4 +479,143 @@ fn cutting_straight_after_a_tool_change_is_refused_when_compensation_is_used() {
     assert!(error.to_string().contains("must be a rapid"), "{error}");
     // GRBL has no tool length compensation, so the same program posts.
     assert!(load("grbl").run(&program, APP_VERSION).is_ok());
+}
+
+/// What a program does, in a form the same for any way of writing it: the
+/// rapids to known points, every feed and arc, each hole of each cycle with
+/// the rapids around it spelled out, and the tool changes, table turns and
+/// work offsets, rounded to the posts' three decimals. A move to where the
+/// tool already is does nothing, and posts leave it out, so it is skipped.
+fn signature(program: &Program) -> Vec<String> {
+    let r = |v: f64| format!("{:.3}", (v * 1000.0).round() / 1000.0 + 0.0);
+    let pt = |p: &Point3| format!("{} {} {}", r(p.x), r(p.y), r(p.z));
+    let mut out = Vec::new();
+    let mut at: Option<String> = None;
+    let mut z = UNKNOWN_HEIGHT;
+    let rapid = |out: &mut Vec<String>, at: &mut Option<String>, to: Point3| {
+        let here = pt(&to);
+        if at.as_deref() != Some(here.as_str()) && to.z < UNKNOWN_HEIGHT - 1.0 {
+            out.push(format!("rapid {here}"));
+        }
+        *at = Some(here);
+    };
+    for step in program.operations.iter().flat_map(|o| &o.steps) {
+        match step {
+            Step::Move(Move::Rapid { to }) => {
+                rapid(&mut out, &mut at, *to);
+                z = to.z;
+            }
+            Step::Move(Move::Dwell { .. }) => {}
+            Step::Move(Move::Linear { to, feed }) => {
+                let here = pt(to);
+                if at.as_deref() != Some(here.as_str()) {
+                    out.push(format!("feed {here} F{}", r(*feed)));
+                }
+                at = Some(here);
+                z = to.z;
+            }
+            Step::Move(Move::Arc {
+                to,
+                center,
+                direction,
+                feed,
+            }) => {
+                out.push(format!(
+                    "arc {direction:?} {} c{} {} F{}",
+                    pt(to),
+                    r(center.x),
+                    r(center.y),
+                    r(*feed)
+                ));
+                at = Some(pt(to));
+                z = to.z;
+            }
+            Step::Move(Move::Cycle(cycle)) => {
+                let kind = match cycle.kind {
+                    CycleKind::Drill => String::from("drill"),
+                    CycleKind::Peck { step } => format!("peck {}", r(step)),
+                    CycleKind::Tap { pitch } => format!("tap {}", r(pitch)),
+                    CycleKind::Ream => String::from("ream"),
+                };
+                for hole in &cycle.holes {
+                    rapid(&mut out, &mut at, p(hole.x, hole.y, z));
+                    rapid(&mut out, &mut at, p(hole.x, hole.y, cycle.clearance));
+                    out.push(format!(
+                        "{kind} {} {} R{} Z{} F{}",
+                        r(hole.x),
+                        r(hole.y),
+                        r(cycle.clearance),
+                        r(cycle.bottom),
+                        r(cycle.feed)
+                    ));
+                    rapid(&mut out, &mut at, p(hole.x, hole.y, z));
+                }
+            }
+            Step::Event(Event::ToolChange { number, .. }) => out.push(format!("T{number}")),
+            Step::Event(Event::Index { axis, angle }) => out.push(format!("{axis}{}", r(*angle))),
+            Step::Event(Event::WorkOffset { offset }) => {
+                out.push(format!("G{}", 53 + offset));
+                at = None;
+                z = UNKNOWN_HEIGHT;
+            }
+            Step::Event(Event::Home) => {
+                at = None;
+                z = UNKNOWN_HEIGHT;
+            }
+            Step::Event(_) => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn posted_programs_read_back_to_what_was_posted() {
+    let programs = [
+        ("sample", sample()),
+        ("cycles", cycles(true)),
+        ("indexed", two_sides(true)),
+        ("turned", two_sides(false)),
+    ];
+    // GRBL writes no tool numbers, so its programs are refused, not misread.
+    let grbl = load("grbl").run(&sample(), APP_VERSION).unwrap();
+    let error = read_back(&grbl).unwrap_err();
+    assert!(
+        error.to_string().contains("before any tool number"),
+        "{error}"
+    );
+    for id in ["fanuc-mill", "haas-mill", "mazak-smoothg", "linuxcnc-mill"] {
+        let post = load(id);
+        for (name, program) in &programs {
+            let Ok(gcode) = post.run(program, APP_VERSION) else {
+                continue; // a program this post refuses (a table turn, say)
+            };
+            let back = read_back(&gcode).unwrap_or_else(|e| panic!("{id} {name}: {e}\n{gcode}"));
+            assert_eq!(back.work_offset, program.work_offset, "{id} {name}");
+            let (want, got) = (signature(program), signature(&back));
+            assert_eq!(
+                want, got,
+                "{id} {name}: the G-code does not read back to the program\n{gcode}"
+            );
+        }
+    }
+}
+
+#[test]
+fn what_cannot_be_read_back_is_refused_with_the_line() {
+    for (gcode, reason) in [
+        ("G0 X1 Y1 Z1\nG91 G1 X5 F100\n", "incremental"),
+        ("T1 M6\nG0 X0 Y0 Z5\nG2 X10 Y0 R5 F100\n", "radius"),
+        ("G0 X0 Y0 Z5\nG99 G81 X0 Y0 Z-5 R2 F100\n", "G99"),
+        ("T1 M6\nG0 X0 Y0 Z5\nG1 X5\n", "no feed rate"),
+        ("G7 X0\n", "unknown code G7"),
+        ("G0 X0 Y0 Z5\nW3\n", "unknown word W"),
+        (
+            "G0 X0 Y0 Z5\nM3 S1000\nG1 Z-1 F100\n",
+            "before any tool number",
+        ),
+    ] {
+        let error = read_back(gcode).unwrap_err();
+        assert!(error.to_string().contains(reason), "{gcode}: {error}");
+        assert_eq!(error.line, gcode.lines().count(), "{gcode}");
+    }
 }

@@ -167,6 +167,31 @@ fn a_hole_in_the_right_side_on_the_b_table() {
     assert_eq!(sim["result"]["collisions"], json!([]), "{sim}");
     let verify = s.call(json!({"method": "verify", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setups": [0]}));
     assert_ne!(verify["result"]["verdict"], "problems", "{verify}");
+    // Verification reads the posted G-code back and simulates it too.
+    let text = verify["result"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Posted G-code read back and simulated: it cuts what was planned"),
+        "{text}"
+    );
+
+    // A post with a bug, X and Y swapped in its drilling cycle: the plan
+    // and its simulation are fine, but the G-code drills somewhere else,
+    // and verification says so as a problem.
+    let shipped =
+        s.call(json!({"method": "post_source", "post": "mazak-smoothg"}))["result"]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    let buggy = shipped.replace("drill = \"G81 X{x} Y{y}", "drill = \"G81 X{y} Y{x}");
+    assert_ne!(buggy, shipped);
+    let verify = s.call(json!({"method": "verify", "definition": buggy, "machine": "mazak-hcn-5000", "setups": [0]}));
+    assert_eq!(verify["result"]["verdict"], "problems", "{verify}");
+    assert!(
+        verify["result"]["problems"]
+            .to_string()
+            .contains("does not cut what was planned"),
+        "{verify}"
+    );
 
     // Drawn in the model's own coordinates: the drill goes into the right
     // face at y 20, z 15, from x 60 inwards.
