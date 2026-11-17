@@ -236,6 +236,37 @@ pub enum Side {
     /// Turned over: the spindle looks up model +Z. Turned about model X
     /// unless the setup says Y.
     Bottom,
+    /// The front (model −Y) faces the spindle: the part turned a quarter
+    /// about model X, its top towards program +Y (decision 0019).
+    Front,
+    /// The back (model +Y) faces the spindle, turned a quarter about X.
+    Back,
+    /// The left (model −X) faces the spindle: turned a quarter about model
+    /// Y, as a horizontal machine's B table turns it.
+    Left,
+    /// The right (model +X) faces the spindle, turned a quarter about Y.
+    Right,
+}
+
+impl Side {
+    /// Its name in lower case, as files and commands spell it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Front => "front",
+            Self::Back => "back",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    /// `true` for the four sides reached by a quarter turn.
+    #[must_use]
+    pub const fn is_lateral(self) -> bool {
+        matches!(self, Self::Front | Self::Back | Self::Left | Self::Right)
+    }
 }
 
 /// The model axis a part turns about to show its bottom to the spindle.
@@ -465,11 +496,7 @@ impl Cam {
                 let id = self.next_setup;
                 self.next_setup = self.next_setup.saturating_add(1);
                 let name = if name.trim().is_empty() {
-                    let side = match side {
-                        Side::Top => "top",
-                        Side::Bottom => "bottom",
-                    };
-                    format!("Setup {} ({side})", self.setups.len() + 1)
+                    format!("Setup {} ({})", self.setups.len() + 1, side.name())
                 } else {
                     name
                 };

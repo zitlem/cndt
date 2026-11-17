@@ -1502,6 +1502,21 @@ element("cam-add-bottom").addEventListener(
     render(await execute("cam.add_setup", { side: "bottom", work_offset: Math.min(setups + 1, 6), ...turn }));
   }),
 );
+element("cam-add-side").addEventListener(
+  "click",
+  guarded(async () => {
+    if (!current?.document.cam?.stock) render(await execute("cam.set_stock", { side: 2, top: 2, bottom: 3 }));
+    const setups = current?.document.cam?.setups?.length ?? 0;
+    const table = element<HTMLSelectElement>("cam-turn").value === "table";
+    const side = element<HTMLSelectElement>("cam-side").value;
+    // The B table turns the part about its upright axis, model Y, so it
+    // reaches the left and right sides; the front and back are turned by
+    // hand. B90 for the right is assumed, and every program says to check it.
+    const angle = side === "right" ? 90 : side === "left" ? 270 : null;
+    const turn = table && angle !== null ? { index: angle } : {};
+    render(await execute("cam.add_setup", { side, work_offset: Math.min(setups + 1, 6), ...turn }));
+  }),
+);
 element("cam-post-all").addEventListener(
   "click",
   guarded(async () => {

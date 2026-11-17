@@ -139,6 +139,13 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_rotate(
+        shape: *const ShapeHandle,
+        m: *const f64,
+        out: *mut *mut ShapeHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_edge_polylines(
         shape: *const ShapeHandle,
         deflection: f64,
@@ -582,6 +589,38 @@ pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Shape, OcctError> {
             offset[0],
             offset[1],
             offset[2],
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    NonNull::new(out)
+        .map(|ptr| Shape { ptr })
+        .ok_or_else(|| OcctError::Kernel(String::from("the kernel returned no shape")))
+}
+
+/// A copy of `shape` turned about the origin by a rotation matrix (rows).
+/// Its faces are numbered as the original's.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] if the matrix is not a rotation or the copy
+/// cannot be made.
+pub fn rotate(shape: &Shape, rows: [[f64; 3]; 3]) -> Result<Shape, OcctError> {
+    let m: Vec<f64> = rows.iter().flatten().copied().collect();
+    let mut out: *mut ShapeHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `m` holds 9 values for the call; `out` is a
+    // valid out-pointer; `err` is writable for its length; the shim catches
+    // exceptions.
+    let code = unsafe {
+        cndt_occt_rotate(
+            shape.ptr.as_ptr(),
+            m.as_ptr(),
             &mut out,
             err.as_mut_ptr().cast::<c_char>(),
             err.len(),

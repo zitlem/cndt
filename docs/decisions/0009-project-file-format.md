@@ -124,3 +124,10 @@ Reference meshes (decision 0018): `{"type": "reference", "name", "source", "byte
 
 - **Why a version bump:** a version 18 build refuses the unknown feature type as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 18 or older file with a reference mesh is refused as damaged.
+
+## Version 20 (2026-11-17)
+
+A setup's `side` may be `front`, `back`, `left` or `right` as well as `top` and `bottom` (decision 0019).
+
+- **Why a version bump:** a version 19 build refuses the unknown side as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 19 or older file with a side setup is refused as damaged.

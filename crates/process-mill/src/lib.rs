@@ -72,6 +72,124 @@ pub struct Setup {
     pub safe_z: f64,
     /// Height above each hole where feeding starts (the R plane).
     pub clearance: f64,
+    /// For a side reached by a quarter turn (decision 0019): the rotation
+    /// from model coordinates to the turned part the setup is planned on.
+    /// Program points map to the turned part; [`Setup::in_model`] maps them
+    /// back to the model.
+    pub turn: Option<Rows>,
+}
+
+/// A rotation matrix, by rows.
+pub type Rows = [[f64; 3]; 3];
+
+/// The rotation that turns `side` of the part to face the spindle, so the
+/// spindle looks down −Z onto it as onto the top. `None` for the top and
+/// the bottom, which keep their own mappings.
+#[must_use]
+pub const fn turn_of(side: Side) -> Option<Rows> {
+    match side {
+        Side::Top | Side::Bottom => None,
+        // About X: model (x, y, z) to (x, z, −y); the top towards +Y.
+        Side::Front => Some([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]),
+        Side::Back => Some([[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]),
+        // About Y, as a B table turns it: (x, y, z) to (−z, y, x).
+        Side::Right => Some([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]),
+        Side::Left => Some([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]),
+    }
+}
+
+fn apply(rows: &Rows, v: [f64; 3]) -> [f64; 3] {
+    rows.map(|r| r[0] * v[0] + r[1] * v[1] + r[2] * v[2])
+}
+
+fn apply_inverse(rows: &Rows, v: [f64; 3]) -> [f64; 3] {
+    // A rotation's inverse is its transpose.
+    [0, 1, 2].map(|c| rows[0][c] * v[0] + rows[1][c] * v[1] + rows[2][c] * v[2])
+}
+
+/// The part as a setup sees it: for a side setup, the document and part
+/// turned so that side is on top (decision 0019); otherwise as they are.
+#[derive(Debug, Clone)]
+pub struct World<'a> {
+    /// The document; for a side, with the stock allowances turned too.
+    pub document: std::borrow::Cow<'a, Document>,
+    /// The rebuilt part; for a side, turned, with its sketch frames.
+    pub rebuilt: std::borrow::Cow<'a, Rebuilt>,
+    /// The rotation used, if any.
+    pub turn: Option<Rows>,
+}
+
+/// Turns the part for a setup on `side` (decision 0019). Face names stay as
+/// they are; the body, its size and the sketch frames are turned. The
+/// stock's allowances are turned conservatively: one allowance stands for
+/// every direction across the face, the largest of the side, top and
+/// bottom allowances, and the side allowance is above and below the face.
+///
+/// # Errors
+///
+/// [`CamError::NoPart`] when there is no body or it cannot be turned.
+pub fn world<'a>(
+    document: &'a Document,
+    rebuilt: &'a Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    side: Side,
+) -> Result<World<'a>, CamError> {
+    let Some(rows) = turn_of(side) else {
+        return Ok(World {
+            document: std::borrow::Cow::Borrowed(document),
+            rebuilt: std::borrow::Cow::Borrowed(rebuilt),
+            turn: None,
+        });
+    };
+    let body = rebuilt.body.as_ref().ok_or(CamError::NoPart)?;
+    let turned = kernel.rotate(body, rows).map_err(|_| CamError::NoPart)?;
+    let properties = kernel.properties(&turned).ok();
+    let point = |p: Point3| {
+        let [x, y, z] = apply(&rows, [p.x, p.y, p.z]);
+        Point3::new(x, y, z)
+    };
+    let frames = rebuilt
+        .frames
+        .iter()
+        .map(|(id, status)| {
+            let status = match status {
+                FrameStatus::Ok { frame } => FrameStatus::Ok {
+                    frame: cndt_model::Frame {
+                        origin: point(frame.origin),
+                        x: apply(&rows, frame.x),
+                        y: apply(&rows, frame.y),
+                        normal: apply(&rows, frame.normal),
+                    },
+                },
+                failed @ FrameStatus::Failed { .. } => failed.clone(),
+            };
+            (*id, status)
+        })
+        .collect();
+    let turned_rebuilt = Rebuilt {
+        body: Some(turned),
+        faces: rebuilt.faces.clone(),
+        status: rebuilt.status.clone(),
+        properties,
+        frames,
+        references: BTreeMap::new(),
+    };
+    let mut turned_document = document.clone();
+    if let Some(stock) = document.cam().stock {
+        let across = stock.side.max(stock.top).max(stock.bottom);
+        turned_document
+            .edit_cam(cndt_model::cam::CamEdit::SetStock(cndt_model::cam::Stock {
+                side: across,
+                top: stock.side,
+                bottom: stock.side,
+            }))
+            .map_err(|_| CamError::NoStock)?;
+    }
+    Ok(World {
+        document: std::borrow::Cow::Owned(turned_document),
+        rebuilt: std::borrow::Cow::Owned(turned_rebuilt),
+        turn: Some(rows),
+    })
 }
 
 impl Setup {
@@ -88,6 +206,7 @@ impl Setup {
             work_offset: 1,
             safe_z: 10.0,
             clearance: 2.0,
+            turn: None,
         })
     }
 
@@ -97,7 +216,10 @@ impl Setup {
     pub fn from_def(def: &SetupDef, rebuilt: &Rebuilt) -> Option<Self> {
         let bounds = rebuilt.properties?.bounds;
         let origin = match (def.side, def.flip_about) {
-            (Side::Top, _) => Point3::new(bounds.min.x, bounds.min.y, bounds.max.z),
+            // A side is planned on the part turned so it is on top.
+            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right, _) => {
+                Point3::new(bounds.min.x, bounds.min.y, bounds.max.z)
+            }
             // Turned about X: the old back edge is now at the front.
             (Side::Bottom, FlipAxis::X) => Point3::new(bounds.min.x, bounds.max.y, bounds.min.z),
             // Turned about Y: the old right edge is now on the left.
@@ -111,6 +233,7 @@ impl Setup {
             work_offset: def.work_offset,
             safe_z: 10.0,
             clearance: 2.0,
+            turn: turn_of(def.side),
         })
     }
 
@@ -120,7 +243,9 @@ impl Setup {
     pub fn model_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
         match (self.side, self.flip_about) {
-            (Side::Top, _) => Point3::new(p.x + o.x, p.y + o.y, p.z + o.z),
+            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right, _) => {
+                Point3::new(p.x + o.x, p.y + o.y, p.z + o.z)
+            }
             (Side::Bottom, FlipAxis::X) => Point3::new(p.x + o.x, o.y - p.y, o.z - p.z),
             (Side::Bottom, FlipAxis::Y) => Point3::new(o.x - p.x, p.y + o.y, o.z - p.z),
         }
@@ -130,7 +255,9 @@ impl Setup {
     pub fn program_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
         match (self.side, self.flip_about) {
-            (Side::Top, _) => Point3::new(round3(p.x - o.x), round3(p.y - o.y), round3(p.z - o.z)),
+            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right, _) => {
+                Point3::new(round3(p.x - o.x), round3(p.y - o.y), round3(p.z - o.z))
+            }
             (Side::Bottom, FlipAxis::X) => {
                 Point3::new(round3(p.x - o.x), round3(o.y - p.y), round3(o.z - p.z))
             }
@@ -144,8 +271,23 @@ impl Setup {
     /// sketch must have to face it.
     const fn facing(&self) -> f64 {
         match self.side {
-            Side::Top => 1.0,
             Side::Bottom => -1.0,
+            Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => 1.0,
+        }
+    }
+
+    /// A program point in the model's own coordinates, for drawing: for a
+    /// side setup, [`Setup::model_point`] gives the turned part's, so this
+    /// turns it back.
+    #[must_use]
+    pub fn in_model(&self, p: Point3) -> Point3 {
+        let m = self.model_point(p);
+        match &self.turn {
+            Some(rows) => {
+                let [x, y, z] = apply_inverse(rows, [m.x, m.y, m.z]);
+                Point3::new(x, y, z)
+            }
+            None => m,
         }
     }
 }
@@ -175,8 +317,10 @@ pub fn stock_box(
     let bounds = rebuilt.properties.ok_or(CamError::NoPart)?.bounds;
     let [length, width, height] = bounds.size();
     let (near, far) = match setup.side {
-        Side::Top => (stock.top, stock.bottom),
         Side::Bottom => (stock.bottom, stock.top),
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => {
+            (stock.top, stock.bottom)
+        }
     };
     Ok(StockBox {
         min: Point3::new(-stock.side, -stock.side, -height - far),
@@ -576,8 +720,8 @@ fn face(
             .ok_or_else(|| CamError::NoTool(String::from("face mill")))?,
     };
     let allowance = match setup.side {
-        Side::Top => stock.top,
         Side::Bottom => stock.bottom,
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => stock.top,
     };
     let [length, width, _] = bounds.size();
     // The stock outline in program coordinates (the same for both sides:
@@ -898,8 +1042,8 @@ fn contour(
         .map(|k| round3(-total * k as f64 / passes as f64))
         .collect();
     let stock_top = document.cam().stock.map_or(0.0, |s| match setup.side {
-        Side::Top => s.top,
         Side::Bottom => s.bottom,
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => s.top,
     });
     let safe = round3(setup.safe_z.max(stock_top + setup.clearance));
     let at = |p: Point3, z: f64| Point3::new(round3(p.x), round3(p.y), z);
@@ -1174,6 +1318,41 @@ fn pocket(
         }
     }
     loops.reverse();
+    // The floor must be open to the spindle: along the cutter's path, the
+    // first material met coming down is the floor itself. A wall inside the
+    // part that faces this side (a pocket's wall, seen from the side) is
+    // covered, and pocketing it would cut through the part.
+    let samples: Vec<Point3> = loops
+        .iter()
+        .flatten()
+        .map(|piece| match *piece {
+            Piece::Line { start, .. } | Piece::Arc { start, .. } => start,
+        })
+        .collect();
+    let every = samples.len().div_ceil(200).max(1);
+    let model: Vec<[f64; 2]> = samples
+        .iter()
+        .step_by(every)
+        .map(|p| {
+            let m = setup.model_point(Point3::new(p.x, p.y, -depth));
+            [m.x, m.y]
+        })
+        .collect();
+    let hits = kernel
+        .heights(body, &model, setup.facing() > 0.0)
+        .map_err(|e| bad(e.to_string()))?;
+    for (hit, [x, y]) in hits.iter().zip(&model) {
+        if let Some(z) = hit {
+            let above = setup.program_point(Point3::new(*x, *y, *z)).z;
+            if above > -depth + 0.01 {
+                return Err(bad(format!(
+                    "the pocket's floor is covered by material {:.3} mm above it; \
+                     it cannot be reached from this side",
+                    above + depth
+                )));
+            }
+        }
+    }
     let passes = ((depth / (cutter.diameter * POCKET_DEPTH_PER_PASS)).ceil() as usize).max(1);
     let levels: Vec<f64> = (1..=passes)
         .map(|k| round3(-depth * k as f64 / passes as f64))
@@ -1517,8 +1696,8 @@ pub fn preview(program: &Program, setup: &Setup) -> Vec<PreviewSegment> {
         if let Some(from) = from {
             out.push(PreviewSegment {
                 rapid,
-                from: setup.model_point(from),
-                to: setup.model_point(to),
+                from: setup.in_model(from),
+                to: setup.in_model(to),
             });
         }
     };
@@ -1638,6 +1817,9 @@ pub fn detect(
         .setups
         .get(position)
         .ok_or(CamError::UnknownSetup(setup_id))?;
+    let world = world(document, rebuilt, kernel, entry.setup.side)?;
+    let (document, rebuilt) = (world.document.as_ref(), world.rebuilt.as_ref());
+    let cam = document.cam();
     let setup = Setup::from_def(&entry.setup, rebuilt).ok_or(CamError::NoPart)?;
     let body = rebuilt.body.as_ref().ok_or(CamError::NoPart)?;
     let library = ToolLibrary {
@@ -1954,6 +2136,9 @@ fn plan_entry(
     kernel: &dyn cndt_kernel::Kernel,
     entry: &cndt_model::cam::SetupEntry,
 ) -> Result<Planned, CamError> {
+    // A side setup is planned on the part turned so that side is on top.
+    let world = world(document, rebuilt, kernel, entry.setup.side)?;
+    let (document, rebuilt) = (world.document.as_ref(), world.rebuilt.as_ref());
     let cam = document.cam();
     let setup = Setup::from_def(&entry.setup, rebuilt).ok_or(CamError::NoPart)?;
     let library = ToolLibrary {
@@ -2026,6 +2211,22 @@ fn plan_entry(
     program.operations.extend(taps);
     if program.operations.is_empty() {
         return Err(CamError::Nothing);
+    }
+    if let (Some(angle), Side::Left | Side::Right) = (entry.setup.index, entry.setup.side) {
+        notes.push(format!(
+            "{} is turned to by the table at B{}: check on the machine which way B \
+             turns before running it, or the other side comes to the spindle.",
+            entry.setup.name,
+            round3(angle)
+        ));
+    }
+    if entry.setup.side.is_lateral() {
+        notes.push(format!(
+            "{} is a side setup: its simulation starts from the whole raw block, \
+             not from what the other setups left, so it can show rapids into \
+             material those setups already removed.",
+            entry.setup.name
+        ));
     }
     Ok(Planned {
         program,

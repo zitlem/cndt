@@ -110,9 +110,14 @@ impl Api {
         let Some(placed) = planned.setup else {
             return Err(ApiError::new("cam", "the setup has no placement"));
         };
-        let stock =
-            cndt_process_mill::stock_box(document, &self.rebuilt, &placed).map_err(cam_error)?;
-        let body = self
+        // A side setup is simulated on the part turned so that side is on
+        // top (decision 0019).
+        let world =
+            cndt_process_mill::world(document, &self.rebuilt, self.kernel.as_ref(), placed.side)
+                .map_err(cam_error)?;
+        let stock = cndt_process_mill::stock_box(&world.document, &world.rebuilt, &placed)
+            .map_err(cam_error)?;
+        let body = world
             .rebuilt
             .body
             .as_ref()
@@ -136,16 +141,22 @@ impl Api {
         let column_of = |c: usize| -> usize {
             let (i, j) = (c % nx, c / nx);
             match (placed.side, placed.flip_about) {
-                (Side::Top, _) => c,
                 (Side::Bottom, FlipAxis::X) => (ny - 1 - j) * nx + i,
                 (Side::Bottom, FlipAxis::Y) => j * nx + (nx - 1 - i),
+                _ => c,
             }
         };
         // Program Z from model Z and back: Z0 is on the face machined.
         let to_program = |z: f64| placed.program_point(Point3::new(0.0, 0.0, z)).z;
         let to_model = |z: f64| placed.model_point(Point3::new(0.0, 0.0, z)).z;
-        let from_above = placed.side == Side::Top;
-        if columns.as_ref().is_none_or(|(g, _)| *g != grid) {
+        let from_above = placed.side != Side::Bottom;
+        // The carried columns run along model Z, so a side setup cannot use
+        // them: it starts from the whole raw block, which can only show more
+        // material than there is, never less, and leaves the columns as
+        // they were.
+        let lateral = placed.side.is_lateral();
+        let mut fresh = lateral.then(|| (grid, vec![(stock.min.z, stock.max.z); grid.len()]));
+        if !lateral && columns.as_ref().is_none_or(|(g, _)| *g != grid) {
             let (low, high) = if from_above {
                 (to_model(stock.min.z), to_model(stock.max.z))
             } else {
@@ -153,13 +164,20 @@ impl Api {
             };
             *columns = Some((grid, vec![(low, high); grid.len()]));
         }
-        let Some((_, carried)) = columns.as_mut() else {
+        let Some((_, carried)) = (if lateral {
+            fresh.as_mut()
+        } else {
+            columns.as_mut()
+        }) else {
             return Err(ApiError::new("internal", "no stock to simulate"));
         };
         let (heights, floors): (Vec<f64>, Vec<f64>) = (0..grid.len())
             .map(|c| {
                 let (low, high) = carried[column_of(c)];
-                if from_above {
+                if lateral {
+                    // Already in program Z.
+                    (high, low)
+                } else if from_above {
                     (to_program(high), to_program(low))
                 } else {
                     (to_program(low), to_program(high))
@@ -207,7 +225,7 @@ impl Api {
         let report = cndt_sim::simulate(&planned.program, &tools, &input)
             .map_err(|e| ApiError::new("simulation", e.to_string()))?;
         // What this setup left, back into the carried columns.
-        for (c, h) in report.heights.iter().enumerate() {
+        for (c, h) in report.heights.iter().enumerate().filter(|_| !lateral) {
             let column = &mut carried[column_of(c)];
             let floor = input.floors[c];
             if *h <= floor {
@@ -278,7 +296,7 @@ fn stock_mesh(sim: &Simulated) -> TriangleMesh {
         face_count: STOCK_CLASSES,
     };
     for ([x, y], h) in grid.centres().iter().zip(heights) {
-        let m = sim.placed.model_point(Point3::new(*x, *y, *h));
+        let m = sim.placed.in_model(Point3::new(*x, *y, *h));
         #[allow(clippy::cast_possible_truncation)]
         mesh.positions.extend([m.x as f32, m.y as f32, m.z as f32]);
     }
