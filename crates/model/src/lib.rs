@@ -20,8 +20,8 @@ pub mod threads;
 pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 pub use features::{
     Counterbore, EdgeTarget, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus,
-    Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, Operation, Rebuilt, Thread,
-    default_profiles, rebuild, rebuild_to,
+    Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, ImportData, MAX_IMPORT_BYTES, Operation,
+    Rebuilt, Thread, default_profiles, rebuild, rebuild_to,
 };
 use serde::{Deserialize, Serialize};
 
@@ -603,6 +603,32 @@ impl Document {
             .map(|n| format!("{prefix}{n}"))
             .find(|candidate| self.features.iter().all(|e| e.feature.name() != candidate))
             .unwrap_or_default()
+    }
+
+    /// Gives an import feature its file content, after the document was
+    /// read from a project file, where the content is stored apart from the
+    /// JSON. Not a command: it completes reading, and changes no design.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::InvalidFeature`] if `id` is not an import.
+    pub fn load_import_data(
+        &mut self,
+        id: FeatureId,
+        content: features::ImportData,
+    ) -> Result<(), ModelError> {
+        match self.features.iter_mut().find(|e| e.id == id) {
+            Some(FeatureEntry {
+                feature: Feature::Import { data, .. },
+                ..
+            }) => {
+                *data = content;
+                Ok(())
+            }
+            _ => Err(ModelError::InvalidFeature(format!(
+                "{id} is not an imported solid"
+            ))),
+        }
     }
 
     /// Adds a feature at the end of the timeline.

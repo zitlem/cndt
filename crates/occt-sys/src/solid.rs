@@ -177,6 +177,13 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_read_step_solid(
+        data: *const u8,
+        len: usize,
+        out: *mut *mut ShapeHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_write_step(
         shape: *const ShapeHandle,
         path: *const c_char,
@@ -742,6 +749,38 @@ pub fn write_step(shape: &Shape, path: &std::path::Path) -> Result<(), OcctError
         return Err(status_error(code, &err));
     }
     Ok(())
+}
+
+/// Reads STEP data held in memory as one solid, in millimetres: several
+/// solids are fused, and closed surface shells are made solid. Face
+/// numbers follow OpenCascade's face map, the same for the same data.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] when the data holds no closed solid or an
+/// invalid one; a kernel error when it is not STEP.
+pub fn read_step_solid(data: &[u8]) -> Result<Shape, OcctError> {
+    let mut out: *mut ShapeHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `data` is valid for `data.len()` bytes for the whole call;
+    // `out` is a valid out-pointer; `err` is writable for its length; the
+    // shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_read_step_solid(
+            data.as_ptr(),
+            data.len(),
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    NonNull::new(out)
+        .map(|ptr| Shape { ptr })
+        .ok_or_else(|| OcctError::Kernel(String::from("the kernel returned no shape")))
 }
 
 /// Where lines along Z through each `(x, y)` first meet the solid: coming

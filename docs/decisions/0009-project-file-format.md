@@ -103,3 +103,11 @@ A setup may say how the part reaches it (decision 0015): `"flip_about": "y"` for
 ## Version 16 (2026-11-14)
 
 A tool may carry its measured assembly (decision 0016): `"assembly": {"flute_length", "stickout", "shank_diameter", "holder_diameter", "holder_length"}`, in millimetres from the tip. Without it, typical sizes for the tool's kind and diameter are assumed. Older builds refuse files that use it with the update message; files without it are unchanged.
+
+## Version 17 (2026-11-17)
+
+Import features (decision 0017): `{"type": "import", "name", "source", "operation", "bytes", "hash"}`. Each import's file content is its own entry, `design/imports/<feature id>.step`, stored exactly. Reading checks every entry against the feature's `bytes` and `hash` (64-bit FNV-1a, hex), and refuses a missing, changed or unclaimed entry as damaged.
+
+- **Why a version bump:** a version 16 build would refuse the unknown feature type and the unknown entries; with the bump it says to update instead.
+- **Migration:** none needed. A version 16 or older file that contains an import is refused as damaged.
+

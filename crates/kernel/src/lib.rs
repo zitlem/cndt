@@ -202,6 +202,16 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// A kernel error if the file cannot be written.
     fn write_step(&self, body: &Body, path: &Path) -> Result<(), KernelError>;
 
+    /// Reads STEP data held in memory as one solid, in millimetres. Several
+    /// solids are fused into one; closed surface shells are made solid.
+    /// Face numbers are the same for the same data on every run.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] when the data is not STEP or holds no
+    /// valid closed solid, saying which.
+    fn read_step_solid(&self, data: &[u8]) -> Result<Body, KernelError>;
+
     /// Every boundary loop of flat face `face` (parallel to XY), offset with
     /// the face by `distance`: positive grows the face, so the outer loop
     /// moves outwards and holes shrink.
@@ -335,6 +345,21 @@ pub enum BooleanOp {
     Fuse,
     /// The first minus the second.
     Cut,
+}
+
+/// How many imported solids [`OpenCascade::read_step_solid`] keeps.
+const IMPORT_CACHE: usize = 4;
+
+/// Recently imported solids: `((length, hash), (data, body))`, oldest first.
+type ImportCache = Vec<((usize, u64), (Vec<u8>, Body))>;
+
+static IMPORTED: std::sync::Mutex<ImportCache> = std::sync::Mutex::new(Vec::new());
+
+/// 64-bit FNV-1a: a quick key for the cache, checked by a full compare.
+fn fnv1a(data: &[u8]) -> u64 {
+    data.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// A solid body held by the kernel. Cheap to clone; the geometry is shared.
@@ -517,6 +542,34 @@ impl Kernel for OpenCascade {
     fn write_step(&self, body: &Body, path: &Path) -> Result<(), KernelError> {
         cndt_occt_sys::write_step(&body.0, path).map_err(modelling)
     }
+
+    fn read_step_solid(&self, data: &[u8]) -> Result<Body, KernelError> {
+        // Every rebuild reads the imported file again, and a large one takes
+        // seconds, so the last few are kept. The key is the whole content,
+        // compared in full, so a hit is always the same data.
+        let key = (data.len(), fnv1a(data));
+        if let Ok(cache) = IMPORTED.lock()
+            && let Some((_, (_, body))) = cache
+                .iter()
+                .find(|(k, (bytes, _))| *k == key && bytes.as_slice() == data)
+        {
+            return Ok(body.clone());
+        }
+        let body = Body(Arc::new(cndt_occt_sys::read_step_solid(data).map_err(
+            |error| match error {
+                cndt_occt_sys::OcctError::ModelFailed(reason)
+                | cndt_occt_sys::OcctError::Kernel(reason) => KernelError::Modelling(reason),
+                other => KernelError::Modelling(other.to_string()),
+            },
+        )?));
+        if let Ok(mut cache) = IMPORTED.lock() {
+            if cache.len() >= IMPORT_CACHE {
+                cache.remove(0);
+            }
+            cache.push((key, (data.to_vec(), body.clone())));
+        }
+        Ok(body)
+    }
     fn face_loops(
         &self,
         body: &Body,
@@ -659,6 +712,20 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn reads_a_step_solid_from_memory() {
+        let data = std::fs::read(fixture("box-10x20x30.step")).unwrap();
+        let body = OpenCascade.read_step_solid(&data).unwrap();
+        let properties = OpenCascade.properties(&body).unwrap();
+        assert!((properties.volume - 6000.0).abs() < 1e-6, "{properties:?}");
+        assert_eq!((properties.faces, properties.solids), (6, 1));
+        // Read again: the same face order, served from the cache.
+        let again = OpenCascade.read_step_solid(&data).unwrap();
+        assert_eq!(OpenCascade.properties(&again).unwrap(), properties);
+        let error = OpenCascade.read_step_solid(b"not a step file").unwrap_err();
+        assert!(matches!(error, KernelError::Modelling(_)), "{error}");
     }
 
     #[test]

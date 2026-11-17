@@ -3,8 +3,8 @@
 
 use cndt_model::sketch::{EntityId, Geometry, ProfileKey};
 use cndt_model::{
-    Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ModelError, Operation,
-    SketchId, default_profiles,
+    Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ImportData, ModelError,
+    Operation, SketchId, default_profiles,
 };
 
 use crate::{Command, CommandError};
@@ -102,6 +102,96 @@ impl Command for AddExtrude {
             distance,
             distance_expression: self.expression.clone(),
             operation: self.operation,
+        };
+        self.created = Some(document.add_feature(feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let id = self.created.ok_or(CommandError::NotApplied)?;
+        self.undone = Some(document.remove_feature(id)?);
+        Ok(())
+    }
+}
+
+/// Adds a solid read from a STEP file at the end of the timeline (decision
+/// 0017). The file's content goes into the document, so the project opens
+/// without the original file.
+#[derive(Debug, Clone)]
+pub struct AddImport {
+    source: String,
+    content: String,
+    operation: Operation,
+    name: Option<String>,
+    created: Option<FeatureId>,
+    undone: Option<(usize, FeatureEntry)>,
+}
+
+impl AddImport {
+    /// Imports `content`, the STEP text of a file called `source`.
+    #[must_use]
+    pub const fn new(
+        source: String,
+        content: String,
+        operation: Operation,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            source,
+            content,
+            operation,
+            name,
+            created: None,
+            undone: None,
+        }
+    }
+}
+
+impl Command for AddImport {
+    fn name(&self) -> &'static str {
+        "feature.import"
+    }
+
+    fn label(&self) -> String {
+        format!("Import {}", self.source)
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        if let Some((index, entry)) = self.undone.take() {
+            document.restore_feature(index, entry);
+            return Ok(());
+        }
+        let source = self
+            .source
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if source.is_empty() {
+            return Err(
+                ModelError::InvalidFeature(String::from("an imported file needs a name")).into(),
+            );
+        }
+        if !self.content.trim_start().starts_with("ISO-10303-21") {
+            return Err(ModelError::InvalidFeature(format!(
+                "{source} is not a STEP file: it does not start with ISO-10303-21"
+            ))
+            .into());
+        }
+        let data = ImportData(std::sync::Arc::new(self.content.as_bytes().to_vec()));
+        let (bytes, hash) = data.fingerprint();
+        let name = match &self.name {
+            Some(name) => name.clone(),
+            None => document.next_feature_name("Import"),
+        };
+        let feature = Feature::Import {
+            name,
+            source,
+            operation: self.operation,
+            bytes,
+            hash,
+            data,
         };
         self.created = Some(document.add_feature(feature)?);
         Ok(())
