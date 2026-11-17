@@ -22,12 +22,14 @@ project files:
 
 other:
   post <file.cndt> [post] [setup] [--machine <id>] [--setups <id,id,...>] [--override]
+       [--prove-out <mm>]
                                             print G-code for a setup (post: fanuc-mill, haas-mill,
                                             linuxcnc-mill, mazak-smoothg or grbl; setup id); with a
                                             machine (mazak-hcn-5000), check its limits first; with
                                             --setups, several sides in one program; a program
                                             verification finds problems in is refused unless
-                                            --override, which the program header records
+                                            --override, which the program header records; with
+                                            --prove-out, every Z raised that far for an air cut
   export <file.cndt> <out.step|out.stl>     write the part as STEP or STL
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
@@ -40,7 +42,11 @@ example:
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut options = [("--machine", None), ("--setups", None)];
+    let mut options = [
+        ("--machine", None),
+        ("--setups", None),
+        ("--prove-out", None),
+    ];
     for (flag, value) in &mut options {
         if let Some(at) = args.iter().position(|a| a == flag) {
             if args.first() != Some(&"post") || at + 1 >= args.len() {
@@ -51,7 +57,15 @@ fn main() -> ExitCode {
             args.drain(at..=at + 1);
         }
     }
-    let [(_, machine), (_, setups)] = options;
+    let [(_, machine), (_, setups), (_, prove_out)] = options;
+    let prove_out = match prove_out.map(str::parse::<f64>) {
+        Some(Err(_)) => {
+            eprintln!("--prove-out takes a distance in millimetres, such as 50");
+            return ExitCode::from(2);
+        }
+        Some(Ok(lift)) => Some(lift),
+        None => None,
+    };
     let override_problems = match args.iter().position(|a| *a == "--override") {
         Some(at) if args.first() == Some(&"post") => {
             args.remove(at);
@@ -79,6 +93,7 @@ fn main() -> ExitCode {
         machine,
         setups,
         override_problems,
+        prove_out,
     };
     let result = match args.as_slice() {
         ["new", path] => new(Path::new(path), None),
@@ -161,6 +176,7 @@ struct Target<'a> {
     machine: Option<&'a str>,
     setups: Option<Vec<u32>>,
     override_problems: bool,
+    prove_out: Option<f64>,
 }
 
 fn post(path: &Path, id: &str, target: &Target<'_>, setup: Option<u32>) -> Result<(), String> {
@@ -175,6 +191,9 @@ fn post(path: &Path, id: &str, target: &Target<'_>, setup: Option<u32>) -> Resul
     }
     if target.override_problems {
         request["override"] = json!(true);
+    }
+    if let Some(lift) = target.prove_out {
+        request["prove_out"] = json!(lift);
     }
     if let Some(setup) = setup {
         request["setup"] = json!(setup);

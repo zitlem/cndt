@@ -74,9 +74,23 @@ impl Api {
 
         // The program as it will be posted: plan, machine and post.
         let posted = if ids.len() == 1 {
-            self.post_program(post, machine, ids.first().copied(), None, None, &[])
+            self.post_program(
+                post,
+                machine,
+                ids.first().copied(),
+                None,
+                crate::Output::default(),
+                &[],
+            )
         } else {
-            self.post_program(post, machine, None, Some(&ids), None, &[])
+            self.post_program(
+                post,
+                machine,
+                None,
+                Some(&ids),
+                crate::Output::default(),
+                &[],
+            )
         };
         let lines = match &posted {
             Ok(value) => {

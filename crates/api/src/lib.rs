@@ -118,6 +118,11 @@ pub enum Request {
         /// overridden. Without it, such a program is refused.
         #[serde(default, rename = "override")]
         override_problems: bool,
+        /// A prove-out: every Z raised by this many millimetres, so the
+        /// machine runs the whole program in the air above the part. The
+        /// real program is verified as usual; the header says it cuts air.
+        #[serde(default)]
+        prove_out: Option<f64>,
         /// A file to write the program to.
         #[serde(default)]
         path: Option<PathBuf>,
@@ -707,11 +712,15 @@ impl Api {
         machine: Option<&str>,
         setup: Option<u32>,
         setups: Option<&[u32]>,
-        path: Option<&Path>,
+        output: Output<'_>,
         override_problems: bool,
     ) -> Result<Value, ApiError> {
         // Its own errors first, with their own kinds.
-        self.post_program(id, machine, setup, setups, None, &[])?;
+        let check = Output {
+            path: None,
+            ..output
+        };
+        self.post_program(id, machine, setup, setups, check, &[])?;
         let ids: Vec<u32> = match (setup, setups) {
             (_, Some(ids)) => ids.to_vec(),
             (Some(setup), None) => vec![setup],
@@ -743,7 +752,7 @@ impl Api {
             notes.push(String::from("VERIFICATION OVERRIDDEN BY THE USER:"));
             notes.extend(problems);
         }
-        self.post_program(id, machine, setup, setups, path, &notes)
+        self.post_program(id, machine, setup, setups, output, &notes)
     }
 
     /// Imports a DXF drawing as a new sketch (see [`Request::ImportDxf`]).
@@ -878,20 +887,21 @@ impl Api {
             definition: Some(definition),
         };
         let (_, id, _) = edited.load()?;
-        let ours = self.post_program(&edited, None, setup, setups, None, &[])?;
+        let ours = self.post_program(&edited, None, setup, setups, Output::default(), &[])?;
         let gcode = ours["gcode"].as_str().unwrap_or_default().to_owned();
         let base = PostRef {
             id: id.clone(),
             definition: None,
         };
-        let (changed, base_id) = match self.post_program(&base, None, setup, setups, None, &[]) {
-            Ok(theirs) => (
-                changed_lines(theirs["gcode"].as_str().unwrap_or_default(), &gcode),
-                Some(id),
-            ),
-            // Not a shipped post: every line is its own.
-            Err(_) => (Some((0..gcode.lines().count()).collect()), None),
-        };
+        let (changed, base_id) =
+            match self.post_program(&base, None, setup, setups, Output::default(), &[]) {
+                Ok(theirs) => (
+                    changed_lines(theirs["gcode"].as_str().unwrap_or_default(), &gcode),
+                    Some(id),
+                ),
+                // Not a shipped post: every line is its own.
+                Err(_) => (Some((0..gcode.lines().count()).collect()), None),
+            };
         Ok(serde_json::json!({ "gcode": gcode, "changed": changed, "base": base_id }))
     }
 
@@ -922,12 +932,23 @@ impl Api {
         machine: Option<&str>,
         setup: Option<u32>,
         setups: Option<&[u32]>,
-        path: Option<&Path>,
+        output: Output<'_>,
         header: &[String],
     ) -> Result<Value, ApiError> {
+        let Output { path, prove_out } = output;
         let (post, id, edited) = post_ref.load()?;
         let id = id.as_str();
-        let header: Vec<String> = edited.into_iter().chain(header.iter().cloned()).collect();
+        let lift_note = prove_out.map(|lift| {
+            format!(
+                "PROVE-OUT: EVERY Z IS RAISED {lift:.3} MM. THIS PROGRAM CUTS AIR, NOT THE PART. \
+                 DO NOT USE IT TO CUT."
+            )
+        });
+        let header: Vec<String> = lift_note
+            .into_iter()
+            .chain(edited)
+            .chain(header.iter().cloned())
+            .collect();
         let header = header.as_slice();
         let planned = match (setup, setups) {
             (Some(_), Some(_)) => {
@@ -951,6 +972,33 @@ impl Api {
         }
         .map_err(|e| ApiError::new("cam", e.to_string()))?;
         let mut notes = planned.notes;
+        let lifted = prove_out
+            .map(|lift| planned.program.lifted(lift))
+            .transpose()
+            .map_err(|e| ApiError::new("bad_request", e))?;
+        // A lift smaller than the program's depth would still reach the
+        // stock: refuse it, saying how far is enough.
+        if let (Some(lift), Some(lifted)) = (prove_out, &lifted) {
+            let above = self
+                .session
+                .document()
+                .cam()
+                .stock
+                .map_or(0.0, |stock| stock.top.max(stock.bottom));
+            let clear = above + PROVE_OUT_CLEARANCE;
+            if let Some(lowest) = lifted.lowest_z()
+                && lowest < clear
+            {
+                return Err(ApiError::new(
+                    "bad_request",
+                    format!(
+                        "a prove-out of {lift:.3} mm still reaches Z{lowest:.3}, within \
+                         {PROVE_OUT_CLEARANCE} mm of the stock; lift at least {:.3} mm",
+                        lift + clear - lowest
+                    ),
+                ));
+            }
+        }
         if let Some(machine) = machine {
             let machine = shipped_machine(machine)?;
             // Another controller's codes can mean something else here: on a
@@ -967,6 +1015,12 @@ impl Api {
             machine
                 .check(&planned.program)
                 .map_err(|e| ApiError::new("machine", e.to_string()))?;
+            // The lifted program must fit the machine's travel too.
+            if let Some(lifted) = &lifted {
+                machine.check(lifted).map_err(|e| {
+                    ApiError::new("machine", format!("the prove-out does not fit: {e}"))
+                })?;
+            }
             if !machine.machine.verified {
                 notes.push(format!(
                     "The {} definition is unverified: check its limits on the machine.",
@@ -975,7 +1029,11 @@ impl Api {
             }
         }
         let gcode = post
-            .run_noted(&planned.program, env!("CARGO_PKG_VERSION"), header)
+            .run_noted(
+                lifted.as_ref().unwrap_or(&planned.program),
+                env!("CARGO_PKG_VERSION"),
+                header,
+            )
             .map_err(|e| ApiError::new("post", e.to_string()))?;
         if let Some(path) = path {
             std::fs::write(path, &gcode).map_err(|e| {
@@ -1173,6 +1231,7 @@ impl Api {
                 setup,
                 setups,
                 override_problems,
+                prove_out,
                 path,
             } => {
                 let post = PostRef {
@@ -1184,7 +1243,10 @@ impl Api {
                     machine.as_deref(),
                     setup,
                     setups.as_deref(),
-                    path.as_deref(),
+                    Output {
+                        path: path.as_deref(),
+                        prove_out,
+                    },
                     override_problems,
                 ) {
                     Ok(value) => success(value),
@@ -1514,6 +1576,7 @@ const FIELDS: &[(&str, &[&str])] = &[
             "setup",
             "setups",
             "override",
+            "prove_out",
             "path",
         ],
     ),
@@ -1561,6 +1624,18 @@ fn parse_request(text: &str) -> Result<Request, ApiError> {
     }
     serde_json::from_value(value).map_err(|error| bad(error.to_string()))
 }
+
+/// Where a posted program goes, and whether it is a prove-out.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Output<'a> {
+    /// A file to write it to.
+    path: Option<&'a Path>,
+    /// Every Z raised this far, for an air cut.
+    prove_out: Option<f64>,
+}
+
+/// How far above the stock a prove-out's lowest point must stay, in mm.
+const PROVE_OUT_CLEARANCE: f64 = 5.0;
 
 fn encode_mesh(mesh: &TriangleMesh) -> Result<Vec<u8>, ApiError> {
     let too_large = || ApiError::new("kernel", "the mesh is too large to send");

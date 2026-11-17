@@ -297,7 +297,68 @@ impl std::error::Error for ToolpathError {}
 /// How far an arc's start and end radius may differ, in millimetres.
 pub const ARC_TOLERANCE: f64 = 0.001;
 
+/// The most a prove-out may lift a program, in millimetres.
+pub const MAX_PROVE_OUT: f64 = 500.0;
+
 impl Program {
+    /// The lowest Z any move or cycle reaches, or `None` with no motion.
+    #[must_use]
+    pub fn lowest_z(&self) -> Option<f64> {
+        self.operations
+            .iter()
+            .flat_map(|o| &o.steps)
+            .filter_map(|step| match step {
+                Step::Move(Move::Rapid { to } | Move::Linear { to, .. } | Move::Arc { to, .. }) => {
+                    Some(to.z)
+                }
+                Step::Move(Move::Cycle(cycle)) => Some(cycle.bottom),
+                _ => None,
+            })
+            .reduce(f64::min)
+    }
+
+    /// The same program with every Z raised by `lift` millimetres, for a
+    /// prove-out: the machine runs every move, tool change and cycle in the
+    /// air above the part, so the operator can watch the motion before
+    /// cutting. Moves in machine coordinates (homing, tool change positions)
+    /// are events, not moves, so they are not lifted. Peck and tap values
+    /// are relative and stay as they are.
+    ///
+    /// # Errors
+    ///
+    /// A reason when `lift` is not a number above zero and at most
+    /// [`MAX_PROVE_OUT`].
+    pub fn lifted(&self, lift: f64) -> Result<Self, String> {
+        if !(lift.is_finite() && lift > 0.0 && lift <= MAX_PROVE_OUT) {
+            return Err(format!(
+                "a prove-out lift must be above 0 and at most {MAX_PROVE_OUT} mm, not {lift}"
+            ));
+        }
+        let up = |p: &Point3| Point3::new(p.x, p.y, p.z + lift);
+        let mut lifted = self.clone();
+        for operation in &mut lifted.operations {
+            for step in &mut operation.steps {
+                let Step::Move(motion) = step else { continue };
+                match motion {
+                    Move::Rapid { to } | Move::Linear { to, .. } => *to = up(to),
+                    Move::Arc { to, center, .. } => {
+                        *to = up(to);
+                        *center = up(center);
+                    }
+                    Move::Cycle(cycle) => {
+                        cycle.clearance += lift;
+                        cycle.bottom += lift;
+                        for hole in &mut cycle.holes {
+                            *hole = up(hole);
+                        }
+                    }
+                    Move::Dwell { .. } => {}
+                }
+            }
+        }
+        Ok(lifted)
+    }
+
     /// Checks that the program is safe to post: every number finite, feeds
     /// and speeds positive, no motion before the position is known, no cutting
     /// without a tool or with the spindle off, and every arc consistent.
@@ -532,6 +593,64 @@ mod tests {
             bottom: -10.0,
             feed,
         }))
+    }
+
+    #[test]
+    fn a_prove_out_lifts_every_z_and_nothing_else() {
+        let mut steps = ready();
+        steps.push(Step::Move(Move::Linear {
+            to: p(10.0, 0.0, -3.0),
+            feed: 500.0,
+        }));
+        steps.push(Step::Move(Move::Arc {
+            to: p(20.0, 0.0, -3.5),
+            center: p(15.0, 0.0, -3.0),
+            direction: ArcDirection::Clockwise,
+            feed: 500.0,
+        }));
+        steps.push(Step::Move(Move::Rapid {
+            to: p(20.0, 0.0, 5.0),
+        }));
+        steps.push(cycle(CycleKind::Drill, 200.0));
+        let real = program(steps);
+        real.validate().unwrap();
+        assert_eq!(real.lowest_z(), Some(-10.0));
+        let air = real.lifted(50.0).unwrap();
+        assert_eq!(air.lowest_z(), Some(40.0));
+        let moves = |prog: &Program| -> Vec<Move> {
+            prog.operations[0]
+                .steps
+                .iter()
+                .filter_map(|s| match s {
+                    Step::Move(m) => Some(m.clone()),
+                    Step::Event(_) => None,
+                })
+                .collect()
+        };
+        let (r, a) = (moves(&real), moves(&air));
+        assert_eq!(
+            a[0],
+            Move::Rapid {
+                to: p(10.0, 0.0, 55.0)
+            }
+        );
+        assert_eq!(
+            a[1],
+            Move::Linear {
+                to: p(10.0, 0.0, 47.0),
+                feed: 500.0
+            }
+        );
+        let Move::Cycle(cycle) = &a[4] else { panic!() };
+        assert_eq!((cycle.clearance, cycle.bottom), (52.0, 40.0));
+        assert_eq!(cycle.holes[0], p(10.0, 10.0, 50.0));
+        assert_eq!(r.len(), a.len());
+        // Events (tool change, spindle) are untouched.
+        assert_eq!(real.operations[0].steps[0], air.operations[0].steps[0]);
+        assert!(air.validate().is_ok());
+        for bad in [0.0, -1.0, f64::NAN, MAX_PROVE_OUT + 1.0] {
+            assert!(real.lifted(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

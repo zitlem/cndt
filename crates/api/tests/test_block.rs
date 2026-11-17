@@ -619,6 +619,68 @@ fn the_cndt_test_block() {
         assert_eq!(gcode.matches("G84.2 ").count(), usize::from(setup == 0));
         check_golden(golden, gcode);
     }
+    // A prove-out of setup 1: the same program, every Z 50 mm higher, so
+    // the machine runs it in the air. Line for line, only Z words and the
+    // header differ, and every Z word is exactly 50 higher, except moves in
+    // machine coordinates and the incremental return to the tool change
+    // position, which are not part coordinates.
+    let real = s.call(
+        json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": 0}),
+    );
+    let real = real["result"]["gcode"].as_str().unwrap().to_owned();
+    let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": 0, "prove_out": 50}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let air = reply["result"]["gcode"].as_str().unwrap();
+    check_golden("test-block-setup-1-mazak-smoothg-prove-out-50", air);
+    assert!(air.contains("(PROVE-OUT: EVERY Z IS RAISED 50.000 MM. THIS PROGRAM CUTS AIR, NOT THE PART. DO NOT USE IT TO CUT.)"));
+    let body = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| !l.starts_with('(') && !l.starts_with('%') && !l.starts_with('O'))
+            .map(str::to_owned)
+            .collect()
+    };
+    let (real_lines, air_lines) = (body(&real), body(air));
+    assert_eq!(real_lines.len(), air_lines.len());
+    let z_of = |line: &str| -> Option<f64> {
+        line.split_whitespace()
+            .find_map(|w| w.strip_prefix('Z').and_then(|v| v.parse::<f64>().ok()))
+    };
+    let mut lifted = 0;
+    for (r, a) in real_lines.iter().zip(&air_lines) {
+        let strip = |l: &str| -> String {
+            l.split_whitespace()
+                .filter(|w| !w.starts_with('Z') && !w.starts_with('R'))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(strip(r), strip(a), "only Z and R words change:\n{r}\n{a}");
+        let machine_coordinates =
+            r.contains("G53") || r.contains("G91") || r.contains("G30") || r.contains("G28");
+        match (z_of(r), z_of(a)) {
+            (Some(zr), Some(za)) if machine_coordinates => {
+                assert!((za - zr).abs() < 1e-9, "{r} / {a}")
+            }
+            (Some(zr), Some(za)) => {
+                assert!((za - zr - 50.0).abs() < 1e-6, "{r} / {a}");
+                lifted += 1;
+            }
+            (None, None) => {}
+            other => panic!("{other:?}: {r} / {a}"),
+        }
+    }
+    assert!(lifted > 50, "{lifted} Z words lifted");
+    // A lift that still reaches the stock is refused, with what is enough.
+    let reply =
+        s.call(json!({"method": "post", "post": "mazak-smoothg", "setup": 0, "prove_out": 10}));
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("still reaches") && message.contains("lift at least"),
+        "{reply}"
+    );
+    // Out of range lifts are refused.
+    let reply =
+        s.call(json!({"method": "post", "post": "mazak-smoothg", "setup": 0, "prove_out": -5}));
+    assert_eq!(reply["error"]["kind"], "bad_request", "{reply}");
     // The post editor (decision 0016, slice 5). The shipped text, unchanged,
     // posts exactly as the shipped post.
     let shipped =

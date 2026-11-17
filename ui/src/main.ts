@@ -668,9 +668,10 @@ let chosenTarget = MAZAK_HCN_5000;
 async function postSetup(setup: number | number[], name: string): Promise<void> {
   const { post, machine, definition } = chosenTarget;
   const which = Array.isArray(setup) ? { setups: setup } : { setup };
+  const lift = Number(element<HTMLSelectElement>("prove-out").value) || null;
   const path = await save({
     title: text.saveGcode,
-    defaultPath: `${name}.nc`,
+    defaultPath: lift === null ? `${name}.nc` : `${name}-air-cut-${lift}.nc`,
     filters: [{ name: text.gcodeFiles, extensions: ["nc", "tap", "ngc"] }],
   });
   if (!path) return;
@@ -704,8 +705,13 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
     ...which,
     path,
     override: report.verdict === "problems",
+    ...(lift === null ? {} : { prove_out: lift }),
   });
   const lines = result.gcode.split("\n").length;
+  if (lift !== null) {
+    showError(new Error(text.savedProveOut(lines, lift)));
+    return;
+  }
   const verdict =
     report.verdict === "problems"
       ? text.verdictProblems

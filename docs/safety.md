@@ -32,6 +32,14 @@ What is checked today (decisions 0015 and 0016): rapid moves through material, s
 
 `post` verifies first. Rapids through material, broken machine limits and a program the post refuses are **problems**: the program is refused unless the user overrides them, and the override is listed in the program header (gate 4). Gouges, material left, notes and unverified definitions are listed for **review** and do not block. The app saves the report as `<program>.report.txt` beside the G-code.
 
+## Prove-out
+
+`post` with `prove_out` (the app's PROVE-OUT setting, or `cndt post --prove-out <mm>`) writes the same program with every Z and R word raised by that distance, so the machine runs every move, tool change and cycle in the air above the part. The header says `PROVE-OUT: ... THIS PROGRAM CUTS AIR` and the app names the file `-air-cut-<mm>`. Moves in machine coordinates (G53, G30) are not part coordinates and are not raised; peck and tap values are relative and stay the same.
+
+- The real program is verified as usual; the air cut is checked against the machine's travel too.
+- A lift too small to clear the stock (the lowest point within 5 mm of the stock top) is refused, saying how far is enough.
+- It shows the motion, the order and the tool changes. It does not check the work offset or the tool lengths: if those are wrong by more than the lift, the air cut hits the part too. Check them first.
+
 ## Known gap
 
 Early versions simulate the internal toolpath, not the posted G-code. A post bug can therefore pass simulation. Verified posts and golden-file tests cover this until simulation of posted G-code exists.
