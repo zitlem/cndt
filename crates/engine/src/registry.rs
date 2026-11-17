@@ -745,8 +745,61 @@ impl Registry {
                         required: false,
                         description: "Shown in the program.",
                     },
+                    ArgSpec {
+                        name: "flute_length",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Measured assembly, mm: how far up from the tip it cuts. Give all five assembly values, or none for typical sizes.",
+                    },
+                    ArgSpec {
+                        name: "stickout",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Measured assembly, mm: tip to holder face.",
+                    },
+                    ArgSpec {
+                        name: "shank_diameter",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Measured assembly, mm.",
+                    },
+                    ArgSpec {
+                        name: "holder_diameter",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Measured assembly, mm.",
+                    },
+                    ArgSpec {
+                        name: "holder_length",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Measured assembly, mm: from the holder face towards the spindle.",
+                    },
                 ],
                 build: |args| {
+                    const ASSEMBLY: [&str; 5] = [
+                        "flute_length",
+                        "stickout",
+                        "shank_diameter",
+                        "holder_diameter",
+                        "holder_length",
+                    ];
+                    let given = ASSEMBLY.iter().filter(|k| args.contains_key(**k)).count();
+                    let assembly = match given {
+                        0 => None,
+                        5 => Some(cndt_model::cam::Assembly {
+                            flute_length: number(args, "flute_length")?,
+                            stickout: number(args, "stickout")?,
+                            shank_diameter: number(args, "shank_diameter")?,
+                            holder_diameter: number(args, "holder_diameter")?,
+                            holder_length: number(args, "holder_length")?,
+                        }),
+                        _ => {
+                            return Err(String::from(
+                                "give all five assembly values (flute_length, stickout, shank_diameter, holder_diameter, holder_length) or none",
+                            ));
+                        }
+                    };
                     let tool = cndt_model::cam::Tool {
                         kind: tool_kind(args)?,
                         diameter: number(args, "diameter")?,
@@ -757,6 +810,7 @@ impl Registry {
                         } else {
                             String::new()
                         },
+                        assembly,
                     };
                     cam(
                         "cam.set_tool",

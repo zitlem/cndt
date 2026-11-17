@@ -78,7 +78,17 @@ impl Api {
             .cam()
             .tools
             .iter()
-            .map(|(number, tool)| (*number, shape(&tool.kind, tool.diameter)))
+            .map(|(number, tool)| {
+                let a = tool.assembly();
+                let whole = cndt_sim::Tool {
+                    cutter: shape(&tool.kind, tool.diameter),
+                    flute_length: a.flute_length,
+                    stickout: a.stickout,
+                    shank_diameter: a.shank_diameter,
+                    holder_diameter: a.holder_diameter,
+                };
+                (*number, whole)
+            })
             .collect::<BTreeMap<_, _>>();
         let input = cndt_sim::Setup {
             grid,
