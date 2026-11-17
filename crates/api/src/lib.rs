@@ -18,6 +18,7 @@
 //! ```
 
 mod dxf;
+mod dxf_import;
 mod export;
 mod simulate;
 mod verify;
@@ -186,6 +187,20 @@ pub enum Request {
         /// its true walls there, outside and holes.
         #[serde(default)]
         section: Option<f64>,
+    },
+    /// Reads a DXF drawing's lines, arcs, circles and polylines into a new
+    /// sketch, as one step that undo takes back. Ends that meet become one
+    /// point, so closed outlines extrude. Replies with the state and
+    /// `import_notes`: the units assumed or converted, and anything left out.
+    ImportDxf {
+        /// The DXF file.
+        path: PathBuf,
+        /// xy (the default), xz or yz.
+        #[serde(default)]
+        plane: Option<String>,
+        /// The sketch's name; the file's name if left out.
+        #[serde(default)]
+        name: Option<String>,
     },
     /// A shipped post's TOML text, to start editing from. Replies
     /// `{text}`.
@@ -694,6 +709,45 @@ impl Api {
         self.post_program(id, machine, setup, setups, path, &notes)
     }
 
+    /// Imports a DXF drawing as a new sketch (see [`Request::ImportDxf`]).
+    fn import_dxf(
+        &mut self,
+        path: &Path,
+        plane: Option<String>,
+        name: Option<String>,
+    ) -> Result<Value, ApiError> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| ApiError::new("io", format!("cannot read {}: {e}", path.display())))?;
+        let drawing = dxf_import::read(&text).map_err(|e| ApiError::new("import", e))?;
+        let name = name.unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_owned()
+        });
+        let mut args = serde_json::Map::new();
+        args.insert(
+            String::from("curves"),
+            serde_json::to_value(&drawing.curves)
+                .map_err(|e| ApiError::new("internal", e.to_string()))?,
+        );
+        args.insert(String::from("name"), Value::from(name));
+        args.insert(
+            String::from("plane"),
+            Value::from(plane.unwrap_or_else(|| String::from("xy"))),
+        );
+        let command = self
+            .registry
+            .build("sketch.import", &Value::Object(args))
+            .map_err(ApiError::from)?;
+        self.session.execute(command).map_err(ApiError::from)?;
+        self.rollback = None;
+        self.refresh();
+        let mut state = self.state()?;
+        state["import_notes"] = serde_json::json!(drawing.notes);
+        Ok(state)
+    }
+
     /// The post editor's preview (see [`Request::PostPreview`]).
     fn post_preview(
         &self,
@@ -1076,6 +1130,12 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::ImportDxf { path, plane, name } => {
+                return match self.import_dxf(&path, plane, name) {
+                    Ok(value) => success(value),
+                    Err(error) => failure(error),
+                };
+            }
             Request::PostSource { post } => {
                 return match PostRef::shipped_text(&post) {
                     Some(text) => success(serde_json::json!({ "text": text })),
@@ -1296,6 +1356,7 @@ const FIELDS: &[(&str, &[&str])] = &[
         &["post", "definition", "machine", "setups", "cell", "path"],
     ),
     ("export", &["path"]),
+    ("import_dxf", &["path", "plane", "name"]),
     ("export_dxf", &["path", "sketch", "section"]),
     ("post_source", &["post"]),
     ("post_preview", &["definition", "setup", "setups"]),
@@ -1922,7 +1983,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 34, "{names:?}");
+        assert_eq!(names.len(), 35, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

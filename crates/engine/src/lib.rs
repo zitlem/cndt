@@ -24,7 +24,10 @@ pub use feature_commands::{
 };
 pub use registry::{ArgKind, ArgSpec, CommandSpec, Registry};
 pub use session::Session;
-pub use sketch_commands::{CreateSketch, DeleteSketch, EditSketch, PointRef, SketchEdit};
+pub use sketch_commands::{
+    CreateSketch, DeleteSketch, EditSketch, ImportCurve, MAX_IMPORT_CURVES, PointRef, SketchEdit,
+    sketch_from_curves,
+};
 
 /// A change to a document that can be undone.
 ///

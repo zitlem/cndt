@@ -1068,6 +1068,46 @@ fn the_cndt_test_block() {
     // Deterministic: the same file again.
     s.call(json!({"method": "export_dxf", "path": dxf, "section": 10}));
     assert_eq!(std::fs::read_to_string(&dxf).unwrap(), text);
+    // And back in: the profile becomes a sketch whose outline and holes
+    // close, which extrudes, as one step that undo takes back.
+    let before = s.state()["document"]["sketches"].as_object().unwrap().len();
+    let reply = s.call(json!({"method": "import_dxf", "path": dxf, "name": "Profile"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["result"]["import_notes"], json!([]), "{reply}");
+    let sketches = reply["result"]["document"]["sketches"].as_object().unwrap();
+    assert_eq!(sketches.len(), before + 1);
+    let (id, record) = sketches
+        .iter()
+        .max_by_key(|(id, _)| id.parse::<u64>().unwrap())
+        .unwrap();
+    assert_eq!(record["name"], "Profile");
+    let curves = record["sketch"]["entities"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|e| e["geometry"]["type"] != "point")
+        .count();
+    assert_eq!(curves, 19, "{record}");
+    let id = id.parse::<u64>().unwrap();
+    let state = s.exec(
+        "feature.extrude",
+        json!({"sketch": id, "distance": -5, "operation": "join"}),
+    );
+    // The new feature, by its id (JSON maps sort their keys as text).
+    let newest = state["document"]["features"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["id"]
+        .to_string();
+    let status = &state["feature_status"][newest.as_str()];
+    assert_eq!(status["state"], "ok", "{status}");
+    s.call(json!({"method": "undo"}));
+    s.call(json!({"method": "undo"}));
+    assert_eq!(
+        s.state()["document"]["sketches"].as_object().unwrap().len(),
+        before
+    );
     let _ = std::fs::remove_file(&dxf);
     let reply =
         s.call(json!({"method": "export_dxf", "path": "x.dxf", "sketch": 0, "section": 10}));

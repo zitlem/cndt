@@ -12,11 +12,13 @@ use cndt_model::{Document, ModelError, Plane, Sketch, SketchError, SketchId, Ske
 
 use crate::{Command, CommandError};
 
-/// Creates an empty sketch.
+/// Creates a sketch: empty, or with imported curves.
 #[derive(Debug, Clone)]
 pub struct CreateSketch {
     name: String,
     plane: Plane,
+    /// Curves to put in it, such as those read from a DXF file.
+    content: Option<Sketch>,
     created: Option<SketchId>,
     /// The sketch as it was when undone, put back under the same id on redo.
     undone: Option<SketchRecord>,
@@ -29,25 +31,147 @@ impl CreateSketch {
         Self {
             name: name.to_owned(),
             plane,
+            content: None,
             created: None,
             undone: None,
         }
     }
+
+    /// A command that adds a sketch on `plane` holding `content`.
+    #[must_use]
+    pub fn with_content(name: &str, plane: Plane, content: Sketch) -> Self {
+        Self {
+            content: Some(content),
+            ..Self::new(name, plane)
+        }
+    }
+}
+
+/// A curve to import into a new sketch, in sketch coordinates (mm).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImportCurve {
+    /// A straight line.
+    Line {
+        /// Start.
+        start: [f64; 2],
+        /// End.
+        end: [f64; 2],
+    },
+    /// An arc, counter-clockwise from `start` to `end`.
+    Arc {
+        /// Centre.
+        center: [f64; 2],
+        /// Start.
+        start: [f64; 2],
+        /// End.
+        end: [f64; 2],
+    },
+    /// A full circle.
+    Circle {
+        /// Centre.
+        center: [f64; 2],
+        /// Radius.
+        radius: f64,
+    },
+}
+
+/// The most curves one import may hold.
+pub const MAX_IMPORT_CURVES: usize = 20_000;
+
+/// Builds a sketch from curves. Ends within 0.0001 mm of each other become
+/// one point, so a profile drawn as separate lines and arcs closes.
+///
+/// # Errors
+///
+/// A readable reason for no curves, too many, or a value that is not a
+/// finite number or makes no curve.
+pub fn sketch_from_curves(curves: &[ImportCurve]) -> Result<Sketch, String> {
+    if curves.is_empty() {
+        return Err(String::from("there are no curves to import"));
+    }
+    if curves.len() > MAX_IMPORT_CURVES {
+        return Err(format!(
+            "{} curves is more than the {MAX_IMPORT_CURVES} one sketch can take",
+            curves.len()
+        ));
+    }
+    let mut sketch = Sketch::new();
+    let mut points: std::collections::BTreeMap<(i64, i64), EntityId> =
+        std::collections::BTreeMap::new();
+    let mut point = |sketch: &mut Sketch, p: [f64; 2]| -> Result<EntityId, String> {
+        if !(p[0].is_finite() && p[1].is_finite()) || p[0].abs() > 1e7 || p[1].abs() > 1e7 {
+            return Err(format!("{p:?} is not a usable point"));
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let key = ((p[0] * 1e4).round() as i64, (p[1] * 1e4).round() as i64);
+        if let Some(id) = points.get(&key) {
+            return Ok(*id);
+        }
+        let id = sketch
+            .add_point(Point2 { x: p[0], y: p[1] })
+            .map_err(|e| e.to_string())?;
+        points.insert(key, id);
+        Ok(id)
+    };
+    for curve in curves {
+        match *curve {
+            ImportCurve::Line { start, end } => {
+                let (a, b) = (point(&mut sketch, start)?, point(&mut sketch, end)?);
+                if a == b {
+                    continue; // A line of no length.
+                }
+                sketch.add_line(a, b).map_err(|e| e.to_string())?;
+            }
+            ImportCurve::Circle { center, radius } => {
+                if !(radius.is_finite() && radius > 1e-6) {
+                    return Err(format!(
+                        "a circle's radius must be more than zero, not {radius}"
+                    ));
+                }
+                let c = point(&mut sketch, center)?;
+                sketch.add_circle(c, radius).map_err(|e| e.to_string())?;
+            }
+            ImportCurve::Arc { center, start, end } => {
+                let c = point(&mut sketch, center)?;
+                let (s, e) = (point(&mut sketch, start)?, point(&mut sketch, end)?);
+                if s == e || s == c {
+                    continue;
+                }
+                sketch.add_arc(c, s, e).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(sketch)
 }
 
 impl Command for CreateSketch {
     fn name(&self) -> &'static str {
-        "sketch.create"
+        if self.content.is_some() {
+            "sketch.import"
+        } else {
+            "sketch.create"
+        }
     }
 
     fn label(&self) -> String {
-        String::from("Create sketch")
+        String::from(if self.content.is_some() {
+            "Import sketch"
+        } else {
+            "Create sketch"
+        })
     }
 
     fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
         match (self.created, self.undone.take()) {
             (Some(id), Some(record)) => document.restore_sketch(id, record),
-            _ => self.created = Some(document.add_sketch(&self.name, self.plane.clone())?),
+            _ => {
+                let id = document.add_sketch(&self.name, self.plane.clone())?;
+                if let Some(content) = &self.content {
+                    document.replace_sketch(id, content.clone())?;
+                }
+                self.created = Some(id);
+            }
         }
         Ok(())
     }
@@ -569,5 +693,65 @@ mod tests {
         // Redo brings it back under the same id.
         session.redo().unwrap();
         assert!(session.document().sketch(id).is_some());
+    }
+
+    #[test]
+    fn imported_curves_share_their_ends() {
+        // A square of four separate lines, one corner off by a hair, an arc
+        // and a circle.
+        let curves = vec![
+            ImportCurve::Line {
+                start: [0.0, 0.0],
+                end: [10.0, 0.0],
+            },
+            ImportCurve::Line {
+                start: [10.0, 0.0],
+                end: [10.0, 10.0],
+            },
+            ImportCurve::Line {
+                start: [10.0, 10.0],
+                end: [0.0, 10.0],
+            },
+            ImportCurve::Line {
+                start: [0.000_01, 10.0],
+                end: [0.0, 0.0],
+            },
+            ImportCurve::Arc {
+                center: [5.0, 5.0],
+                start: [7.0, 5.0],
+                end: [3.0, 5.0],
+            },
+            ImportCurve::Circle {
+                center: [5.0, 5.0],
+                radius: 1.0,
+            },
+        ];
+        let sketch = sketch_from_curves(&curves).unwrap();
+        let points = sketch
+            .entities()
+            .filter(|(_, e)| matches!(e.geometry, Geometry::Point { .. }))
+            .count();
+        // Four corners, the arc's centre (shared with the circle's) and its
+        // two ends.
+        assert_eq!(points, 7);
+        assert_eq!(sketch.entities().count(), 7 + 6);
+        assert!(sketch_from_curves(&[]).is_err());
+        let bad = [ImportCurve::Circle {
+            center: [0.0, 0.0],
+            radius: -1.0,
+        }];
+        assert!(sketch_from_curves(&bad).unwrap_err().contains("radius"));
+        // As a command: one undo removes the whole sketch.
+        let mut session = Session::new(Document::default());
+        session
+            .execute(Box::new(CreateSketch::with_content(
+                "Drawing",
+                Plane::Xy,
+                sketch,
+            )))
+            .unwrap();
+        assert_eq!(session.document().sketches().len(), 1);
+        session.undo().unwrap();
+        assert!(session.document().sketches().is_empty());
     }
 }

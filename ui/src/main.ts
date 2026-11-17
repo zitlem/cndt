@@ -2023,3 +2023,17 @@ element("export-dxf").addEventListener("click", () => {
   ];
   popup(element("file-menu-button"), items);
 });
+
+// A DXF drawing into a new sketch on the XY plane.
+element("import-dxf").addEventListener(
+  "click",
+  guarded(async () => {
+    const path = await open({ title: "Import a DXF drawing", filters: [{ name: "DXF", extensions: ["dxf"] }] });
+    if (typeof path !== "string") return;
+    const next = await request<DocumentState & { import_notes?: string[] }>({ method: "import_dxf", path });
+    render(next);
+    viewer.fit();
+    const notes = next.import_notes ?? [];
+    showError(new Error(`Imported the drawing as a sketch on the XY plane.${notes.length > 0 ? ` ${notes.join(" ")}` : ""}`));
+  }),
+);
