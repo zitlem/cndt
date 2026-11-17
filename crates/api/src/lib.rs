@@ -125,6 +125,11 @@ pub enum Request {
         /// The cell size in millimetres; 0.25 if left out.
         #[serde(default)]
         cell: Option<f64>,
+        /// The setups machined before it, in order, whose stock it starts
+        /// from; the setups before it in the document if left out, a fresh
+        /// block if empty.
+        #[serde(default)]
+        after: Option<Vec<u32>>,
     },
     /// The verification report (decision 0016): the setups (all, in
     /// order, if left out) as one program through `post`, on `machine` if
@@ -788,8 +793,8 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
-            Request::Simulate { setup, cell } => {
-                return match self.simulate_setup(setup, cell) {
+            Request::Simulate { setup, cell, after } => {
+                return match self.simulate_setup(setup, cell, after.as_deref()) {
                     Ok(sim) => {
                         let report = self.keep_simulation(sim);
                         success(serde_json::json!({
@@ -1002,7 +1007,7 @@ const FIELDS: &[(&str, &[&str])] = &[
         &["post", "machine", "setup", "setups", "override", "path"],
     ),
     ("detect", &["setup"]),
-    ("simulate", &["setup", "cell"]),
+    ("simulate", &["setup", "cell", "after"]),
     ("rollback", &["to"]),
     ("verify", &["post", "machine", "setups", "cell", "path"]),
 ];

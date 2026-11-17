@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use cndt_geom::{Point3, TriangleMesh};
-use cndt_model::cam::{Side, ToolKind};
+use cndt_model::cam::{FlipAxis, Side, ToolKind};
 use cndt_sim::ToolShape;
 
 use crate::{Api, ApiError};
@@ -20,6 +20,7 @@ pub(crate) struct Simulated {
     setup: Option<u32>,
     pub(crate) report: cndt_sim::Report,
     part: Vec<Option<f64>>,
+    floors: Vec<f64>,
     placed: cndt_process_mill::Setup,
 }
 
@@ -28,12 +29,56 @@ pub const STOCK_CLASSES: u32 = 4;
 
 impl Api {
     /// Simulates one setup and reports collisions, gouges, material left
-    /// and cutting time.
+    /// and cutting time. The setups in `after` (by default, those before it
+    /// in the document) are simulated first, so it starts from the stock
+    /// they left; an empty `after` starts from a fresh block.
     pub(crate) fn simulate_setup(
         &self,
         setup: Option<u32>,
         cell: Option<f64>,
+        after: Option<&[u32]>,
     ) -> Result<Simulated, ApiError> {
+        let setups = &self.session.document().cam().setups;
+        let target = match setup {
+            Some(id) => id,
+            None => setups
+                .first()
+                .map(|s| s.id)
+                .ok_or_else(|| ApiError::new("cam", "the document has no setups yet"))?,
+        };
+        let Some(position) = setups.iter().position(|s| s.id == target) else {
+            return Err(ApiError::new("cam", format!("there is no setup {target}")));
+        };
+        let mut ids: Vec<u32> = match after {
+            Some(before) => before.to_vec(),
+            None => setups[..position].iter().map(|s| s.id).collect(),
+        };
+        if ids.contains(&target) {
+            return Err(ApiError::new(
+                "bad_request",
+                format!("setup {target} cannot come after itself"),
+            ));
+        }
+        ids.push(target);
+        let mut chain = self.simulate_chain(&ids, cell)?;
+        let mut last = chain
+            .pop()
+            .ok_or_else(|| ApiError::new("internal", "nothing was simulated"))??;
+        last.setup = setup;
+        Ok(last)
+    }
+
+    /// Simulates setups in order, each starting from the stock the ones
+    /// before it left (decision 0016, slice 4). Every setup machines along
+    /// model Z, from the top or the bottom, so the stock is one column per
+    /// cell from a low to a high Z; the grid is centred on the part, so
+    /// turning it over maps cells exactly onto cells. A setup that cannot
+    /// be simulated leaves the stock as it was.
+    pub(crate) fn simulate_chain(
+        &self,
+        ids: &[u32],
+        cell: Option<f64>,
+    ) -> Result<Vec<Result<Simulated, ApiError>>, ApiError> {
         let cell = cell.unwrap_or(DEFAULT_CELL);
         if !(cell.is_finite() && (0.05..=5.0).contains(&cell)) {
             return Err(ApiError::new(
@@ -41,10 +86,26 @@ impl Api {
                 "the cell size must be 0.05 to 5 mm",
             ));
         }
+        // The carried stock: per cell of the top-side grid, its low and
+        // high model Z. Made on the first setup that has a stock.
+        let mut columns: Option<(cndt_sim::Grid, Vec<(f64, f64)>)> = None;
+        let mut out = Vec::new();
+        for id in ids {
+            out.push(self.simulate_one(*id, cell, &mut columns));
+        }
+        Ok(out)
+    }
+
+    fn simulate_one(
+        &self,
+        id: u32,
+        cell: f64,
+        columns: &mut Option<(cndt_sim::Grid, Vec<(f64, f64)>)>,
+    ) -> Result<Simulated, ApiError> {
         let document = self.session.document();
         let cam_error = |e: cndt_process_mill::CamError| ApiError::new("cam", e.to_string());
         let planned =
-            cndt_process_mill::plan_setup(document, &self.rebuilt, self.kernel.as_ref(), setup)
+            cndt_process_mill::plan_setup(document, &self.rebuilt, self.kernel.as_ref(), Some(id))
                 .map_err(cam_error)?;
         let Some(placed) = planned.setup else {
             return Err(ApiError::new("cam", "the setup has no placement"));
@@ -56,10 +117,57 @@ impl Api {
             .body
             .as_ref()
             .ok_or_else(|| ApiError::new("no_body", "there is no solid yet"))?;
-        let grid = cndt_sim::Grid::over(stock.min.x, stock.min.y, stock.max.x, stock.max.y, cell);
+        // Centred on the stock: whole cells, the spare split evenly, so
+        // turning the part over maps every cell centre onto another.
+        let fit = |lo: f64, hi: f64| {
+            let count = ((hi - lo) / cell).ceil().max(1.0);
+            (lo - (count * cell - (hi - lo)) / 2.0, count as usize)
+        };
+        let (x0, nx) = fit(stock.min.x, stock.max.x);
+        let (y0, ny) = fit(stock.min.y, stock.max.y);
+        let grid = cndt_sim::Grid {
+            x0,
+            y0,
+            cell,
+            nx,
+            ny,
+        };
+        // Which carried column each of this setup's cells is.
+        let column_of = |c: usize| -> usize {
+            let (i, j) = (c % nx, c / nx);
+            match (placed.side, placed.flip_about) {
+                (Side::Top, _) => c,
+                (Side::Bottom, FlipAxis::X) => (ny - 1 - j) * nx + i,
+                (Side::Bottom, FlipAxis::Y) => j * nx + (nx - 1 - i),
+            }
+        };
+        // Program Z from model Z and back: Z0 is on the face machined.
+        let to_program = |z: f64| placed.program_point(Point3::new(0.0, 0.0, z)).z;
+        let to_model = |z: f64| placed.model_point(Point3::new(0.0, 0.0, z)).z;
+        let from_above = placed.side == Side::Top;
+        if columns.as_ref().is_none_or(|(g, _)| *g != grid) {
+            let (low, high) = if from_above {
+                (to_model(stock.min.z), to_model(stock.max.z))
+            } else {
+                (to_model(stock.max.z), to_model(stock.min.z))
+            };
+            *columns = Some((grid, vec![(low, high); grid.len()]));
+        }
+        let Some((_, carried)) = columns.as_mut() else {
+            return Err(ApiError::new("internal", "no stock to simulate"));
+        };
+        let (heights, floors): (Vec<f64>, Vec<f64>) = (0..grid.len())
+            .map(|c| {
+                let (low, high) = carried[column_of(c)];
+                if from_above {
+                    (to_program(high), to_program(low))
+                } else {
+                    (to_program(low), to_program(high))
+                }
+            })
+            .unzip();
         // The part's top in each cell, seen along the spindle: lines
         // through the cell centres in model coordinates, back to program Z.
-        let from_above = placed.side == Side::Top;
         let model_points: Vec<[f64; 2]> = grid
             .centres()
             .iter()
@@ -92,17 +200,31 @@ impl Api {
             .collect::<BTreeMap<_, _>>();
         let input = cndt_sim::Setup {
             grid,
-            top: stock.max.z,
-            bottom: stock.min.z,
+            heights,
+            floors,
             part,
         };
         let report = cndt_sim::simulate(&planned.program, &tools, &input)
             .map_err(|e| ApiError::new("simulation", e.to_string()))?;
+        // What this setup left, back into the carried columns.
+        for (c, h) in report.heights.iter().enumerate() {
+            let column = &mut carried[column_of(c)];
+            let floor = input.floors[c];
+            if *h <= floor {
+                // Cut through: nothing left in this column.
+                *column = (column.0, column.0);
+            } else if from_above {
+                column.1 = to_model(*h);
+            } else {
+                column.0 = to_model(*h);
+            }
+        }
         Ok(Simulated {
             revision: self.revision,
-            setup,
+            setup: Some(id),
             report,
             part: input.part,
+            floors: input.floors,
             placed,
         })
     }
@@ -121,7 +243,7 @@ impl Api {
         let sim = match &self.simulated {
             Some(kept) if kept.revision == self.revision && kept.setup == setup => kept,
             _ => {
-                fresh = self.simulate_setup(setup, Some(0.5))?;
+                fresh = self.simulate_setup(setup, Some(0.5), None)?;
                 &fresh
             }
         };
@@ -139,7 +261,7 @@ impl Api {
 fn stock_mesh(sim: &Simulated) -> TriangleMesh {
     let grid = sim.report.grid;
     let heights = &sim.report.heights;
-    let bottom = heights.iter().copied().fold(f64::MAX, f64::min);
+
     let class = |c: usize| -> u32 {
         match sim.part[c] {
             Some(top) if heights[c] < top - cndt_sim::TOLERANCE => 2,
@@ -148,7 +270,7 @@ fn stock_mesh(sim: &Simulated) -> TriangleMesh {
             None => 3,
         }
     };
-    let empty = |c: usize| sim.part[c].is_none() && heights[c] <= bottom + 1e-9;
+    let empty = |c: usize| sim.part[c].is_none() && heights[c] <= sim.floors[c] + 1e-9;
     let mut mesh = TriangleMesh {
         positions: Vec::with_capacity(heights.len() * 3),
         indices: Vec::new(),
