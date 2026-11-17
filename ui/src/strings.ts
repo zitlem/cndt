@@ -137,6 +137,13 @@ export const page = {
   "cam-post-all.title": "Post all setups as one program",
   "cam-post-all.label": "Post all",
   "actions.label": "ACTIONS",
+  "prove-out.field": "Post for",
+  "prove-out.title": "A prove-out raises every Z so the machine runs the program in the air above the part",
+  "prove-out.off": "Cutting",
+  "prove-out.25": "Air cut, Z +25 mm",
+  "prove-out.50": "Air cut, Z +50 mm",
+  "prove-out.100": "Air cut, Z +100 mm",
+  "prove-out.label": "PROVE-OUT",
   "browser.aria": "Browser",
   "browser.title": "BROWSER",
   "browser-dock.title": "Float over the view, or dock beside it",
@@ -368,6 +375,8 @@ export const ui = {
   verdictProblems: "with PROBLEMS",
   verdictReview: (count: number) => `with ${count} finding${count === 1 ? "" : "s"} to review`,
   verdictClear: "no problems found",
+  savedProveOut: (lines: number, lift: number) =>
+    `Saved ${lines} lines of an AIR CUT: every Z is ${lift} mm above the real program. It cuts nothing; do not use it to cut.`,
   savedGcode: (lines: number, verdict: string) =>
     `Saved ${lines} lines of UNVERIFIED G-code. Verification: ${verdict}; report saved beside it. Prove it out carefully.`,
   setupName: (name: string, offset: number, table: string) => `${name} · G${offset}${table}`,
