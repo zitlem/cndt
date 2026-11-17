@@ -57,6 +57,11 @@ pub enum ArgKind {
     /// A list of CAM operations as the document stores them, such as
     /// `[{"type": "face"}, {"type": "pocket", "floor": "f1/end/e0"}]`.
     Operations,
+    /// A list of curves in sketch coordinates, such as
+    /// `[{"type": "line", "start": [0, 0], "end": [10, 0]}]`; arcs have
+    /// `center`, `start` and `end` (counter-clockwise), circles `center`
+    /// and `radius`.
+    Curves,
 }
 
 /// One argument a command accepts.
@@ -882,6 +887,52 @@ impl Registry {
                         _ => return Err(String::from("give either \"plane\" or \"face\"")),
                     };
                     Ok(Box::new(CreateSketch::new(&name, plane)))
+                },
+            },
+            CommandSpec {
+                name: "sketch.import",
+                description: "Create a sketch holding curves, such as those read from a DXF file, as one step. Ends that meet become one point.",
+                args: &[
+                    ArgSpec {
+                        name: "curves",
+                        kind: ArgKind::Curves,
+                        required: true,
+                        description: "The lines, arcs and circles.",
+                    },
+                    ArgSpec {
+                        name: "plane",
+                        kind: ArgKind::Plane,
+                        required: false,
+                        description: "xy (the default), xz or yz.",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next SketchN.",
+                    },
+                ],
+                build: |args| {
+                    let curves = args
+                        .get("curves")
+                        .cloned()
+                        .ok_or_else(|| String::from("missing argument curves"))
+                        .and_then(|value| {
+                            serde_json::from_value::<Vec<crate::ImportCurve>>(value)
+                                .map_err(|e| format!("curves: {e}"))
+                        })?;
+                    let content = crate::sketch_from_curves(&curves)?;
+                    let name = if args.contains_key("name") {
+                        text(args, "name")?
+                    } else {
+                        String::new()
+                    };
+                    let plane = if args.contains_key("plane") {
+                        plane(args, "plane")?
+                    } else {
+                        Plane::Xy
+                    };
+                    Ok(Box::new(CreateSketch::with_content(&name, plane, content)))
                 },
             },
             CommandSpec {
@@ -1826,6 +1877,10 @@ mod tests {
                 json!({"setup": 0, "operations": [{"type": "face"}, {"type": "pocket", "floor": "f1/end/e0", "finish": 0.2}]}),
             ),
             ("sketch.create", json!({"face": "f0/end/4-5-6-7"})),
+            (
+                "sketch.import",
+                json!({"curves": [{"type": "line", "start": [0, 0], "end": [10, 0]}, {"type": "circle", "center": [5, 5], "radius": 2}]}),
+            ),
             ("sketch.delete", json!({"sketch": 0})),
             (
                 "sketch.add_point",
