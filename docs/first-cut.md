@@ -28,6 +28,7 @@ Set `verified = true` only when all of them are checked, and add a comment sayin
 - **Work offset:** G54 (setup 1) and G55 (setup 2), or the Mazatrol WPC the program names. Zero is the part's front-left corner in X and Y, and Z0 is the *finished* face being machined (decision 0013), so the raw stock stands above Z0 by its top allowance. Set it there, and check it against the program's first moves.
 - **Program stop between sides:** turned by hand, `M0` stops for the operator; by the B table, `G0 B<angle>` indexes with the tool home. Check how the table clamps after an index, and whether the control needs a clamp code.
 - **Rigid tapping:** `G84.2` with the spindle speed and feed matching the pitch.
+- **Which way B turns:** with the part's top facing the spindle at B0, jog the table to B90 with nothing near it and note which side of the part comes to the spindle. CNDT assumes the right (+X) side at B90 and the left at B270 (decision 0019). If yours is the other way, swap the angles of the side setups before posting.
 
 ## 3. Prepare the tools
 

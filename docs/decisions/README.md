@@ -30,6 +30,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0016](0016-phase-3-plan.md) | Phase 3 plan: trust before the first cut | Accepted |
 | [0017](0017-imported-solids.md) | Imported solids in the timeline | Accepted |
 | [0018](0018-reference-meshes.md) | STL files as reference meshes | Accepted |
+| [0019](0019-side-setups.md) | Setups on the part's sides | Accepted |
 
 ## Open decisions
 

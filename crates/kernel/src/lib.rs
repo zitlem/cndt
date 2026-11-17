@@ -245,6 +245,14 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// [`KernelError::Modelling`] if the copy cannot be made.
     fn translate(&self, body: &Body, offset: [f64; 3]) -> Result<Body, KernelError>;
 
+    /// A copy of a body turned about the origin by a rotation matrix, given
+    /// by rows. Its faces are numbered as the original's.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if the copy cannot be made.
+    fn rotate(&self, body: &Body, rows: [[f64; 3]; 3]) -> Result<Body, KernelError>;
+
     /// Fuses or cuts two bodies.
     ///
     /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -502,6 +510,12 @@ impl Kernel for OpenCascade {
 
     fn translate(&self, body: &Body, offset: [f64; 3]) -> Result<Body, KernelError> {
         cndt_occt_sys::translate(&body.0, offset)
+            .map(|s| Body(Arc::new(s)))
+            .map_err(modelling)
+    }
+
+    fn rotate(&self, body: &Body, rows: [[f64; 3]; 3]) -> Result<Body, KernelError> {
+        cndt_occt_sys::rotate(&body.0, rows)
             .map(|s| Body(Arc::new(s)))
             .map_err(modelling)
     }

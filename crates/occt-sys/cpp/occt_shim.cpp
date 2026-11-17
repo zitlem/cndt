@@ -1070,6 +1070,40 @@ int cndt_occt_translate(
     }
 }
 
+// A copy of `shape` turned about the origin by the rotation matrix `m`
+// (row-major, 3 x 3, orthonormal with determinant 1). The copy's faces are
+// in the same order as the original's.
+int cndt_occt_rotate(const cndt_shape* shape, const double m[9], cndt_shape** out, char* err, std::size_t err_len) {
+    if (shape == nullptr || m == nullptr || out == nullptr) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        gp_Trsf turn;
+        turn.SetValues(m[0], m[1], m[2], 0.0, m[3], m[4], m[5], 0.0, m[6], m[7], m[8], 0.0);
+        BRepBuilderAPI_Transform transform(shape->shape, turn, Standard_True);
+        if (!transform.IsDone()) {
+            set_error(err, err_len, "the part could not be turned");
+            return kModelFailed;
+        }
+        auto made = std::make_unique<cndt_shape>();
+        made->shape = transform.Shape();
+        if (count_unique(made->shape, TopAbs_FACE) != count_unique(shape->shape, TopAbs_FACE)) {
+            set_error(err, err_len, "the turned copy lost faces");
+            return kModelFailed;
+        }
+        *out = made.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
 // Owned edge polylines. Opaque to Rust; free with `cndt_occt_free_polylines`.
 struct cndt_polylines {
     std::vector<std::uint32_t> counts;  // points per edge, in edge-map order

@@ -506,7 +506,7 @@ impl Registry {
                         name: "side",
                         kind: ArgKind::Text,
                         required: true,
-                        description: "top, or bottom for the part turned over.",
+                        description: "top; bottom for the part turned over; front, back, left or right for a side turned a quarter to the spindle.",
                     },
                     ArgSpec {
                         name: "flip_about",
@@ -1612,7 +1612,13 @@ fn side(args: &Map<String, Value>) -> Result<cndt_model::cam::Side, String> {
     match text(args, "side")?.as_str() {
         "top" => Ok(cndt_model::cam::Side::Top),
         "bottom" => Ok(cndt_model::cam::Side::Bottom),
-        other => Err(format!("unknown side {other:?}; use top or bottom")),
+        "front" => Ok(cndt_model::cam::Side::Front),
+        "back" => Ok(cndt_model::cam::Side::Back),
+        "left" => Ok(cndt_model::cam::Side::Left),
+        "right" => Ok(cndt_model::cam::Side::Right),
+        other => Err(format!(
+            "unknown side {other:?}; use top, bottom, front, back, left or right"
+        )),
     }
 }
 
@@ -1767,7 +1773,7 @@ mod tests {
             ),
             ("sketch.create", json!({"plane": "top"}), "unknown plane"),
             ("sketch.create", json!({}), "either"),
-            ("cam.add_setup", json!({"side": "left"}), "unknown side"),
+            ("cam.add_setup", json!({"side": "upside"}), "unknown side"),
             (
                 "cam.add_operation",
                 json!({"setup": 0, "type": "engrave"}),

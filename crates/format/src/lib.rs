@@ -53,7 +53,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 17: imported solids, their files under `design/imports/` (decision 0017).
 /// - 18: imported IGES files.
 /// - 19: STL reference meshes (decision 0018).
-pub const SCHEMA_VERSION: u32 = 19;
+/// - 20: setups on the part's sides (decision 0019).
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -298,6 +299,19 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 19 knew nothing of side setups.
+    if manifest.schema_version < 20
+        && document
+            .cam()
+            .setups
+            .iter()
+            .any(|s| s.setup.side.is_lateral())
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain setups on the part's sides",
+            manifest.schema_version
+        )));
+    }
     // Version 18 knew nothing of reference meshes.
     if manifest.schema_version < 19
         && document
@@ -928,6 +942,29 @@ mod tests {
         let v15 = raw_zip(&[(MANIFEST, &manifest(15)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v15)).unwrap_err();
         assert!(error.to_string().contains("tool assemblies"), "{error}");
+    }
+
+    #[test]
+    fn side_setups_need_version_20() {
+        use cndt_model::cam::{CamEdit, FlipAxis, Side};
+        let mut document = Document::new("Sides");
+        document
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Right,
+                work_offset: 2,
+                flip_about: FlipAxis::X,
+                index: Some(90.0),
+            })
+            .unwrap();
+        assert_eq!(document.cam().setups[0].setup.name, "Setup 1 (right)");
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        assert!(json.contains("\"side\":\"right\""), "{json}");
+        let v19 = raw_zip(&[(MANIFEST, &manifest(19)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v19)).unwrap_err();
+        assert!(error.to_string().contains("sides"), "{error}");
     }
 
     #[test]
