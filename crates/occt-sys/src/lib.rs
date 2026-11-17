@@ -22,7 +22,7 @@ mod solid;
 pub use solid::{
     Blend, BooleanOp, Curve, Made, Properties, Segment, Shape, blend, boolean, edge_polylines,
     edges, extrude, face_loops, face_outline, face_plane, heights, mesh, properties, revolve,
-    section_outline, translate,
+    section_outline, translate, write_step,
 };
 
 use std::ffi::{CStr, CString, c_char, c_int};
@@ -190,7 +190,7 @@ impl fmt::Display for OcctError {
     }
 }
 
-fn c_path(path: &Path) -> Result<CString, OcctError> {
+pub(crate) fn c_path(path: &Path) -> Result<CString, OcctError> {
     let text = path
         .to_str()
         .ok_or_else(|| OcctError::InvalidPath(path.display().to_string()))?;

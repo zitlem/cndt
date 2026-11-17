@@ -187,6 +187,13 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         from_above: bool,
     ) -> Result<Vec<Option<f64>>, KernelError>;
 
+    /// Writes the body to a STEP file, in millimetres.
+    ///
+    /// # Errors
+    ///
+    /// A kernel error if the file cannot be written.
+    fn write_step(&self, body: &Body, path: &Path) -> Result<(), KernelError>;
+
     /// Every boundary loop of flat face `face` (parallel to XY), offset with
     /// the face by `distance`: positive grows the face, so the outer loop
     /// moves outwards and holes shrink.
@@ -489,6 +496,10 @@ impl Kernel for OpenCascade {
         from_above: bool,
     ) -> Result<Vec<Option<f64>>, KernelError> {
         cndt_occt_sys::heights(&body.0, points, from_above).map_err(modelling)
+    }
+
+    fn write_step(&self, body: &Body, path: &Path) -> Result<(), KernelError> {
+        cndt_occt_sys::write_step(&body.0, path).map_err(modelling)
     }
     fn face_loops(
         &self,

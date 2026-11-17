@@ -65,6 +65,7 @@
 #include <Message_PrinterOStream.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
+#include <STEPControl_Writer.hxx>
 #include <ShapeAnalysis.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
@@ -1531,6 +1532,35 @@ int cndt_occt_heights(
             if (intersector.IsDone() && intersector.NbPnt() > 0) {
                 out[i] = intersector.Pnt(1).Z();
             }
+        }
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// Writes the shape to a STEP file (AP214), in millimetres.
+int cndt_occt_write_step(const cndt_shape* shape, const char* path, char* err, std::size_t err_len) {
+    if (shape == nullptr || path == nullptr) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    try {
+        silence_console_output();
+        STEPControl_Writer writer;
+        Interface_Static::SetCVal("write.step.unit", "MM");
+        Interface_Static::SetCVal("write.step.schema", "AP214IS");
+        if (writer.Transfer(shape->shape, STEPControl_AsIs) != IFSelect_RetDone) {
+            set_error(err, err_len, "the part could not be converted to STEP");
+            return kModelFailed;
+        }
+        if (writer.Write(path) != IFSelect_RetDone) {
+            set_error(err, err_len, "the STEP file could not be written");
+            return kKernelError;
         }
         return kOk;
     } catch (const Standard_Failure& failure) {

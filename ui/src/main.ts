@@ -1968,3 +1968,24 @@ element("post-editor-use").addEventListener(
     editorStatus.textContent = `Post… and Verify now use this edited post ("${custom.label}" in each setup's list).`;
   }),
 );
+
+// Export the part, as built at the history marker.
+element("export").addEventListener(
+  "click",
+  guarded(async () => {
+    const name = current?.document.name ?? "part";
+    const path = await save({
+      title: "Export the part",
+      defaultPath: `${name}.step`,
+      filters: [
+        { name: "STEP", extensions: ["step", "stp"] },
+        { name: "STL mesh", extensions: ["stl"] },
+      ],
+    });
+    if (!path) return;
+    const result = await request<{ format: string; triangles?: number }>({ method: "export", path });
+    const what = result.format === "stl" ? `an STL mesh of ${result.triangles ?? 0} triangles` : "STEP";
+    const rolled = current?.rollback !== null && current?.rollback !== undefined ? " (as rolled back in the timeline)" : "";
+    showError(new Error(`Exported the part${rolled} as ${what} to ${path}.`));
+  }),
+);

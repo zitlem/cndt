@@ -170,6 +170,12 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_write_step(
+        shape: *const ShapeHandle,
+        path: *const c_char,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_heights(
         shape: *const ShapeHandle,
         xy: *const f64,
@@ -702,6 +708,33 @@ pub fn face_outline(shape: &Shape, face: u32, distance: f64) -> Result<Vec<Segme
             },
         })
         .collect())
+}
+
+/// Writes the shape to a STEP file, in millimetres.
+///
+/// # Errors
+///
+/// [`OcctError::InvalidPath`] for a path OpenCascade cannot take; a kernel
+/// error if the file cannot be written.
+pub fn write_step(shape: &Shape, path: &std::path::Path) -> Result<(), OcctError> {
+    let c_path = super::c_path(path)?;
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `c_path` is a NUL-terminated string that
+    // outlives the call; `err` is writable for its length; the shim catches
+    // exceptions.
+    let code = unsafe {
+        cndt_occt_write_step(
+            shape.ptr.as_ptr(),
+            c_path.as_ptr(),
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    Ok(())
 }
 
 /// Where lines along Z through each `(x, y)` first meet the solid: coming
