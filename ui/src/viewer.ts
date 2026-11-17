@@ -75,6 +75,14 @@ export const VIEWS = {
 export type ViewName = keyof typeof VIEWS;
 
 /** What can be shown or hidden, like layers. */
+/** Line and grid colours for each theme; shaded surfaces read on both. */
+const PALETTES = {
+  dark: { gridMajor: 0x3a4149, gridMinor: 0x262b31, ground: 0x30363d, cut: 0x4fd1c5, rapid: 0xf6c343, sketch: 0x8fc1ff, construction: 0xc98a4b },
+  light: { gridMajor: 0xa9b1ba, gridMinor: 0xd3d8de, ground: 0x8a939c, cut: 0x0e8379, rapid: 0xb07a00, sketch: 0x1d5fd1, construction: 0x9a5a1c },
+} as const;
+
+type Role = "cut" | "rapid" | "sketch" | "construction";
+
 export type Layer = "bodies" | "sketches" | "toolpaths" | "grid" | "references";
 
 /** A face of the view cube: its label, and the view it turns to. */
@@ -158,7 +166,9 @@ export class Viewer {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100_000);
   private readonly controls: OrbitControls;
-  private readonly grid: THREE.GridHelper;
+  private grid: THREE.GridHelper;
+  private palette: (typeof PALETTES)["dark" | "light"] = PALETTES.dark;
+  private readonly hemisphere: THREE.HemisphereLight;
   private model: THREE.Group | null = null;
   private surface: THREE.Mesh | null = null;
   private triangleFaces: Uint32Array | null = null;
@@ -184,7 +194,8 @@ export class Viewer {
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(160, -220, 160);
 
-    this.scene.add(new THREE.HemisphereLight(0xdfe6ee, 0x30363d, 1.6));
+    this.hemisphere = new THREE.HemisphereLight(0xdfe6ee, this.palette.ground, 1.6);
+    this.scene.add(this.hemisphere);
     const key = new THREE.DirectionalLight(0xffffff, 1.6);
     key.position.set(1, -2, 3);
     this.scene.add(key);
@@ -194,7 +205,7 @@ export class Viewer {
     this.scene.add(fill);
 
     // GridHelper lies in XZ; turn it into the XY plane.
-    this.grid = new THREE.GridHelper(200, 20, 0x3a4149, 0x262b31);
+    this.grid = new THREE.GridHelper(200, 20, this.palette.gridMajor, this.palette.gridMinor);
     this.grid.rotation.x = Math.PI / 2;
     this.scene.add(this.grid);
     this.scene.add(new THREE.AxesHelper(20));
@@ -456,8 +467,8 @@ export class Viewer {
         lines.renderOrder = 5;
         group.add(lines);
       };
-      add(path.cuts, new THREE.LineBasicMaterial({ color: 0x4fd1c5, depthTest: false, transparent: true, opacity: 0.9 }));
-      add(path.rapids, new THREE.LineDashedMaterial({ color: 0xf6c343, dashSize: 2, gapSize: 2, depthTest: false, transparent: true, opacity: 0.8 }));
+      add(path.cuts, this.role("cut", new THREE.LineBasicMaterial({ color: this.palette.cut, depthTest: false, transparent: true, opacity: 0.9 })));
+      add(path.rapids, this.role("rapid", new THREE.LineDashedMaterial({ color: this.palette.rapid, dashSize: 2, gapSize: 2, depthTest: false, transparent: true, opacity: 0.8 })));
       group.visible = !this.hidden.has("toolpaths");
       this.toolpath = group;
       this.scene.add(group);
@@ -495,8 +506,8 @@ export class Viewer {
         lines.computeLineDistances();
         this.sketches.add(lines);
       };
-      add(segments, new THREE.LineBasicMaterial({ color: 0x8fc1ff }));
-      add(construction, new THREE.LineDashedMaterial({ color: 0xc98a4b, dashSize: 2, gapSize: 1.5 }));
+      add(segments, this.role("sketch", new THREE.LineBasicMaterial({ color: this.palette.sketch })));
+      add(construction, this.role("construction", new THREE.LineDashedMaterial({ color: this.palette.construction, dashSize: 2, gapSize: 1.5 })));
     }
     this.render();
   }
@@ -559,6 +570,34 @@ export class Viewer {
       );
     }
     this.references.visible = !this.hidden.has("references");
+    this.render();
+  }
+
+  /** Tags a line material with what it draws, so a theme change recolours it. */
+  private role<M extends THREE.LineBasicMaterial>(role: Role, material: M): M {
+    material.userData.role = role;
+    return material;
+  }
+
+  /** Switches line and grid colours between the dark and light themes. */
+  setTheme(theme: "dark" | "light"): void {
+    this.palette = PALETTES[theme];
+    this.hemisphere.groundColor.setHex(this.palette.ground);
+    const grid = new THREE.GridHelper(200, 20, this.palette.gridMajor, this.palette.gridMinor);
+    grid.rotation.copy(this.grid.rotation);
+    grid.scale.copy(this.grid.scale);
+    grid.visible = this.grid.visible;
+    this.scene.remove(this.grid);
+    this.grid.geometry.dispose();
+    (this.grid.material as THREE.Material).dispose();
+    this.grid = grid;
+    this.scene.add(grid);
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.LineSegments)) return;
+      const material = object.material as THREE.LineBasicMaterial;
+      const role = material.userData.role as Role | undefined;
+      if (role) material.color.setHex(this.palette[role]);
+    });
     this.render();
   }
 
