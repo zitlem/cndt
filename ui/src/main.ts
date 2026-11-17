@@ -4,6 +4,7 @@
 // an API request, so undo, redo and unsaved-change tracking come from the
 // core, not from here.
 
+import "./boot"; // first: fills the page's [[id]] markers before anything else runs
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -24,11 +25,8 @@ import {
   simulationMesh,
 } from "./api";
 import { SketchEditor, type Tool } from "./sketch";
-import { fillPage, ui as text } from "./strings";
+import { ui as text } from "./strings";
 import { type Layer, type ViewName, Viewer } from "./viewer";
-
-// First: the page carries [[id]] markers where its words go.
-fillPage(globalThis.document);
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
