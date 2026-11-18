@@ -79,6 +79,20 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_revolve_profile(
+        curves: *const RawCurve,
+        curve_count: usize,
+        loop_sizes: *const u32,
+        loop_count: usize,
+        normal: *const f64,
+        axis_origin: *const f64,
+        axis_dir: *const f64,
+        angle: f64,
+        out: *mut *mut ShapeHandle,
+        history: *mut *mut HistoryHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_boolean(
         a: *const ShapeHandle,
         b: *const ShapeHandle,
@@ -426,6 +440,62 @@ pub fn extrude(loops: &[Vec<Curve>], normal: [f64; 3], distance: f64) -> Result<
             sizes.len(),
             normal.as_ptr(),
             distance,
+            &mut shape,
+            &mut history,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    // SAFETY: the call succeeded, so both handles are ours; the lock is held.
+    unsafe { take(shape, history) }
+}
+
+/// Revolves a planar region about an axis in its plane, through `angle`
+/// degrees (more than 0 up to 360). The loops are as for [`extrude`]: the
+/// first is the outer boundary, the rest are holes, curves in order. The
+/// region may touch the axis but not cross it.
+///
+/// History sources: curve `i` (counting through all loops in order) for the
+/// face it swept, none for a curve on the axis; for a partial turn `n` for
+/// the start cap and `n + 1` for the end cap.
+///
+/// # Errors
+///
+/// [`OcctError::ModelFailed`] with a reason when the profile or the turn is
+/// not valid.
+pub fn revolve_profile(
+    loops: &[Vec<Curve>],
+    normal: [f64; 3],
+    axis_origin: [f64; 3],
+    axis_dir: [f64; 3],
+    angle: f64,
+) -> Result<Made, OcctError> {
+    let curves: Vec<RawCurve> = loops.iter().flatten().map(|c| c.raw()).collect();
+    let sizes: Vec<u32> = loops
+        .iter()
+        .map(|l| u32::try_from(l.len()).unwrap_or(u32::MAX))
+        .collect();
+    let mut shape: *mut ShapeHandle = std::ptr::null_mut();
+    let mut history: *mut HistoryHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `curves`, `sizes` and the three-double arrays are live and of
+    // the stated lengths, their layouts matching the C declarations. The
+    // out-pointers are valid locals. `err` is writable for `err.len()`
+    // bytes. The shim catches every C++ exception.
+    let code = unsafe {
+        cndt_occt_revolve_profile(
+            curves.as_ptr(),
+            curves.len(),
+            sizes.as_ptr(),
+            sizes.len(),
+            normal.as_ptr(),
+            axis_origin.as_ptr(),
+            axis_dir.as_ptr(),
+            angle,
             &mut shape,
             &mut history,
             err.as_mut_ptr().cast::<c_char>(),
@@ -1247,6 +1317,83 @@ mod tests {
         assert_eq!(faces, [0, 1, 2, 3, 4, 5]);
         let sources: Vec<u32> = made.history.iter().map(|p| p.0).collect();
         assert_eq!(sources, [0, 1, 2, 3, 4, 5]);
+    }
+
+    const AXIS_ORIGIN: [f64; 3] = [0.0; 3];
+    const Y: [f64; 3] = [0.0, 1.0, 0.0];
+
+    #[test]
+    fn revolve_a_rectangle_into_a_cylinder() {
+        let made = revolve_profile(&[rectangle(5.0, 10.0)], Z, AXIS_ORIGIN, Y, 360.0).unwrap();
+        let props = properties(&made.shape).unwrap();
+        let expected = std::f64::consts::PI * 25.0 * 10.0;
+        assert!((props.volume - expected).abs() < 1e-6, "{props:?}");
+        // The two ends and the wall; the line on the axis sweeps nothing.
+        assert_eq!((props.faces, props.solids), (3, 1));
+        let mut sources: Vec<u32> = made.history.iter().map(|p| p.0).collect();
+        sources.sort_unstable();
+        assert_eq!(sources, [0, 1, 2], "{:?}", made.history);
+    }
+
+    #[test]
+    fn a_revolved_arc_is_a_true_sphere() {
+        // A half disc, its diameter on the axis: counter-clockwise from the
+        // bottom of the axis round through +X to the top, then back along it.
+        let profile = vec![
+            Curve::Arc {
+                center: [0.0, 0.0, 0.0],
+                start: [0.0, -5.0, 0.0],
+                end: [0.0, 5.0, 0.0],
+            },
+            Curve::Line {
+                start: [0.0, 5.0, 0.0],
+                end: [0.0, -5.0, 0.0],
+            },
+        ];
+        let made = revolve_profile(&[profile], Z, AXIS_ORIGIN, Y, 360.0).unwrap();
+        let props = properties(&made.shape).unwrap();
+        let expected = 4.0 / 3.0 * std::f64::consts::PI * 125.0;
+        assert!((props.volume - expected).abs() < 1e-6, "{props:?}");
+        assert_eq!(props.faces, 1);
+        assert_eq!(made.history, [(0, 0)]);
+    }
+
+    #[test]
+    fn a_partial_turn_has_a_start_and_an_end_cap() {
+        let made = revolve_profile(&[rectangle(5.0, 10.0)], Z, AXIS_ORIGIN, Y, 90.0).unwrap();
+        let props = properties(&made.shape).unwrap();
+        let expected = std::f64::consts::PI * 25.0 * 10.0 / 4.0;
+        assert!((props.volume - expected).abs() < 1e-6, "{props:?}");
+        assert_eq!(props.faces, 5);
+        // Four curves, so the caps are sources 4 and 5.
+        let mut sources: Vec<u32> = made.history.iter().map(|p| p.0).collect();
+        sources.sort_unstable();
+        assert_eq!(sources, [0, 1, 2, 4, 5], "{:?}", made.history);
+    }
+
+    #[test]
+    fn a_profile_that_crosses_the_axis_or_a_bad_angle_is_refused() {
+        let crossing: Vec<Curve> = {
+            let p = [
+                [-2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [3.0, 10.0, 0.0],
+                [-2.0, 10.0, 0.0],
+            ];
+            (0..4)
+                .map(|i| Curve::Line {
+                    start: p[i],
+                    end: p[(i + 1) % 4],
+                })
+                .collect()
+        };
+        assert!(revolve_profile(&[crossing], Z, AXIS_ORIGIN, Y, 360.0).is_err());
+        for angle in [0.0, -10.0, 361.0, f64::NAN] {
+            assert!(
+                revolve_profile(&[rectangle(5.0, 10.0)], Z, AXIS_ORIGIN, Y, angle).is_err(),
+                "{angle}"
+            );
+        }
     }
 
     #[test]
