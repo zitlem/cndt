@@ -152,7 +152,7 @@ fn a_hole_in_the_right_side_on_the_b_table() {
     assert!(drills.iter().all(|l| l.contains("X15. Y20.")), "{drills:?}");
     let notes = reply["result"]["notes"].to_string();
     assert!(notes.contains("which way B turns"), "{notes}");
-    assert!(notes.contains("whole raw block"), "{notes}");
+    assert!(notes.contains("columns along three axes"), "{notes}");
     check_golden("side-block-right-b90-mazak-smoothg", gcode);
 
     // Simulated on the turned part: the hole is cut, and no rapid hits.
@@ -191,6 +191,40 @@ fn a_hole_in_the_right_side_on_the_b_table() {
             .to_string()
             .contains("does not cut what was planned"),
         "{verify}"
+    );
+
+    // Stock carried between sides (decision 0019): a top setup facing 2 mm
+    // off the top, then another right-side setup facing the right. After
+    // the top one, the right facing has 2 mm less height to cut: about
+    // 2 (deep) × 44 (wide) × 2 (high) mm³ less.
+    s.exec("cam.add_setup", json!({"side": "top", "work_offset": 3}));
+    s.exec("cam.add_operation", json!({"setup": 1, "type": "face"}));
+    s.exec("cam.add_setup", json!({"side": "right", "work_offset": 4}));
+    s.exec("cam.add_operation", json!({"setup": 2, "type": "face"}));
+    let removed = |s: &mut Session, after: Value| {
+        let sim = s.call(json!({"method": "simulate", "setup": 2, "cell": 0.5, "after": after}));
+        assert_eq!(sim["ok"], true, "{sim}");
+        sim["result"]["removed"].as_f64().unwrap()
+    };
+    let alone = removed(&mut s, json!([]));
+    let carried = removed(&mut s, json!([1]));
+    assert!(
+        (alone - carried - 176.0).abs() < 20.0,
+        "alone {alone}, after the top {carried}"
+    );
+    // And the other way: the top facing after the right one has the
+    // corner already gone.
+    let top_alone = {
+        let sim = s.call(json!({"method": "simulate", "setup": 1, "cell": 0.5, "after": []}));
+        sim["result"]["removed"].as_f64().unwrap()
+    };
+    let top_after = {
+        let sim = s.call(json!({"method": "simulate", "setup": 1, "cell": 0.5, "after": [2]}));
+        sim["result"]["removed"].as_f64().unwrap()
+    };
+    assert!(
+        top_after < top_alone - 100.0,
+        "alone {top_alone}, after {top_after}"
     );
 
     // Drawn in the model's own coordinates: the drill goes into the right

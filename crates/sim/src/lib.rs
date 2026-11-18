@@ -17,6 +17,9 @@
 //! setup can reach. It knows nothing of tool holders or of what other
 //! setups removed; those come later.
 
+mod dexel;
+pub use dexel::{Dexels, Placement};
+
 use std::collections::BTreeMap;
 use std::fmt;
 

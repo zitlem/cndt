@@ -29,6 +29,32 @@ pub(crate) struct Simulated {
     pub(crate) tools: BTreeMap<u32, cndt_sim::Tool>,
 }
 
+/// The stock carried from one setup to the next.
+pub(crate) enum Carry {
+    /// One column per cell along model Z: top and bottom setups only.
+    Columns(Option<(cndt_sim::Grid, Vec<(f64, f64)>)>),
+    /// Columns along all three model axes: when any setup is on a side.
+    Dexels(Option<cndt_sim::Dexels>),
+}
+
+/// How a setup's program axes lie in the model.
+fn placement_of(placed: &cndt_process_mill::Setup) -> Option<cndt_sim::Placement> {
+    let at = |x: f64, y: f64, z: f64| {
+        let m = placed.in_model(Point3::new(x, y, z));
+        [m.x, m.y, m.z]
+    };
+    let origin = at(0.0, 0.0, 0.0);
+    let direction = |m: [f64; 3]| [m[0] - origin[0], m[1] - origin[1], m[2] - origin[2]];
+    cndt_sim::Placement::new(
+        origin,
+        [
+            direction(at(1.0, 0.0, 0.0)),
+            direction(at(0.0, 1.0, 0.0)),
+            direction(at(0.0, 0.0, 1.0)),
+        ],
+    )
+}
+
 /// The colour classes of the simulated stock mesh, as its "faces".
 pub const STOCK_CLASSES: u32 = 4;
 
@@ -93,20 +119,28 @@ impl Api {
         }
         // The carried stock: per cell of the top-side grid, its low and
         // high model Z. Made on the first setup that has a stock.
-        let mut columns: Option<(cndt_sim::Grid, Vec<(f64, f64)>)> = None;
+        // Top and bottom only: one column per cell along model Z, exact.
+        // With a side among them: columns along all three axes (decision
+        // 0019).
+        let sides = &self.session.document().cam().setups;
+        let lateral = ids.iter().any(|id| {
+            sides
+                .iter()
+                .any(|s| s.id == *id && s.setup.side.is_lateral())
+        });
+        let mut carry = if lateral {
+            Carry::Dexels(None)
+        } else {
+            Carry::Columns(None)
+        };
         let mut out = Vec::new();
         for id in ids {
-            out.push(self.simulate_one(*id, cell, &mut columns));
+            out.push(self.simulate_one(*id, cell, &mut carry));
         }
         Ok(out)
     }
 
-    fn simulate_one(
-        &self,
-        id: u32,
-        cell: f64,
-        columns: &mut Option<(cndt_sim::Grid, Vec<(f64, f64)>)>,
-    ) -> Result<Simulated, ApiError> {
+    fn simulate_one(&self, id: u32, cell: f64, carry: &mut Carry) -> Result<Simulated, ApiError> {
         let document = self.session.document();
         let cam_error = |e: cndt_process_mill::CamError| ApiError::new("cam", e.to_string());
         let planned =
@@ -155,40 +189,43 @@ impl Api {
         let to_program = |z: f64| placed.program_point(Point3::new(0.0, 0.0, z)).z;
         let to_model = |z: f64| placed.model_point(Point3::new(0.0, 0.0, z)).z;
         let from_above = placed.side != Side::Bottom;
-        // The carried columns run along model Z, so a side setup cannot use
-        // them: it starts from the whole raw block, which can only show more
-        // material than there is, never less, and leaves the columns as
-        // they were.
-        let lateral = placed.side.is_lateral();
-        let mut fresh = lateral.then(|| (grid, vec![(stock.min.z, stock.max.z); grid.len()]));
-        if !lateral && columns.as_ref().is_none_or(|(g, _)| *g != grid) {
-            let (low, high) = if from_above {
-                (to_model(stock.min.z), to_model(stock.max.z))
-            } else {
-                (to_model(stock.max.z), to_model(stock.min.z))
-            };
-            *columns = Some((grid, vec![(low, high); grid.len()]));
-        }
-        let Some((_, carried)) = (if lateral {
-            fresh.as_mut()
-        } else {
-            columns.as_mut()
-        }) else {
-            return Err(ApiError::new("internal", "no stock to simulate"));
-        };
-        let (heights, floors): (Vec<f64>, Vec<f64>) = (0..grid.len())
-            .map(|c| {
-                let (low, high) = carried[column_of(c)];
-                if lateral {
-                    // Already in program Z.
-                    (high, low)
-                } else if from_above {
-                    (to_program(high), to_program(low))
-                } else {
-                    (to_program(low), to_program(high))
+        let placement = placement_of(&placed)
+            .ok_or_else(|| ApiError::new("internal", "the setup is not a quarter turn"))?;
+        let (heights, floors): (Vec<f64>, Vec<f64>) = match carry {
+            Carry::Dexels(dexels) => {
+                if dexels.is_none() {
+                    let (min, max) = self.model_stock()?;
+                    *dexels = Some(cndt_sim::Dexels::block(min, max, cell));
                 }
-            })
-            .unzip();
+                let Some(dexels) = dexels.as_ref() else {
+                    return Err(ApiError::new("internal", "no stock to simulate"));
+                };
+                dexels.height_map(&placement, &grid, stock.min.z)
+            }
+            Carry::Columns(columns) => {
+                if columns.as_ref().is_none_or(|(g, _)| *g != grid) {
+                    let (low, high) = if from_above {
+                        (to_model(stock.min.z), to_model(stock.max.z))
+                    } else {
+                        (to_model(stock.max.z), to_model(stock.min.z))
+                    };
+                    *columns = Some((grid, vec![(low, high); grid.len()]));
+                }
+                let Some((_, carried)) = columns.as_ref() else {
+                    return Err(ApiError::new("internal", "no stock to simulate"));
+                };
+                (0..grid.len())
+                    .map(|c| {
+                        let (low, high) = carried[column_of(c)];
+                        if from_above {
+                            (to_program(high), to_program(low))
+                        } else {
+                            (to_program(low), to_program(high))
+                        }
+                    })
+                    .unzip()
+            }
+        };
         // The part's top in each cell, seen along the spindle: lines
         // through the cell centres in model coordinates, back to program Z.
         let model_points: Vec<[f64; 2]> = grid
@@ -229,17 +266,25 @@ impl Api {
         };
         let report = cndt_sim::simulate(&planned.program, &tools, &input)
             .map_err(|e| ApiError::new("simulation", e.to_string()))?;
-        // What this setup left, back into the carried columns.
-        for (c, h) in report.heights.iter().enumerate().filter(|_| !lateral) {
-            let column = &mut carried[column_of(c)];
-            let floor = input.floors[c];
-            if *h <= floor {
-                // Cut through: nothing left in this column.
-                *column = (column.0, column.0);
-            } else if from_above {
-                column.1 = to_model(*h);
-            } else {
-                column.0 = to_model(*h);
+        // What this setup left, back into the carried stock.
+        match carry {
+            Carry::Dexels(Some(dexels)) => dexels.cut(&placement, &grid, &report.heights),
+            Carry::Dexels(None) => {}
+            Carry::Columns(columns) => {
+                if let Some((_, carried)) = columns.as_mut() {
+                    for (c, h) in report.heights.iter().enumerate() {
+                        let column = &mut carried[column_of(c)];
+                        let floor = input.floors[c];
+                        if *h <= floor {
+                            // Cut through: nothing left in this column.
+                            *column = (column.0, column.0);
+                        } else if from_above {
+                            column.1 = to_model(*h);
+                        } else {
+                            column.0 = to_model(*h);
+                        }
+                    }
+                }
             }
         }
         Ok(Simulated {
@@ -252,6 +297,34 @@ impl Api {
             input,
             tools,
         })
+    }
+
+    /// The raw stock in model coordinates: the part's box with the stock
+    /// allowances round it.
+    fn model_stock(&self) -> Result<([f64; 3], [f64; 3]), ApiError> {
+        let stock = self
+            .session
+            .document()
+            .cam()
+            .stock
+            .ok_or_else(|| ApiError::new("cam", "the stock is not set"))?;
+        let bounds = self
+            .rebuilt
+            .properties
+            .ok_or_else(|| ApiError::new("no_body", "there is no solid yet"))?
+            .bounds;
+        Ok((
+            [
+                bounds.min.x - stock.side,
+                bounds.min.y - stock.side,
+                bounds.min.z - stock.bottom,
+            ],
+            [
+                bounds.max.x + stock.side,
+                bounds.max.y + stock.side,
+                bounds.max.z + stock.top,
+            ],
+        ))
     }
 
     /// The simulated stock of a setup for the 3D view, in model
