@@ -1482,6 +1482,26 @@ async function confirmDiscard(action: string): Promise<boolean> {
   });
 }
 
+/** After opening a project: offers the snapshot a crash left behind (decision 0026). */
+async function offerRecovery(path: string): Promise<void> {
+  const found = await request<{ available: boolean; modified: number | null }>({ method: "recovery", path });
+  if (!found.available) return;
+  const when = found.modified === null ? "earlier" : new Date(found.modified * 1000).toLocaleString();
+  const restore = await ask(text.recoveryQuestion(when), {
+    title: text.recoveryTitle,
+    kind: "warning",
+    okLabel: text.restoreRecovery,
+    cancelLabel: text.discardRecovery,
+  });
+  if (restore) render(await request<DocumentState>({ method: "open_recovery", path }));
+  else await request<unknown>({ method: "discard_recovery", path });
+}
+
+// Keep a snapshot of unsaved work, so a crash loses at most a minute.
+setInterval(() => {
+  if (current?.path && current.dirty) void request<DocumentState>({ method: "snapshot" }).catch(() => undefined);
+}, 60_000);
+
 async function saveAs(): Promise<boolean> {
   const path = await save({
     title: text.saveProject,
@@ -1585,6 +1605,7 @@ element("open").addEventListener(
     if (!(await previewProject(path))) return;
     if (!(await confirmDiscard(text.openAnotherProject))) return;
     render(await request<DocumentState>({ method: "open", path, discard_changes: true }));
+    await offerRecovery(path);
   }),
 );
 

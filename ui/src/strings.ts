@@ -523,6 +523,11 @@ export const ui = {
   sketch: "Sketch",
   unsavedQuestion: (action: string) => `The document has unsaved changes. ${action} anyway and lose them?`,
   discardChanges: "Discard changes",
+  recoveryTitle: "Unsaved work found",
+  recoveryQuestion: (when: string) =>
+    `This project has work that was never saved (last kept ${when}), probably because the app closed unexpectedly. Restore it?`,
+  restoreRecovery: "Restore",
+  discardRecovery: "Discard it",
   cancel: "Cancel",
   saveProject: "Save project",
   untitled: "Untitled",

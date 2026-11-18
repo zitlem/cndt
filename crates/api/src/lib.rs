@@ -63,6 +63,29 @@ pub enum Request {
     },
     /// Save to the file the document was opened from or last saved to.
     Save,
+    /// Write a crash-recovery snapshot of the unsaved document next to its
+    /// file (decision 0026). Does nothing when there are no unsaved changes
+    /// or the document has no file yet.
+    Snapshot,
+    /// Ask whether a crash-recovery snapshot exists for a project file.
+    Recovery {
+        /// The project file.
+        path: PathBuf,
+    },
+    /// Open the crash-recovery snapshot of a project file. The document keeps
+    /// the project's path and counts as having unsaved changes.
+    OpenRecovery {
+        /// The project file the snapshot belongs to.
+        path: PathBuf,
+        /// Throw away unsaved changes in the current document.
+        #[serde(default)]
+        discard_changes: bool,
+    },
+    /// Delete the crash-recovery snapshot of a project file.
+    DiscardRecovery {
+        /// The project file the snapshot belongs to.
+        path: PathBuf,
+    },
     /// Save to a new file, which becomes the document's file.
     SaveAs {
         /// The file to write.
@@ -1314,6 +1337,7 @@ impl Api {
             request,
             Request::NewDocument { .. }
                 | Request::Open { .. }
+                | Request::OpenRecovery { .. }
                 | Request::Execute { .. }
                 | Request::Undo
                 | Request::Redo
@@ -1337,6 +1361,28 @@ impl Api {
                 discard_changes,
             } => self.open(path, discard_changes),
             Request::Save => self.save(),
+            Request::Snapshot => self.snapshot(),
+            Request::Recovery { path } => {
+                let snapshot = cndt_format::recovery_path(&path);
+                let modified = std::fs::metadata(&snapshot)
+                    .and_then(|meta| meta.modified())
+                    .ok();
+                let seconds = modified
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|elapsed| elapsed.as_secs());
+                return success(serde_json::json!({
+                    "available": modified.is_some(),
+                    "modified": seconds,
+                }));
+            }
+            Request::OpenRecovery {
+                path,
+                discard_changes,
+            } => self.open_recovery(path, discard_changes),
+            Request::DiscardRecovery { path } => {
+                remove_snapshot(&path);
+                Ok(())
+            }
             Request::SaveAs { path } => {
                 // Adopt the new path only once saving to it has worked.
                 let previous = self.path.replace(path);
@@ -1703,6 +1749,7 @@ impl Api {
         document
             .set_name(name)
             .map_err(|error| ApiError::new("rejected", error.to_string()))?;
+        self.forget_snapshot();
         self.session = Session::new(document);
         self.path = None;
         self.extensions.clear();
@@ -1710,13 +1757,60 @@ impl Api {
         Ok(())
     }
 
+    /// The document's snapshot is deleted when its unsaved changes are
+    /// thrown away on purpose.
+    fn forget_snapshot(&self) {
+        if self.session.is_dirty()
+            && let Some(path) = &self.path
+        {
+            remove_snapshot(path);
+        }
+    }
+
     fn open(&mut self, path: PathBuf, discard_changes: bool) -> Result<(), ApiError> {
         self.guard_unsaved(discard_changes)?;
         let project = cndt_format::open(&path)?;
+        self.forget_snapshot();
         self.extensions = project.extensions().clone();
         self.session = Session::new(project.document);
         self.path = Some(path);
         self.forget_plans();
+        Ok(())
+    }
+
+    fn open_recovery(&mut self, path: PathBuf, discard_changes: bool) -> Result<(), ApiError> {
+        self.guard_unsaved(discard_changes)?;
+        let snapshot = cndt_format::recovery_path(&path);
+        if !snapshot.exists() {
+            return Err(ApiError::new(
+                "no_recovery",
+                "there is no recovery snapshot for this project",
+            ));
+        }
+        let project = cndt_format::open(&snapshot)?;
+        // The snapshot being opened belongs to `path`; only a different
+        // current document's snapshot is forgotten.
+        if self.path.as_deref() != Some(path.as_path()) {
+            self.forget_snapshot();
+        }
+        self.extensions = project.extensions().clone();
+        self.session = Session::new_unsaved(project.document);
+        self.path = Some(path);
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Result<(), ApiError> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        if !self.session.is_dirty() {
+            return Ok(());
+        }
+        let mut project = Project::new(self.session.document().clone());
+        for (name, data) in &self.extensions {
+            project.set_extension(name, data.clone())?;
+        }
+        cndt_format::save(&project, &cndt_format::recovery_path(path))?;
         Ok(())
     }
 
@@ -1745,8 +1839,15 @@ impl Api {
         }
         cndt_format::save(&project, &path)?;
         self.session.mark_saved();
+        remove_snapshot(&path);
         Ok(())
     }
+}
+
+/// Deletes a project's recovery snapshot. Best effort: a snapshot that cannot
+/// be removed is offered again, which is harmless.
+fn remove_snapshot(path: &Path) {
+    let _ignored = std::fs::remove_file(cndt_format::recovery_path(path));
 }
 
 /// The fields each method accepts, besides `method` itself.
@@ -1754,6 +1855,10 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("new_document", &["name", "discard_changes"]),
     ("open", &["path", "discard_changes"]),
     ("save", &[]),
+    ("snapshot", &[]),
+    ("recovery", &["path"]),
+    ("open_recovery", &["path", "discard_changes"]),
+    ("discard_recovery", &["path"]),
     ("save_as", &["path"]),
     ("execute", &["command", "args"]),
     ("undo", &[]),

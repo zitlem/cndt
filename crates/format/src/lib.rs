@@ -631,6 +631,15 @@ fn import_entry(feature: &cndt_model::Feature, id: cndt_model::FeatureId) -> Str
     format!("{IMPORTS}{}.{extension}", id.0)
 }
 
+/// Where the crash-recovery snapshot of the project at `path` lives (decision
+/// 0026): next to it, with `.recovery` added to the file name.
+#[must_use]
+pub fn recovery_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".recovery");
+    path.with_file_name(name)
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".saving");
