@@ -1328,6 +1328,34 @@ impl Registry {
                 },
             },
             CommandSpec {
+                name: "sketch.trim",
+                description: "Trim a line, arc or circle: remove the stretch of it nearest a picked point, between the places where other curves cross it. Refused if nothing crosses it. Constraints on the trimmed entity are dropped.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entity",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The line, arc or circle to trim.",
+                    },
+                    ArgSpec {
+                        name: "at",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "A point on the stretch to remove, in millimetres.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::Trim {
+                            entity: EntityId(id(args, "entity")?),
+                            at: position(args, "at")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
                 name: "sketch.constrain",
                 description: "Add a constraint or dimension. Refused if it conflicts with or repeats the existing ones.",
                 args: &[
@@ -2304,6 +2332,10 @@ mod tests {
             (
                 "sketch.add_slot",
                 json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0}, "width": 6}),
+            ),
+            (
+                "sketch.trim",
+                json!({"sketch": 0, "entity": 1, "at": {"x": 5, "y": 0}}),
             ),
             (
                 "sketch.constrain",

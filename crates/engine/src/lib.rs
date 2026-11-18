@@ -12,6 +12,7 @@ mod feature_commands;
 mod registry;
 mod session;
 mod sketch_commands;
+mod sketch_trim;
 
 use std::fmt;
 

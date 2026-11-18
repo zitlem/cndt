@@ -277,6 +277,14 @@ pub enum SketchEdit {
         /// The width across the slot, in millimetres.
         width: f64,
     },
+    /// Trims a line, arc or circle: removes the stretch of it that holds
+    /// `at`, between the places where other curves cross it.
+    Trim {
+        /// The line, arc or circle to trim.
+        entity: EntityId,
+        /// Where on it to cut; the nearest stretch to this point goes.
+        at: Point2,
+    },
     /// Adds a constraint.
     Constrain(Constraint),
     /// Drives a dimension by an expression of the parameters, such as
@@ -326,6 +334,7 @@ impl SketchEdit {
             Self::AddArc { .. } => "sketch.add_arc",
             Self::AddRectangle { .. } => "sketch.add_rectangle",
             Self::AddSlot { .. } => "sketch.add_slot",
+            Self::Trim { .. } => "sketch.trim",
             Self::Constrain(_) => "sketch.constrain",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => {
                 "sketch.set_dimension"
@@ -345,6 +354,7 @@ impl SketchEdit {
             Self::AddArc { .. } => "Add arc",
             Self::AddRectangle { .. } => "Add rectangle",
             Self::AddSlot { .. } => "Add slot",
+            Self::Trim { .. } => "Trim",
             Self::Constrain(_) => "Add constraint",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => "Change dimension",
             Self::MovePoint { .. } => "Move point",
@@ -411,6 +421,7 @@ impl SketchEdit {
                 }
             }
             Self::AddSlot { from, to, width } => add_slot(sketch, from, to, width, &options)?,
+            Self::Trim { entity, at } => crate::sketch_trim::trim(sketch, entity, at, &options)?,
             Self::Constrain(ref constraint) => {
                 sketch.add_constraint(constraint.clone(), &options)?;
             }
@@ -730,6 +741,240 @@ mod tests {
             assert!(error.contains("more than zero"), "{error}");
             assert_eq!(sketch(&session, id).entities().count(), 0);
         }
+    }
+
+    fn line(session: &mut Session, id: SketchId, from: (f64, f64), to: (f64, f64)) -> EntityId {
+        edit(
+            session,
+            id,
+            SketchEdit::AddLine {
+                start: PointRef::New(Point2::new(from.0, from.1)),
+                end: PointRef::New(Point2::new(to.0, to.1)),
+            },
+        )
+        .unwrap();
+        sketch(session, id)
+            .entities()
+            .filter(|(_, e)| matches!(e.geometry, Geometry::Line { .. }))
+            .map(|(entity, _)| entity)
+            .max()
+            .unwrap()
+    }
+
+    fn circle_about_origin(session: &mut Session, id: SketchId, radius: f64) -> EntityId {
+        edit(
+            session,
+            id,
+            SketchEdit::AddCircle {
+                center: PointRef::New(Point2::new(0.0, 0.0)),
+                radius,
+            },
+        )
+        .unwrap();
+        sketch(session, id)
+            .entities()
+            .find(|(_, e)| matches!(e.geometry, Geometry::Circle { .. }))
+            .map(|(entity, _)| entity)
+            .unwrap()
+    }
+
+    fn trim_at(session: &mut Session, id: SketchId, entity: EntityId, at: (f64, f64)) {
+        try_trim(session, id, entity, at).unwrap();
+    }
+
+    fn try_trim(
+        session: &mut Session,
+        id: SketchId,
+        entity: EntityId,
+        at: (f64, f64),
+    ) -> Result<(), CommandError> {
+        edit(
+            session,
+            id,
+            SketchEdit::Trim {
+                entity,
+                at: Point2::new(at.0, at.1),
+            },
+        )
+    }
+
+    /// Every line as its (smallest x, largest x), in order.
+    fn line_spans(session: &Session, id: SketchId) -> Vec<(f64, f64)> {
+        let s = sketch(session, id);
+        let mut spans: Vec<(f64, f64)> = s
+            .entities()
+            .filter_map(|(_, e)| match e.geometry {
+                Geometry::Line { start, end } => {
+                    let (a, b) = (s.point(start)?, s.point(end)?);
+                    Some((a.x.min(b.x), a.x.max(b.x)))
+                }
+                _ => None,
+            })
+            .collect();
+        spans.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        spans
+    }
+
+    /// Every arc as its (start, end) points.
+    fn arc_ends(session: &Session, id: SketchId) -> Vec<(Point2, Point2)> {
+        let s = sketch(session, id);
+        s.entities()
+            .filter_map(|(_, e)| match e.geometry {
+                Geometry::Arc { start, end, .. } => Some((s.point(start)?, s.point(end)?)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn near(p: Point2, x: f64, y: f64) -> bool {
+        (p.x - x).abs() < 1e-6 && (p.y - y).abs() < 1e-6
+    }
+
+    #[test]
+    fn trimming_a_line_between_two_crossings_leaves_its_two_ends() {
+        let (mut session, id) = session_with_sketch();
+        let bar = line(&mut session, id, (0.0, 0.0), (30.0, 0.0));
+        line(&mut session, id, (10.0, -5.0), (10.0, 5.0));
+        line(&mut session, id, (20.0, -5.0), (20.0, 5.0));
+        trim_at(&mut session, id, bar, (15.0, 0.0));
+        // The two uprights, and the bar cut back to 0..10 and 20..30.
+        let spans = line_spans(&session, id);
+        let expected = [(0.0, 10.0), (10.0, 10.0), (20.0, 20.0), (20.0, 30.0)];
+        assert_eq!(spans.len(), expected.len(), "{spans:?}");
+        for (want, got) in expected.iter().zip(&spans) {
+            assert!(
+                (want.0 - got.0).abs() < 1e-6 && (want.1 - got.1).abs() < 1e-6,
+                "{spans:?}"
+            );
+        }
+        // Each new end point is held on the line that cut it.
+        let held = sketch(&session, id)
+            .constraints()
+            .filter(|(_, c)| matches!(c, Constraint::PointOnLine { .. }))
+            .count();
+        assert_eq!(held, 2);
+    }
+
+    #[test]
+    fn trimming_the_end_of_a_line_keeps_the_rest() {
+        let (mut session, id) = session_with_sketch();
+        let bar = line(&mut session, id, (0.0, 0.0), (30.0, 0.0));
+        line(&mut session, id, (10.0, -5.0), (10.0, 5.0));
+        trim_at(&mut session, id, bar, (25.0, 0.0));
+        let spans = line_spans(&session, id);
+        assert_eq!(spans.len(), 2, "{spans:?}");
+        assert!(spans[0].0.abs() < 1e-6 && (spans[0].1 - 10.0).abs() < 1e-6);
+        // The bar's far end point went with the cut-off part.
+        let points = sketch(&session, id)
+            .entities()
+            .filter(|(_, e)| matches!(e.geometry, Geometry::Point { .. }))
+            .count();
+        assert_eq!(points, 4, "bar start, cut point, two upright ends");
+    }
+
+    #[test]
+    fn a_crossing_at_a_corner_reuses_the_corner_point() {
+        let (mut session, id) = session_with_sketch();
+        // A bar, and an upright that starts on it at (10, 0).
+        let bar = line(&mut session, id, (0.0, 0.0), (30.0, 0.0));
+        let upright = line(&mut session, id, (10.0, 0.0), (10.0, 8.0));
+        let before = sketch(&session, id).entities().count();
+        trim_at(&mut session, id, bar, (20.0, 0.0));
+        let s = sketch(&session, id);
+        let Some(Geometry::Line { start, .. }) = s.entity(upright).map(|e| e.geometry.clone())
+        else {
+            panic!("the upright is gone");
+        };
+        let joined = s.entities().any(|(entity, e)| {
+            entity != upright && matches!(e.geometry, Geometry::Line { end, .. } if end == start)
+        });
+        assert!(joined, "the bar should end on the upright's own point");
+        // No point was made for the corner: the bar became a shorter line and
+        // its far end point went.
+        assert_eq!(s.entities().count(), before - 1);
+    }
+
+    #[test]
+    fn trimming_a_circle_leaves_an_arc_and_trimming_an_arc_shortens_it() {
+        let (mut session, id) = session_with_sketch();
+        // A circle of radius 10, crossed by a vertical line at x = 6
+        // (it meets the circle at y = 8 and y = -8).
+        let circle = circle_about_origin(&mut session, id, 10.0);
+        line(&mut session, id, (6.0, -12.0), (6.0, 12.0));
+        // Remove the right-hand cap, x > 6.
+        trim_at(&mut session, id, circle, (10.0, 0.0));
+        assert!(sketch(&session, id).entity(circle).is_none());
+        let arcs = arc_ends(&session, id);
+        assert_eq!(arcs.len(), 1);
+        // Counter-clockwise from the cut at the top round to the one at the bottom.
+        assert!(near(arcs[0].0, 6.0, 8.0), "{:?}", arcs[0]);
+        assert!(near(arcs[0].1, 6.0, -8.0), "{:?}", arcs[0]);
+
+        // A horizontal line crosses the arc at (-10, 0): take the lower half.
+        let arc = sketch(&session, id)
+            .entities()
+            .find(|(_, e)| matches!(e.geometry, Geometry::Arc { .. }))
+            .map(|(entity, _)| entity)
+            .unwrap();
+        line(&mut session, id, (-12.0, 0.0), (-8.0, 0.0));
+        trim_at(&mut session, id, arc, (-7.0, -7.0));
+        let arcs = arc_ends(&session, id);
+        assert_eq!(arcs.len(), 1, "{arcs:?}");
+        assert!(near(arcs[0].0, 6.0, 8.0) && near(arcs[0].1, -10.0, 0.0));
+    }
+
+    #[test]
+    fn trimming_with_nothing_crossing_is_refused_and_changes_nothing() {
+        let (mut session, id) = session_with_sketch();
+        let bar = line(&mut session, id, (0.0, 0.0), (30.0, 0.0));
+        // One parallel to it, and one that only touches its end point.
+        line(&mut session, id, (0.0, 5.0), (30.0, 5.0));
+        line(&mut session, id, (30.0, 0.0), (30.0, 9.0));
+        let drawn = sketch(&session, id).clone();
+        let error = try_trim(&mut session, id, bar, (5.0, 0.0))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nothing crosses"), "{error}");
+        assert_eq!(sketch(&session, id), &drawn);
+    }
+
+    #[test]
+    fn a_circle_crossed_once_a_point_and_a_missing_entity_are_refused() {
+        let (mut session, id) = session_with_sketch();
+        let circle = circle_about_origin(&mut session, id, 5.0);
+        // A line that crosses the circle once: it ends inside.
+        line(&mut session, id, (0.0, 0.0), (9.0, 0.0));
+        let point = sketch(&session, id)
+            .entities()
+            .find(|(_, e)| matches!(e.geometry, Geometry::Point { .. }))
+            .map(|(entity, _)| entity)
+            .unwrap();
+        for (entity, expected) in [
+            (circle, "nothing crosses"),
+            (point, "needs a line, arc or circle"),
+            (EntityId(99), "does not exist"),
+        ] {
+            let error = try_trim(&mut session, id, entity, (1.0, 1.0))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn trim_undo_and_redo() {
+        let (mut session, id) = session_with_sketch();
+        let bar = line(&mut session, id, (0.0, 0.0), (30.0, 0.0));
+        line(&mut session, id, (10.0, -5.0), (10.0, 5.0));
+        let before = sketch(&session, id).clone();
+        trim_at(&mut session, id, bar, (20.0, 0.0));
+        let after = sketch(&session, id).clone();
+        assert_ne!(before, after);
+        assert_eq!(session.undo_label().as_deref(), Some("Trim"));
+        session.undo().unwrap();
+        assert_eq!(sketch(&session, id), &before);
+        session.redo().unwrap();
+        assert_eq!(sketch(&session, id), &after);
     }
 
     #[test]
