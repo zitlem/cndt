@@ -21,8 +21,8 @@ pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 pub use features::{
     Counterbore, EdgeTarget, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus,
     Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, ImportData, ImportFormat,
-    MAX_IMPORT_BYTES, Operation, Rebuilt, ReferenceMesh, Thread, default_profiles, rebuild,
-    rebuild_to,
+    MAX_IMPORT_BYTES, Operation, Rebuilt, ReferenceMesh, RevolveAxis, Thread, default_profiles,
+    rebuild, rebuild_to,
 };
 use serde::{Deserialize, Serialize};
 
@@ -372,6 +372,11 @@ impl Document {
                 name: feature,
                 distance_expression: Some(text),
                 ..
+            }
+            | Feature::Revolve {
+                name: feature,
+                angle_expression: Some(text),
+                ..
             } = &entry.feature
                 && uses(text)
             {
@@ -411,13 +416,18 @@ impl Document {
             }
         }
         for entry in &mut self.features {
-            if let Feature::Extrude {
-                distance,
-                distance_expression: Some(text),
-                ..
-            } = &mut entry.feature
-            {
-                *distance = eval(text)?;
+            match &mut entry.feature {
+                Feature::Extrude {
+                    distance,
+                    distance_expression: Some(text),
+                    ..
+                } => *distance = eval(text)?,
+                Feature::Revolve {
+                    angle,
+                    angle_expression: Some(text),
+                    ..
+                } => *angle = eval(text)?,
+                _ => {}
             }
         }
         Ok(())

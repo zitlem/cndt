@@ -459,6 +459,69 @@ bool is_valid_solid(const TopoDS_Shape& shape, char* err, std::size_t err_len) {
 
 extern "C" {
 
+// Builds the face of a planar profile: the loops of curves, the first the outer
+// boundary and the rest holes, in the plane through the first curve with the
+// given normal. `edges` receives the profile's edges in curve order, the very
+// ones the face uses, so a sweep's history can find them. Returns `kOk`, or
+// a status with `err` set.
+static int make_profile_face(
+    const cndt_curve* curves,
+    std::size_t curve_count,
+    const std::uint32_t* loop_sizes,
+    std::size_t loop_count,
+    const gp_Dir& normal,
+    std::vector<TopoDS_Edge>& edges,
+    TopoDS_Face& out_face,
+    char* err,
+    std::size_t err_len) {
+    edges.assign(curve_count, TopoDS_Edge());
+    std::vector<TopoDS_Wire> wires;
+    std::size_t next = 0;
+    for (std::size_t loop = 0; loop < loop_count; ++loop) {
+        BRepBuilderAPI_MakeWire wire;
+        for (std::uint32_t k = 0; k < loop_sizes[loop]; ++k, ++next) {
+            if (next >= curve_count) {
+                set_error(err, err_len, "loop sizes do not match the curves");
+                return kBadArgument;
+            }
+            wire.Add(make_edge(curves[next], normal));
+            if (!wire.IsDone()) {
+                set_error(err, err_len, "a profile loop is not connected");
+                return kModelFailed;
+            }
+            // The wire may copy an edge to join it; keep the copy, which
+            // is the one the face and the sweep will use.
+            edges[next] = wire.Edge();
+        }
+        if (!wire.Wire().Closed()) {
+            set_error(err, err_len, "a profile loop is not closed");
+            return kModelFailed;
+        }
+        wires.push_back(wire.Wire());
+    }
+    const gp_Pln plane(point(curves[0].kind == 2 ? curves[0].p0 : curves[0].p1), normal);
+    // Orient the loops whichever way they were drawn: the outer boundary
+    // runs counter-clockwise about the normal, holes clockwise. Reversing
+    // a wire keeps its edges, so the history still finds them.
+    for (std::size_t i = 0; i < wires.size(); ++i) {
+        const TopoDS_Face alone = BRepBuilderAPI_MakeFace(plane, wires[i], Standard_True).Face();
+        const bool outer = ShapeAnalysis::IsOuterBound(alone);
+        if (outer != (i == 0)) {
+            wires[i].Reverse();
+        }
+    }
+    BRepBuilderAPI_MakeFace face(plane, wires[0], Standard_True);
+    for (std::size_t i = 1; i < wires.size(); ++i) {
+        face.Add(wires[i]);
+    }
+    if (!face.IsDone()) {
+        set_error(err, err_len, "the profile does not make a face");
+        return kModelFailed;
+    }
+    out_face = face.Face();
+    return kOk;
+}
+
 // Sweeps a planar region along its normal. `curves` holds the loops one
 // after another; `loop_sizes` says how many curves each has. The first loop
 // is the outer boundary; the others are holes. Loops may run either way.
@@ -487,51 +550,14 @@ int cndt_occt_extrude(
     try {
         silence_console_output();
         const gp_Dir normal(normal_in[0], normal_in[1], normal_in[2]);
-        std::vector<TopoDS_Edge> edges(curve_count);
-        std::vector<TopoDS_Wire> wires;
-        std::size_t next = 0;
-        for (std::size_t loop = 0; loop < loop_count; ++loop) {
-            BRepBuilderAPI_MakeWire wire;
-            for (std::uint32_t k = 0; k < loop_sizes[loop]; ++k, ++next) {
-                if (next >= curve_count) {
-                    set_error(err, err_len, "loop sizes do not match the curves");
-                    return kBadArgument;
-                }
-                wire.Add(make_edge(curves[next], normal));
-                if (!wire.IsDone()) {
-                    set_error(err, err_len, "a profile loop is not connected");
-                    return kModelFailed;
-                }
-                // The wire may copy an edge to join it; keep the copy, which
-                // is the one the face and the sweep will use.
-                edges[next] = wire.Edge();
-            }
-            if (!wire.Wire().Closed()) {
-                set_error(err, err_len, "a profile loop is not closed");
-                return kModelFailed;
-            }
-            wires.push_back(wire.Wire());
+        std::vector<TopoDS_Edge> edges;
+        TopoDS_Face profile;
+        const int made = make_profile_face(
+            curves, curve_count, loop_sizes, loop_count, normal, edges, profile, err, err_len);
+        if (made != kOk) {
+            return made;
         }
-        const gp_Pln plane(point(curves[0].kind == 2 ? curves[0].p0 : curves[0].p1), normal);
-        // Orient the loops whichever way they were drawn: the outer boundary
-        // runs counter-clockwise about the normal, holes clockwise. Reversing
-        // a wire keeps its edges, so the history below still finds them.
-        for (std::size_t i = 0; i < wires.size(); ++i) {
-            const TopoDS_Face alone = BRepBuilderAPI_MakeFace(plane, wires[i], Standard_True).Face();
-            const bool outer = ShapeAnalysis::IsOuterBound(alone);
-            if (outer != (i == 0)) {
-                wires[i].Reverse();
-            }
-        }
-        BRepBuilderAPI_MakeFace face(plane, wires[0], Standard_True);
-        for (std::size_t i = 1; i < wires.size(); ++i) {
-            face.Add(wires[i]);
-        }
-        if (!face.IsDone()) {
-            set_error(err, err_len, "the profile does not make a face");
-            return kModelFailed;
-        }
-        BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(normal) * distance);
+        BRepPrimAPI_MakePrism prism(profile, gp_Vec(normal) * distance);
         if (!prism.IsDone()) {
             set_error(err, err_len, "the extrusion failed");
             return kModelFailed;
@@ -558,6 +584,126 @@ int cndt_occt_extrude(
         if (last > 0) {
             record->pairs.push_back(static_cast<std::uint32_t>(curve_count + 1));
             record->pairs.push_back(static_cast<std::uint32_t>(last - 1));
+        }
+        auto shape = std::make_unique<cndt_shape>();
+        shape->shape = solid;
+        *out = shape.release();
+        *history = record.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (const std::exception& exception) {
+        set_error(err, err_len, exception.what());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// Revolves a planar profile about an axis in its plane. The loops are as for
+// `cndt_occt_extrude`; the axis is a point and a direction, and `angle` is in
+// degrees, more than 0 up to 360 (a full turn leaves no caps).
+//
+// History sources: curve `i` for the face it swept (a curve on the axis
+// sweeps none); `n` for the start cap and `n + 1` for the end cap of a
+// partial turn, where `n` is the number of curves.
+int cndt_occt_revolve_profile(
+    const cndt_curve* curves,
+    std::size_t curve_count,
+    const std::uint32_t* loop_sizes,
+    std::size_t loop_count,
+    const double normal_in[3],
+    const double axis_origin[3],
+    const double axis_dir[3],
+    double angle,
+    cndt_shape** out,
+    cndt_history** history,
+    char* err,
+    std::size_t err_len) {
+    if (curves == nullptr || loop_sizes == nullptr || normal_in == nullptr || axis_origin == nullptr ||
+        axis_dir == nullptr || out == nullptr || history == nullptr || loop_count == 0 ||
+        !(angle > 0.0 && angle <= 360.0)) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    *history = nullptr;
+    try {
+        silence_console_output();
+        const gp_Dir normal(normal_in[0], normal_in[1], normal_in[2]);
+        std::vector<TopoDS_Edge> edges;
+        TopoDS_Face profile;
+        const int made = make_profile_face(
+            curves, curve_count, loop_sizes, loop_count, normal, edges, profile, err, err_len);
+        if (made != kOk) {
+            return made;
+        }
+        const gp_Ax1 axis(
+            gp_Pnt(axis_origin[0], axis_origin[1], axis_origin[2]),
+            gp_Dir(axis_dir[0], axis_dir[1], axis_dir[2]));
+        const bool full = angle >= 360.0;
+        constexpr double kPi = 3.14159265358979323846;
+        const std::unique_ptr<BRepPrimAPI_MakeRevol> turned = full
+            ? std::make_unique<BRepPrimAPI_MakeRevol>(profile, axis)
+            : std::make_unique<BRepPrimAPI_MakeRevol>(profile, axis, angle * kPi / 180.0);
+        BRepPrimAPI_MakeRevol& revol = *turned;
+        if (!revol.IsDone()) {
+            set_error(err, err_len, "the revolution failed");
+            return kModelFailed;
+        }
+        const TopoDS_Shape solid = revol.Shape();
+        if (!is_valid_solid(solid, err, err_len)) {
+            return kModelFailed;
+        }
+        TopTools_IndexedMapOfShape map;
+        TopExp::MapShapes(solid, TopAbs_FACE, map);
+        auto record = std::make_unique<cndt_history>();
+        std::vector<bool> named(static_cast<std::size_t>(map.Extent()), false);
+        for (std::size_t i = 0; i < curve_count; ++i) {
+            for (const std::uint32_t f : faces_of(revol.Generated(edges[i]), map)) {
+                record->pairs.push_back(static_cast<std::uint32_t>(i));
+                record->pairs.push_back(f);
+                named[f] = true;
+            }
+        }
+        if (!full) {
+            const int first = map.FindIndex(revol.FirstShape());
+            const int last = map.FindIndex(revol.LastShape());
+            if (first > 0) {
+                record->pairs.push_back(static_cast<std::uint32_t>(curve_count));
+                record->pairs.push_back(static_cast<std::uint32_t>(first - 1));
+                named[static_cast<std::size_t>(first - 1)] = true;
+            }
+            if (last > 0) {
+                record->pairs.push_back(static_cast<std::uint32_t>(curve_count + 1));
+                record->pairs.push_back(static_cast<std::uint32_t>(last - 1));
+                named[static_cast<std::size_t>(last - 1)] = true;
+            }
+        }
+        // OpenCascade does not report every swept face (a flat face square to
+        // the axis is missed). A curve's midpoint lies on exactly the face it
+        // swept, so find the source of any face left over that way. A curve on
+        // the axis sweeps nothing and is skipped.
+        const gp_Lin axis_line(axis);
+        for (int f = 1; f <= map.Extent(); ++f) {
+            if (named[static_cast<std::size_t>(f - 1)]) {
+                continue;
+            }
+            for (std::size_t i = 0; i < curve_count; ++i) {
+                const BRepAdaptor_Curve curve(edges[i]);
+                const gp_Pnt mid = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2);
+                if (axis_line.Distance(mid) < 1e-7) {
+                    continue;
+                }
+                BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(mid).Vertex(), map(f));
+                if (distance.IsDone() && distance.Value() < 1e-7) {
+                    record->pairs.push_back(static_cast<std::uint32_t>(i));
+                    record->pairs.push_back(static_cast<std::uint32_t>(f - 1));
+                    break;
+                }
+            }
         }
         auto shape = std::make_unique<cndt_shape>();
         shape->shape = solid;

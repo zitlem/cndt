@@ -97,6 +97,16 @@ export type Feature =
       distance_expression?: string;
       operation: "join" | "cut";
     }
+  | {
+      type: "revolve";
+      name: string;
+      sketch: number;
+      profiles: number[][];
+      axis: { type: "line"; entity: number } | { type: "sketch_x" } | { type: "sketch_y" };
+      angle: number;
+      angle_expression?: string;
+      operation: "join" | "cut";
+    }
   | { type: "hole"; name: string; sketch: number; points: number[]; spec: HoleSpec }
   | { type: "chamfer"; name: string; edges: EdgeTarget[]; distance: number }
   | { type: "fillet"; name: string; edges: EdgeTarget[]; radius: number }

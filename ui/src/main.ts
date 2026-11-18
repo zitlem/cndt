@@ -67,6 +67,13 @@ const ui = {
   extrudeSketch: element<HTMLSelectElement>("extrude-sketch"),
   extrudeDistance: element<HTMLInputElement>("extrude-distance"),
   extrudeOperation: element<HTMLSelectElement>("extrude-operation"),
+  revolveButton: element<HTMLButtonElement>("revolve"),
+  revolveDialog: element<HTMLFormElement>("revolve-dialog"),
+  revolveTitle: element<HTMLHeadingElement>("revolve-title"),
+  revolveSketch: element<HTMLSelectElement>("revolve-sketch"),
+  revolveAxis: element<HTMLSelectElement>("revolve-axis"),
+  revolveAngle: element<HTMLInputElement>("revolve-angle"),
+  revolveOperation: element<HTMLSelectElement>("revolve-operation"),
   holeButton: element<HTMLButtonElement>("hole"),
   holeDialog: element<HTMLFormElement>("hole-dialog"),
   holeTitle: element<HTMLHeadingElement>("hole-title"),
@@ -453,6 +460,7 @@ function renderFeatures(state: DocumentState): void {
   ui.featureList.replaceChildren();
   ui.noFeatures.hidden = features.length > 0;
   ui.extrudeButton.disabled = Object.keys(state.document.sketches ?? {}).length === 0;
+  ui.revolveButton.disabled = ui.extrudeButton.disabled;
   ui.holeButton.disabled = !state.body;
   ui.chamferButton.disabled = !state.body;
   ui.patternButton.disabled = !(state.document.features ?? []).some(
@@ -476,7 +484,9 @@ function renderFeatures(state: DocumentState): void {
     const tool =
       feature.type === "extrude"
         ? ui.extrudeButton
-        : globalThis.document.getElementById(
+        : feature.type === "revolve"
+          ? ui.revolveButton
+          : globalThis.document.getElementById(
             feature.type === "import" ? "insert-step" : feature.type === "reference" ? "import-mesh" : feature.type,
           );
     const svg = tool?.querySelector("svg");
@@ -499,6 +509,7 @@ function renderFeatures(state: DocumentState): void {
       if (feature.type === "pattern") openPattern(id);
       else if (feature.type === "hole") openHole(id);
       else if (feature.type === "extrude") openExtrude(id);
+      else if (feature.type === "revolve") openRevolve(id);
       else openBlend(feature.type, id);
     });
     item.addEventListener("keydown", (event) => {
@@ -912,6 +923,10 @@ function featureDetail(feature: import("./api").Feature, id?: number): string {
     const fx = feature.distance_expression ? "ƒ " : "";
     return text.extrudeDetail(fx, feature.operation === "cut", formatNumber(feature.distance));
   }
+  if (feature.type === "revolve") {
+    const fx = feature.angle_expression ? "ƒ " : "";
+    return text.revolveDetail(fx, feature.operation === "cut", formatNumber(feature.angle));
+  }
   if (feature.type === "chamfer") return text.chamferDetail(formatNumber(feature.distance));
   if (feature.type === "pattern") {
     const source = current?.document.features?.find((f) => f.id === feature.feature)?.feature.name ?? "?";
@@ -956,6 +971,7 @@ let editingPattern: number | null = null;
 function openPattern(feature: number | null): void {
   if (!current) return;
   closeExtrude();
+  closeRevolve();
   closeHole();
   closeBlend();
   editingPattern = feature;
@@ -1022,6 +1038,7 @@ function syncBlend(): void {
 function openBlend(kind: "chamfer" | "fillet", feature: number | null): void {
   if (!current) return;
   closeExtrude();
+  closeRevolve();
   closeHole();
   const existing = current.document.features?.find((f) => f.id === feature)?.feature;
   blending = { kind, faces: [], edges: [], editing: feature };
@@ -1069,6 +1086,7 @@ function openHole(feature: number | null): void {
     updateSketchUi();
   }
   closeExtrude();
+  closeRevolve();
   editingHole = feature;
   const sketches = Object.entries(current.document.sketches ?? {});
   ui.holeSketch.replaceChildren(
@@ -1184,10 +1202,82 @@ function closeExtrude(): void {
   editingFeature = null;
 }
 
+let editingRevolve: number | null = null;
+
+/** The axis choices for a sketch: its own two axes, then each of its lines. */
+function fillRevolveAxes(sketch: string): void {
+  const options: [string, string][] = [
+    ["y", text.axisY],
+    ["x", text.axisX],
+  ];
+  const entities = current?.document.sketches?.[sketch]?.sketch.entities ?? {};
+  for (const [id, entity] of Object.entries(entities)) {
+    if (entity.geometry.type === "line") options.push([`line:${id}`, text.axisLine(Number(id))]);
+  }
+  ui.revolveAxis.replaceChildren(
+    ...options.map(([value, label]) => {
+      const option = globalThis.document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    }),
+  );
+}
+
+function openRevolve(feature: number | null): void {
+  if (!current) return;
+  closeExtrude();
+  closeHole();
+  closeBlend();
+  closePattern();
+  if (editor.editing !== null) {
+    editor.close();
+    updateSketchUi();
+  }
+  editingRevolve = feature;
+  const sketches = Object.entries(current.document.sketches ?? {});
+  ui.revolveSketch.replaceChildren(
+    ...sketches.map(([id, record]) => {
+      const option = globalThis.document.createElement("option");
+      option.value = id;
+      option.textContent = text.sketchInPlane(record.name, planeLabel(record.plane));
+      return option;
+    }),
+  );
+  const existing = current.document.features?.find((f) => f.id === feature)?.feature;
+  if (existing?.type === "revolve") {
+    ui.revolveTitle.textContent = text.edit(existing.name);
+    ui.revolveSketch.value = String(existing.sketch);
+    ui.revolveSketch.disabled = true;
+    fillRevolveAxes(String(existing.sketch));
+    ui.revolveAxis.value =
+      existing.axis.type === "line" ? `line:${existing.axis.entity}` : existing.axis.type === "sketch_x" ? "x" : "y";
+    ui.revolveAngle.value = existing.angle_expression ?? String(existing.angle);
+    ui.revolveOperation.value = existing.operation;
+  } else {
+    ui.revolveTitle.textContent = text.revolve;
+    ui.revolveSketch.disabled = false;
+    const last = sketches.at(-1);
+    if (last) ui.revolveSketch.value = last[0];
+    fillRevolveAxes(ui.revolveSketch.value);
+    ui.revolveAngle.value = "360";
+    ui.revolveOperation.value = (current.document.features?.length ?? 0) === 0 ? "join" : ui.revolveOperation.value;
+  }
+  ui.revolveDialog.hidden = false;
+  ui.revolveAngle.focus();
+  ui.revolveAngle.select();
+}
+
+function closeRevolve(): void {
+  ui.revolveDialog.hidden = true;
+  editingRevolve = null;
+}
+
 function updateSketchUi(): void {
   const editing = editor.editing;
   if (editing !== null) {
     closeExtrude();
+  closeRevolve();
     closeHole();
     closeBlend();
     closePattern();
@@ -1429,6 +1519,31 @@ ui.extrudeDialog.addEventListener("submit", (event) => {
           })
         : await execute("feature.edit_extrude", { feature: editingFeature, distance, operation });
     closeExtrude();
+  closeRevolve();
+    render(next);
+  })();
+});
+
+ui.revolveButton.addEventListener("click", () => openRevolve(null));
+ui.revolveSketch.addEventListener("change", () => fillRevolveAxes(ui.revolveSketch.value));
+element("revolve-cancel").addEventListener("click", closeRevolve);
+ui.revolveDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeRevolve();
+});
+ui.revolveDialog.addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    // A number of degrees, or an expression of the parameters.
+    const entered = ui.revolveAngle.value.trim();
+    const angle = Number.isFinite(Number(entered)) && entered !== "" ? Number(entered) : entered;
+    const operation = ui.revolveOperation.value;
+    const axis = ui.revolveAxis.value;
+    const turn = axis.startsWith("line:") ? { axis_line: Number(axis.slice(5)) } : { axis };
+    const next =
+      editingRevolve === null
+        ? await execute("feature.revolve", { sketch: Number(ui.revolveSketch.value), angle, operation, ...turn })
+        : await execute("feature.edit_revolve", { feature: editingRevolve, angle, operation, ...turn });
+    closeRevolve();
     render(next);
   })();
 });
