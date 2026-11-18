@@ -87,6 +87,9 @@
                   <button id="pattern" type="button" class="tool" title="[[pattern.title]]">
                 <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="5" cy="5" r="2" /><circle cx="15" cy="5" r="2" /><circle cx="5" cy="15" r="2" /><circle cx="15" cy="15" r="2" /></svg><span>[[pattern.label]]</span>
               </button>
+                  <button id="circular-pattern" type="button" class="tool" title="[[circular-pattern.title]]">
+                <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="3.5" r="2" /><circle cx="16.5" cy="10" r="2" /><circle cx="10" cy="16.5" r="2" /><circle cx="3.5" cy="10" r="2" /></svg><span>[[circular-pattern.label]]</span>
+              </button>
                 </div>
                 <button type="button" class="ribbon-label">[[create.label]] <span aria-hidden="true">▾</span></button>
               </div>
@@ -383,6 +386,20 @@
             <p class="muted small">[[pattern-dialog.axes-note]]</p>
             <div class="dialog-buttons">
               <button id="pattern-cancel" type="button" class="secondary">[[pattern-cancel]]</button>
+              <button type="submit" class="primary">[[pattern-dialog.ok]]</button>
+            </div>
+          </form>
+          <form id="circular-dialog" class="dialog" hidden>
+            <h3 id="circular-title">[[circular-title]]</h3>
+            <label>[[pattern-dialog.repeat]]<select id="circular-source"></select></label>
+            <div class="form-row">
+              <label>[[circular-dialog.count]]<input id="circular-count" type="number" min="2" step="1" value="6" /></label>
+              <label>[[circular-dialog.angle]]<input id="circular-angle" type="number" min="0" max="360" step="any" value="360" /></label>
+            </div>
+            <label>[[circular-dialog.center]]<select id="circular-center"></select></label>
+            <p class="muted small">[[circular-dialog.note]]</p>
+            <div class="dialog-buttons">
+              <button id="circular-cancel" type="button" class="secondary">[[pattern-cancel]]</button>
               <button type="submit" class="primary">[[pattern-dialog.ok]]</button>
             </div>
           </form>

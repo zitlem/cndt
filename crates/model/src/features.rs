@@ -129,6 +129,24 @@ pub enum Feature {
         /// Millimetres between them.
         spacing_y: f64,
     },
+    /// Repeats an earlier extrude, hole or revolve turned about the normal of
+    /// its sketch through a point (decision 0022). Each copy joins or cuts as
+    /// the original does.
+    CircularPattern {
+        /// Shown in the timeline, such as `CircularPattern1`.
+        name: String,
+        /// The feature it repeats.
+        feature: FeatureId,
+        /// Copies, counting the original; at least 2.
+        count: u32,
+        /// Degrees the copies span: more than 0 up to 360. At 360 they are
+        /// spaced evenly right round.
+        angle: f64,
+        /// The point of the source's sketch the axis passes through; the
+        /// sketch origin when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        center: Option<EntityId>,
+    },
     /// Rounds edges.
     Fillet {
         /// Shown in the timeline, such as `Fillet1`.
@@ -382,6 +400,7 @@ impl Feature {
             | Self::Hole { name, .. }
             | Self::Chamfer { name, .. }
             | Self::Pattern { name, .. }
+            | Self::CircularPattern { name, .. }
             | Self::Fillet { name, .. }
             | Self::Import { name, .. }
             | Self::Reference { name, .. } => name,
@@ -398,6 +417,7 @@ impl Feature {
             Self::Chamfer { .. }
             | Self::Fillet { .. }
             | Self::Pattern { .. }
+            | Self::CircularPattern { .. }
             | Self::Import { .. }
             | Self::Reference { .. } => None,
         }
@@ -493,6 +513,20 @@ impl Feature {
                             "the {axis} spacing must be a non-zero number, not {spacing}"
                         ));
                     }
+                }
+                Ok(())
+            }
+            Self::CircularPattern { count, angle, .. } => {
+                if *count < 2 {
+                    return Err(String::from("a circular pattern needs at least 2 copies"));
+                }
+                if *count > 500 {
+                    return Err(format!("{count} copies is too many; the most is 500"));
+                }
+                if !(angle.is_finite() && *angle > 0.0 && *angle <= 360.0) {
+                    return Err(format!(
+                        "the pattern angle must be more than 0° and at most 360°, not {angle}"
+                    ));
                 }
                 Ok(())
             }
@@ -1436,6 +1470,7 @@ struct Tool {
     names: Names,
     operation: Operation,
     frame: Frame,
+    sketch: SketchId,
 }
 
 /// Builds a pattern's copies of an earlier feature's tool, fused into one
@@ -1501,6 +1536,96 @@ fn pattern_tool(
         }
     }
     let (body, names) = tool.ok_or_else(|| String::from("a pattern needs more than one copy"))?;
+    Ok((body, names, original.operation))
+}
+
+/// The matrix turning by `degrees` about the unit vector `axis` (Rodrigues'
+/// formula), by rows.
+fn axis_angle_rows(axis: [f64; 3], degrees: f64) -> [[f64; 3]; 3] {
+    let (s, c) = degrees.to_radians().sin_cos();
+    let t = 1.0 - c;
+    let [x, y, z] = axis;
+    [
+        [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+        [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+        [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+    ]
+}
+
+/// Builds a circular pattern's copies of an earlier feature's tool, fused
+/// into one body with every face named by its original and its place round.
+fn circular_pattern_tool(
+    document: &Document,
+    kernel: &dyn Kernel,
+    id: FeatureId,
+    feature: &Feature,
+    tools: &BTreeMap<FeatureId, Tool>,
+) -> Result<(Body, Names, Operation), String> {
+    let Feature::CircularPattern {
+        feature: source,
+        count,
+        angle,
+        center,
+        ..
+    } = feature
+    else {
+        return Err(String::from("not a circular pattern"));
+    };
+    let original = tools.get(source).ok_or_else(|| {
+        format!("the feature it repeats ({source}) did not build, comes later, or is not an extrude, hole or revolve")
+    })?;
+    let (cx, cy) = match center {
+        None => (0.0, 0.0),
+        Some(entity) => {
+            let record = document.sketch(original.sketch).ok_or_else(|| {
+                format!(
+                    "the sketch of {source} ({}) has been deleted",
+                    original.sketch
+                )
+            })?;
+            let point = record.sketch.point(*entity).ok_or_else(|| {
+                format!("the centre {entity} is not a point of the sketch of {source}")
+            })?;
+            (point.x, point.y)
+        }
+    };
+    let c = original.frame.at(cx, cy);
+    let c = [c.x, c.y, c.z];
+    let step = if *angle >= 360.0 - 1e-9 {
+        angle / f64::from(*count)
+    } else {
+        angle / f64::from(*count - 1)
+    };
+    let mut tool: Option<(Body, Names)> = None;
+    for i in 1..*count {
+        let rows = axis_angle_rows(original.frame.normal, f64::from(i) * step);
+        let moved = kernel
+            .translate(&original.body, [-c[0], -c[1], -c[2]])
+            .map_err(|e| e.to_string())?;
+        let turned = kernel.rotate(&moved, rows).map_err(|e| e.to_string())?;
+        let body = kernel.translate(&turned, c).map_err(|e| e.to_string())?;
+        let names: Names = original
+            .names
+            .iter()
+            .map(|set| {
+                set.iter()
+                    .map(|n| FaceName {
+                        feature: id,
+                        origin: FaceOrigin::Copy {
+                            at: (i, 0),
+                            original: n.to_string(),
+                        },
+                    })
+                    .collect()
+            })
+            .collect();
+        tool = Some(match tool {
+            None => (body, names),
+            Some((acc, before)) => combine(kernel, &acc, &before, &body, &names, BooleanOp::Fuse)?,
+        });
+    }
+    let (body, names) =
+        tool.ok_or_else(|| String::from("a circular pattern needs at least 2 copies"))?;
     Ok((body, names, original.operation))
 }
 
@@ -1597,6 +1722,11 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                         pattern_tool(kernel, entry.id, &entry.feature, &tools)?;
                     return apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some);
                 }
+                if let Feature::CircularPattern { .. } = &entry.feature {
+                    let (tool, names, operation) =
+                        circular_pattern_tool(document, kernel, entry.id, &entry.feature, &tools)?;
+                    return apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some);
+                }
                 // Chamfers and fillets work on the part itself.
                 let (body, names) = part.as_ref().ok_or_else(|| {
                     String::from("there is no body to blend yet; add an extrude first")
@@ -1637,6 +1767,7 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                 Feature::Chamfer { .. }
                 | Feature::Fillet { .. }
                 | Feature::Pattern { .. }
+                | Feature::CircularPattern { .. }
                 | Feature::Import { .. }
                 | Feature::Reference { .. } => {
                     return Err(String::from("this feature has no sketch"));
@@ -1649,6 +1780,7 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                     names: names.clone(),
                     operation,
                     frame,
+                    sketch,
                 },
             );
             apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some)
