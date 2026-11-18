@@ -58,7 +58,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 22: revolve features (decision 0021).
 /// - 23: circular pattern features (decision 0022).
 /// - 24: mirror features (decision 0023).
-pub const SCHEMA_VERSION: u32 = 24;
+/// - 25: shell features (decision 0027).
+pub const SCHEMA_VERSION: u32 = 25;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -303,6 +304,18 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 24 knew nothing of shells.
+    if manifest.schema_version < 25
+        && document
+            .features()
+            .iter()
+            .any(|e| matches!(e.feature, cndt_model::Feature::Shell { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain shell features",
+            manifest.schema_version
+        )));
+    }
     // Version 23 knew nothing of mirrors.
     if manifest.schema_version < 24
         && document
@@ -999,6 +1012,50 @@ mod tests {
         let v15 = raw_zip(&[(MANIFEST, &manifest(15)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v15)).unwrap_err();
         assert!(error.to_string().contains("tool assemblies"), "{error}");
+    }
+
+    #[test]
+    fn shells_need_version_25() {
+        use cndt_model::sketch::Point2;
+        use cndt_model::{Feature, Operation, Plane, default_profiles};
+        let mut document = Document::new("Cover");
+        let sketch = document.add_sketch("Base", Plane::Xy).unwrap();
+        document
+            .edit_sketch(sketch, |s| {
+                let p: Vec<_> = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+                    .iter()
+                    .map(|&(x, y)| s.add_point(Point2::new(x, y)))
+                    .collect::<Result<_, _>>()?;
+                for i in 0..4 {
+                    s.add_line(p[i], p[(i + 1) % 4])?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let profiles = default_profiles(&document.sketch(sketch).unwrap().sketch);
+        document
+            .add_feature(Feature::Extrude {
+                name: String::from("Extrude1"),
+                sketch,
+                profiles,
+                distance: 5.0,
+                distance_expression: None,
+                operation: Operation::Join,
+            })
+            .unwrap();
+        document
+            .add_feature(Feature::Shell {
+                name: String::from("Shell1"),
+                faces: vec![String::from("f0/end/4-5-6-7")],
+                thickness: 1.0,
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        let v24 = raw_zip(&[(MANIFEST, &manifest(24)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v24)).unwrap_err();
+        assert!(error.to_string().contains("shell"), "{error}");
     }
 
     #[test]

@@ -157,6 +157,16 @@ pub enum Feature {
         /// The plane it reflects in.
         plane: MirrorPlane,
     },
+    /// Hollows the part inward, leaving the picked faces open (decision
+    /// 0027).
+    Shell {
+        /// Shown in the timeline, such as `Shell1`.
+        name: String,
+        /// The faces left open, by name.
+        faces: Vec<String>,
+        /// The wall's thickness in millimetres.
+        thickness: f64,
+    },
     /// Rounds edges.
     Fillet {
         /// Shown in the timeline, such as `Fillet1`.
@@ -412,6 +422,7 @@ impl Feature {
             | Self::Pattern { name, .. }
             | Self::CircularPattern { name, .. }
             | Self::Mirror { name, .. }
+            | Self::Shell { name, .. }
             | Self::Fillet { name, .. }
             | Self::Import { name, .. }
             | Self::Reference { name, .. } => name,
@@ -430,6 +441,7 @@ impl Feature {
             | Self::Pattern { .. }
             | Self::CircularPattern { .. }
             | Self::Mirror { .. }
+            | Self::Shell { .. }
             | Self::Import { .. }
             | Self::Reference { .. } => None,
         }
@@ -544,6 +556,25 @@ impl Feature {
             }
             // The plane is an enum: nothing else to check.
             Self::Mirror { .. } => Ok(()),
+            Self::Shell {
+                faces, thickness, ..
+            } => {
+                if !(thickness.is_finite() && *thickness > 0.0) {
+                    return Err(format!(
+                        "the wall thickness must be more than zero, not {thickness}"
+                    ));
+                }
+                if faces.is_empty() {
+                    return Err(String::from("pick at least one face to leave open"));
+                }
+                if faces
+                    .iter()
+                    .any(|t| t.is_empty() || t.len() > 200 || t.chars().any(char::is_control))
+                {
+                    return Err(String::from("a face is named by a damaged face name"));
+                }
+                Ok(())
+            }
             Self::Chamfer {
                 edges,
                 distance: size,
@@ -613,6 +644,11 @@ pub enum FaceOrigin {
     Blend {
         /// The two faces' names, in order.
         between: (String, String),
+    },
+    /// The inner wall a shell made behind a face, named by that face.
+    Inner {
+        /// The face's name.
+        of: String,
     },
     /// A face of a pattern's copy: the original face's name, and the copy's
     /// place in the grid.
@@ -694,6 +730,7 @@ impl fmt::Display for FaceName {
             FaceOrigin::Copy { at, original } => {
                 write!(f, "f{}/at{},{}/{original}", self.feature.0, at.0, at.1)
             }
+            FaceOrigin::Inner { of } => write!(f, "f{}/inner/{of}", self.feature.0),
             FaceOrigin::Blend { between } => {
                 write!(f, "f{}/blend/{}+{}", self.feature.0, between.0, between.1)
             }
@@ -1478,6 +1515,52 @@ fn blend_feature(
     Ok((made.body, carried))
 }
 
+/// Hollows the part, leaving the picked faces open. Each inner wall is named
+/// by the face it lies behind; the outer faces and the rims round the
+/// openings keep their names.
+fn shell_feature(
+    kernel: &dyn Kernel,
+    id: FeatureId,
+    feature: &Feature,
+    body: &Body,
+    names: &Names,
+) -> Result<(Body, Names), String> {
+    let Feature::Shell {
+        faces, thickness, ..
+    } = feature
+    else {
+        return Err(String::from("not a shell"));
+    };
+    let mut open: BTreeSet<u32> = BTreeSet::new();
+    for token in faces {
+        open.insert(unique_face(names, token)?);
+    }
+    let open: Vec<u32> = open.into_iter().collect();
+    if open.len() >= names.len() {
+        return Err(String::from("at least one face must stay closed"));
+    }
+    let made = kernel
+        .shell(body, &open, *thickness)
+        .map_err(|e| e.to_string())?;
+    let split = u32::try_from(names.len()).unwrap_or(u32::MAX);
+    let carried = carry(&made, &|source| {
+        if source < split {
+            names.get(source as usize).cloned()
+        } else if source < split.saturating_mul(2) {
+            let behind = names.get((source - split) as usize)?.iter().next()?;
+            Some(BTreeSet::from([FaceName {
+                feature: id,
+                origin: FaceOrigin::Inner {
+                    of: behind.to_string(),
+                },
+            }]))
+        } else {
+            names.get((source - 2 * split) as usize).cloned()
+        }
+    });
+    Ok((made.body, carried))
+}
+
 /// What an extrude or hole added or removed, kept for patterns.
 struct Tool {
     body: Body,
@@ -1839,6 +1922,12 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                         circular_pattern_tool(document, kernel, entry.id, &entry.feature, &tools)?;
                     return apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some);
                 }
+                if let Feature::Shell { .. } = &entry.feature {
+                    let (body, names) = part.as_ref().ok_or_else(|| {
+                        String::from("there is no body to hollow yet; add an extrude first")
+                    })?;
+                    return shell_feature(kernel, entry.id, &entry.feature, body, names).map(Some);
+                }
                 // Chamfers and fillets work on the part itself.
                 let (body, names) = part.as_ref().ok_or_else(|| {
                     String::from("there is no body to blend yet; add an extrude first")
@@ -1881,6 +1970,7 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                 | Feature::Pattern { .. }
                 | Feature::CircularPattern { .. }
                 | Feature::Mirror { .. }
+                | Feature::Shell { .. }
                 | Feature::Import { .. }
                 | Feature::Reference { .. } => {
                     return Err(String::from("this feature has no sketch"));

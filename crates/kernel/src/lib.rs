@@ -258,6 +258,19 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// for the faces around it.
     fn blend(&self, body: &Body, edges: &[u32], blend: Blend) -> Result<Made, KernelError>;
 
+    /// Hollows a body inward to a wall of `thickness` millimetres, leaving
+    /// the faces in `open_faces` open.
+    ///
+    /// History sources: input face `i` is `i`; the inner wall made from face
+    /// `i` is `faces + i`; the rim closing the wall at open face `i` is
+    /// `2 * faces + i`.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] with a reason, such as a wall too thick
+    /// for the part.
+    fn shell(&self, body: &Body, open_faces: &[u32], thickness: f64) -> Result<Made, KernelError>;
+
     /// A copy of a body moved by `offset` millimetres. Its faces are
     /// numbered as the original's.
     ///
@@ -703,6 +716,12 @@ impl Kernel for OpenCascade {
             Blend::Fillet(r) => cndt_occt_sys::Blend::Fillet(r),
         };
         cndt_occt_sys::blend(&body.0, edges, blend)
+            .map(made)
+            .map_err(modelling)
+    }
+
+    fn shell(&self, body: &Body, open_faces: &[u32], thickness: f64) -> Result<Made, KernelError> {
+        cndt_occt_sys::shell(&body.0, open_faces, thickness)
             .map(made)
             .map_err(modelling)
     }

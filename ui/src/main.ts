@@ -109,6 +109,7 @@ const ui = {
   circularAngle: element<HTMLInputElement>("circular-angle"),
   circularCenter: element<HTMLSelectElement>("circular-center"),
   filletButton: element<HTMLButtonElement>("fillet"),
+  shellButton: element<HTMLButtonElement>("shell"),
   blendDialog: element<HTMLFormElement>("blend-dialog"),
   blendTitle: element<HTMLHeadingElement>("blend-title"),
   blendSizeLabel: element<HTMLSpanElement>("blend-size-label"),
@@ -480,6 +481,7 @@ function renderFeatures(state: DocumentState): void {
     (f) => f.feature.type === "extrude" || f.feature.type === "hole" || f.feature.type === "revolve",
   );
   ui.filletButton.disabled = !state.body;
+  ui.shellButton.disabled = !state.body;
   const built = state.rollback ?? features.length;
   for (const [index, { id, feature }] of features.entries()) {
     if (index === built) ui.featureList.append(rollbackMarker());
@@ -1030,6 +1032,7 @@ function featureDetail(feature: import("./api").Feature, id?: number): string {
     return text.circularDetail(feature.count, formatNumber(feature.angle), source);
   }
   if (feature.type === "fillet") return text.filletDetail(formatNumber(feature.radius));
+  if (feature.type === "shell") return text.shellDetail(formatNumber(feature.thickness), feature.faces.length);
   if (feature.type === "reference") {
     const triangles = id === undefined ? undefined : current?.references?.[String(id)]?.triangles;
     return text.referenceDetail(feature.source, triangles);
@@ -1178,7 +1181,7 @@ function openCircular(feature: number | null): void {
 
 /** The chamfer or fillet being set up: which kind, the picked faces, and
  * the feature being edited (then no picking). */
-let blending: { kind: "chamfer" | "fillet"; faces: number[]; edges: number[]; editing: number | null } | null =
+let blending: { kind: "chamfer" | "fillet" | "shell"; faces: number[]; edges: number[]; editing: number | null } | null =
   null;
 
 function syncBlend(): void {
@@ -1193,26 +1196,32 @@ function syncBlend(): void {
     .join(text.and);
   ui.blendPicked.textContent =
     blending.editing !== null
-      ? text.edgesStay
+      ? blending.kind === "shell"
+        ? text.facesStay
+        : text.edgesStay
       : picked === ""
-        ? text.pickEdges
+        ? blending.kind === "shell"
+          ? text.pickShellFaces
+          : text.pickEdges
         : text.pickedMore(picked);
   viewer.highlightFaces(blending.faces);
   viewer.highlightEdges(blending.edges);
 }
 
-function openBlend(kind: "chamfer" | "fillet", feature: number | null): void {
+function openBlend(kind: "chamfer" | "fillet" | "shell", feature: number | null): void {
   if (!current) return;
   closeExtrude();
   closeRevolve();
   closeHole();
   const existing = current.document.features?.find((f) => f.id === feature)?.feature;
   blending = { kind, faces: [], edges: [], editing: feature };
-  const label = kind === "chamfer" ? text.chamfer : text.fillet;
+  const label = kind === "chamfer" ? text.chamfer : kind === "shell" ? text.shell : text.fillet;
   ui.blendTitle.textContent = existing ? text.edit(existing.name) : label;
-  ui.blendSizeLabel.textContent = kind === "chamfer" ? text.distanceMm : text.radiusMm;
+  ui.blendSizeLabel.textContent =
+    kind === "chamfer" ? text.distanceMm : kind === "shell" ? text.wallThicknessMm : text.radiusMm;
   if (existing?.type === "chamfer") ui.blendSize.value = String(existing.distance);
   else if (existing?.type === "fillet") ui.blendSize.value = String(existing.radius);
+  else if (existing?.type === "shell") ui.blendSize.value = String(existing.thickness);
   else ui.blendSize.value = kind === "chamfer" ? "0.5" : "2";
   viewer.canvas.style.cursor = feature === null ? "pointer" : "";
   ui.blendDialog.hidden = false;
@@ -1819,7 +1828,8 @@ element("sketch-on-face").addEventListener("click", () => {
 viewer.canvas.addEventListener("pointermove", (event) => {
   if (pickingFace) viewer.highlightFace(viewer.faceAt(event.clientX, event.clientY));
   else if (blending && blending.editing === null) {
-    const edge = viewer.edgeAt(event.clientX, event.clientY);
+    // A shell leaves faces open: edges are not picked.
+    const edge = blending.kind === "shell" ? null : viewer.edgeAt(event.clientX, event.clientY);
     viewer.highlightEdges(blending.edges, edge);
     viewer.highlightFaces(blending.faces, edge === null ? viewer.faceAt(event.clientX, event.clientY) : null);
   }
@@ -1828,7 +1838,7 @@ viewer.canvas.addEventListener("pointermove", (event) => {
 viewer.canvas.addEventListener("click", (event) => {
   if (!blending || blending.editing !== null) return;
   // An edge near the pointer wins over the face under it.
-  const edge = viewer.edgeAt(event.clientX, event.clientY);
+  const edge = blending.kind === "shell" ? null : viewer.edgeAt(event.clientX, event.clientY);
   if (edge !== null) {
     blending.edges = blending.edges.includes(edge)
       ? blending.edges.filter((e) => e !== edge)
@@ -1844,6 +1854,7 @@ viewer.canvas.addEventListener("click", (event) => {
 });
 
 ui.chamferButton.addEventListener("click", () => openBlend("chamfer", null));
+ui.shellButton.addEventListener("click", () => openBlend("shell", null));
 element("cam-add-top").addEventListener(
   "click",
   guarded(async () => {
@@ -1985,7 +1996,19 @@ ui.blendDialog.addEventListener("submit", (event) => {
     if (!blending) return;
     const size = Number(ui.blendSize.value);
     let next: DocumentState;
-    if (blending.editing !== null) {
+    if (blending.kind === "shell") {
+      if (blending.editing !== null) {
+        next = await execute("feature.edit_shell", { feature: blending.editing, thickness: size });
+      } else {
+        if (blending.faces.length === 0) throw new Error(text.pickOneFace);
+        const faces = blending.faces.map((f) => {
+          const name = uniqueFaceName(f);
+          if (!name) throw new Error(text.pickedFaceNoName);
+          return name;
+        });
+        next = await execute("feature.shell", { faces, thickness: size });
+      }
+    } else if (blending.editing !== null) {
       next = await execute("feature.edit_blend", { feature: blending.editing, size });
     } else {
       if (blending.faces.length === 0 && blending.edges.length === 0) {
@@ -2731,6 +2754,8 @@ const commandButtons: Record<string, string> = {
   "feature.chamfer": "chamfer",
   "feature.fillet": "fillet",
   "feature.edit_blend": "chamfer",
+  "feature.shell": "shell",
+  "feature.edit_shell": "shell",
   "feature.import": "insert-step",
   "sketch.create": "new-sketch",
   "cam.add_setup": "cam-add-top",
