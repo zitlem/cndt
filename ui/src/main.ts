@@ -25,6 +25,7 @@ import {
   simulationMesh,
 } from "./api";
 import { firstSentence, matchEntries, type PaletteEntry } from "./palette";
+import { operationRange, type Toolpath, visibleMoves } from "./scrub";
 import { SketchEditor, type Tool } from "./sketch";
 import { ui as text } from "./strings";
 import { type Layer, type ViewName, Viewer } from "./viewer";
@@ -643,14 +644,30 @@ const pickPrompts: Record<string, string> = {
 /** A CAM operation waiting for its face to be picked. */
 let camPick: { setup: number; type: string } | null = null;
 
+/** The drawn toolpath and what of it is shown: one operation or all, and how many moves. */
+let shownPath: Toolpath | null = null;
+let scrubOperation: number | null = null;
+let scrubMoves: number | null = null;
+
+function drawScrubbed(): void {
+  viewer.setToolpath(shownPath ? visibleMoves(shownPath, scrubOperation, scrubMoves) : null);
+}
+
 async function showToolpath(setup: number | null): Promise<void> {
+  const same = setup !== null && setup === shownSetup;
   shownSetup = setup;
   if (setup === null) {
+    shownPath = null;
     viewer.setToolpath(null);
   } else {
     try {
-      viewer.setToolpath(await toolpathPreview(setup));
+      shownPath = await toolpathPreview(setup);
+      // Keep the scrub position across a refresh of the same setup, if it still fits.
+      if (!same || (scrubOperation !== null && scrubOperation >= shownPath.operations.length)) scrubOperation = null;
+      if (!same) scrubMoves = null;
+      drawScrubbed();
     } catch (error) {
+      shownPath = null;
       viewer.setToolpath(null);
       shownSetup = null;
       throw error;
@@ -757,6 +774,55 @@ function showReport(report: Verification): void {
   element("report-text").textContent = report.text;
   panel.dataset["verdict"] = report.verdict;
   panel.hidden = false;
+}
+
+/** The scrub controls under a setup whose toolpath is drawn: an operation and a move slider. */
+function scrubRow(path: Toolpath): HTMLElement {
+  const row = globalThis.document.createElement("div");
+  row.className = "scrub-row";
+  row.title = text.scrubTitle;
+  const which = globalThis.document.createElement("select");
+  const all = globalThis.document.createElement("option");
+  all.value = "";
+  all.textContent = text.scrubAll;
+  which.append(all);
+  path.operations.forEach((operation, index) => {
+    const option = globalThis.document.createElement("option");
+    option.value = String(index);
+    option.textContent = `${index + 1}. ${operation.name}`;
+    which.append(option);
+  });
+  which.value = scrubOperation === null ? "" : String(scrubOperation);
+  const slider = globalThis.document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.setAttribute("aria-label", text.scrubSliderLabel);
+  const label = globalThis.document.createElement("span");
+  label.className = "scrub-count";
+  const sync = (): void => {
+    const [first, end] = operationRange(path, scrubOperation);
+    const total = end - first;
+    slider.max = String(total);
+    const at = Math.min(scrubMoves ?? total, total);
+    slider.value = String(at);
+    label.textContent = text.scrubMoves(at, total);
+  };
+  sync();
+  which.addEventListener("change", () => {
+    scrubOperation = which.value === "" ? null : Number(which.value);
+    scrubMoves = null;
+    sync();
+    drawScrubbed();
+  });
+  // Dragging only redraws the toolpath: rebuilding the list would drop the slider mid-drag.
+  slider.addEventListener("input", () => {
+    const total = Number(slider.max);
+    scrubMoves = Number(slider.value) >= total ? null : Number(slider.value);
+    label.textContent = text.scrubMoves(Number(slider.value), total);
+    drawScrubbed();
+  });
+  row.append(which, slider, label);
+  return row;
 }
 
 function renderSetups(state: DocumentState): void {
@@ -924,7 +990,9 @@ function renderSetups(state: DocumentState): void {
     vise.addEventListener("change", applyVise);
     along.addEventListener("change", applyVise);
     viseRow.append(text.viseLabel, vise, along);
-    item.append(head, ops, row, viseRow);
+    item.append(head, ops);
+    if (shownSetup === id && shownPath) item.append(scrubRow(shownPath));
+    item.append(row, viseRow);
     ui.setupList.append(item);
   }
 }

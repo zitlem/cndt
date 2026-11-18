@@ -651,7 +651,7 @@ fn changed_lines(old: &str, new: &str) -> Option<Vec<usize>> {
 }
 
 /// The first bytes of a toolpath preview buffer.
-pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH1";
+pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH2";
 
 /// The first bytes of a `body_edges` buffer. Layout, little-endian: magic;
 /// u32 edge count `n`; `n` u32 point counts; then every edge's points as
@@ -1067,8 +1067,12 @@ impl Api {
     }
 
     /// A setup's toolpath for drawing, in model coordinates. Layout,
-    /// little-endian: [`TOOLPATH_MAGIC`]; u32 segment count; then per
-    /// segment u8 kind (0 rapid, 1 cut) and f32 x, y, z from, x, y, z to.
+    /// little-endian: [`TOOLPATH_MAGIC`]; u32 segment count `n`; u32
+    /// operation count `m`; per operation u32 index of its first segment,
+    /// u32 name length in bytes and the name as UTF-8; then `n` segments,
+    /// each u8 kind (0 rapid, 1 cut) and f32 x, y, z from, x, y, z to
+    /// (25 bytes). Operations are in program order, so a segment belongs to
+    /// the last operation that starts at or before it.
     ///
     /// # Errors
     ///
@@ -1084,14 +1088,29 @@ impl Api {
         let Some(placed) = planned.setup else {
             return Err(ApiError::new("cam", "the setup has no placement"));
         };
-        let segments = cndt_process_mill::preview(&planned.program, &placed);
-        let mut out = Vec::with_capacity(12 + segments.len() * 25);
+        let (segments, starts) = cndt_process_mill::preview_operations(&planned.program, &placed);
+        let too_long = || ApiError::new("internal", "toolpath too long");
+        let mut out = Vec::with_capacity(16 + segments.len() * 25);
         out.extend_from_slice(TOOLPATH_MAGIC);
         out.extend_from_slice(
             &u32::try_from(segments.len())
-                .map_err(|_| ApiError::new("internal", "toolpath too long"))?
+                .map_err(|_| too_long())?
                 .to_le_bytes(),
         );
+        out.extend_from_slice(
+            &u32::try_from(starts.len())
+                .map_err(|_| too_long())?
+                .to_le_bytes(),
+        );
+        for (name, first) in &starts {
+            out.extend_from_slice(&u32::try_from(*first).map_err(|_| too_long())?.to_le_bytes());
+            out.extend_from_slice(
+                &u32::try_from(name.len())
+                    .map_err(|_| too_long())?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(name.as_bytes());
+        }
         for s in segments {
             out.push(u8::from(!s.rapid));
             for v in [s.from.x, s.from.y, s.from.z, s.to.x, s.to.y, s.to.z] {
