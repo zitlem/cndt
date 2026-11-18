@@ -364,6 +364,17 @@ export async function simulationMesh(setup: number): Promise<Mesh> {
   }
 }
 
+/** A setup's posted G-code, read back and drawn (a backplot). */
+export async function postedPreview(setup: number, post: string, definition?: string): Promise<Toolpath> {
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await invoke<ArrayBuffer>("posted_preview", { setup, post, definition: definition ?? null });
+  } catch (error) {
+    throw new ApiFailure("read_back", String(error));
+  }
+  return decodeToolpath(buffer);
+}
+
 export async function toolpathPreview(setup: number): Promise<Toolpath> {
   let buffer: ArrayBuffer;
   try {
@@ -371,6 +382,10 @@ export async function toolpathPreview(setup: number): Promise<Toolpath> {
   } catch (error) {
     throw new ApiFailure("cam", String(error));
   }
+  return decodeToolpath(buffer);
+}
+
+function decodeToolpath(buffer: ArrayBuffer): Toolpath {
   const view = new DataView(buffer);
   const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(8, buffer.byteLength)));
   if (buffer.byteLength < 16 || magic !== "CNDTTPH2") {

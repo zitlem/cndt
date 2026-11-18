@@ -16,6 +16,8 @@
 //! - `simulation_mesh`: a setup's simulated stock, as
 //!   `cndt_api::Api::simulation_mesh` describes.
 //! - `reference_mesh`: a reference mesh's triangles (decision 0018).
+//! - `posted_preview`: a setup's posted G-code read back and drawn, in the
+//!   `toolpath_preview` layout.
 //!
 //! Both run off the main thread, so a slow import never freezes the window.
 
@@ -99,6 +101,20 @@ fn simulation_mesh(setup: Option<u32>, state: State<'_, AppState>) -> Result<Res
 }
 
 #[tauri::command(async)]
+fn posted_preview(
+    setup: Option<u32>,
+    post: String,
+    definition: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Response, String> {
+    state
+        .api()
+        .posted_preview(setup, &post, definition)
+        .map(Response::new)
+        .map_err(|error| error.message)
+}
+
+#[tauri::command(async)]
 fn reference_mesh(feature: u32, state: State<'_, AppState>) -> Result<Response, String> {
     state
         .api()
@@ -126,7 +142,8 @@ fn main() {
             body_edges,
             toolpath_preview,
             simulation_mesh,
-            reference_mesh
+            reference_mesh,
+            posted_preview
         ])
         .run(context());
     if let Err(error) = result {

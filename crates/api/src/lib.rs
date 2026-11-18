@@ -1207,38 +1207,135 @@ impl Api {
         };
         self.note_planned(setup);
         let (segments, starts) = cndt_process_mill::preview_operations(&planned.program, &placed);
-        let too_long = || ApiError::new("internal", "toolpath too long");
-        let mut out = Vec::with_capacity(16 + segments.len() * 25);
-        out.extend_from_slice(TOOLPATH_MAGIC);
-        out.extend_from_slice(
-            &u32::try_from(segments.len())
-                .map_err(|_| too_long())?
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(
-            &u32::try_from(starts.len())
-                .map_err(|_| too_long())?
-                .to_le_bytes(),
-        );
-        for (name, first) in &starts {
-            out.extend_from_slice(&u32::try_from(*first).map_err(|_| too_long())?.to_le_bytes());
-            out.extend_from_slice(
-                &u32::try_from(name.len())
-                    .map_err(|_| too_long())?
-                    .to_le_bytes(),
-            );
-            out.extend_from_slice(name.as_bytes());
-        }
-        for s in segments {
-            out.push(u8::from(!s.rapid));
-            for v in [s.from.x, s.from.y, s.from.z, s.to.x, s.to.y, s.to.z] {
-                #[allow(clippy::cast_possible_truncation)]
-                out.extend_from_slice(&(v as f32).to_le_bytes());
-            }
-        }
-        Ok(out)
+        encode_toolpath(&segments, &starts)
     }
 
+    /// A setup's *posted* G-code drawn back (a backplot): the setup posted
+    /// alone through `post` (a shipped id, or `definition` text), read back
+    /// into moves and drawn in model coordinates, in the layout of
+    /// [`Api::toolpath_preview`], one operation per tool. Moves from the
+    /// unknown height after homing are left out.
+    ///
+    /// # Errors
+    ///
+    /// `cam` when the setup cannot be planned; the post's error; `read_back`
+    /// when the G-code cannot be read back (the GRBL post, say).
+    pub fn posted_preview(
+        &self,
+        setup: Option<u32>,
+        post: &str,
+        definition: Option<String>,
+    ) -> Result<Vec<u8>, ApiError> {
+        let planned = cndt_process_mill::plan_setup(
+            self.session.document(),
+            &self.rebuilt,
+            self.kernel.as_ref(),
+            setup,
+        )
+        .map_err(|e| ApiError::new("cam", e.to_string()))?;
+        let Some(placed) = planned.setup else {
+            return Err(ApiError::new("cam", "the setup has no placement"));
+        };
+        let post = PostRef {
+            id: post.to_owned(),
+            definition,
+        };
+        let posted = self.post_program(&post, None, setup, None, Output::default(), &[])?;
+        let gcode = posted["gcode"].as_str().unwrap_or_default();
+        let mut back = cndt_post::read_back(gcode).map_err(|e| {
+            ApiError::new(
+                "read_back",
+                format!("the posted G-code cannot be drawn back: {e}"),
+            )
+        })?;
+        // One operation per tool, so the scrubber steps through tools.
+        let steps: Vec<cndt_cam_core::Step> =
+            back.operations.drain(..).flat_map(|o| o.steps).collect();
+        for step in steps {
+            if let cndt_cam_core::Step::Event(cndt_cam_core::Event::ToolChange { number, .. }) =
+                &step
+            {
+                back.operations.push(cndt_cam_core::Operation {
+                    name: format!("T{number} as posted"),
+                    steps: Vec::new(),
+                });
+            }
+            if back.operations.is_empty() {
+                back.operations.push(cndt_cam_core::Operation {
+                    name: String::from("Start, as posted"),
+                    steps: Vec::new(),
+                });
+            }
+            if let Some(last) = back.operations.last_mut() {
+                last.steps.push(step);
+            }
+        }
+        let (all, starts) = cndt_process_mill::preview_operations(&back, &placed);
+        // Leave out moves from the unknown height after homing, keeping
+        // each operation's first segment in step.
+        let high = cndt_post::UNKNOWN_HEIGHT - 1.0;
+        let keep: Vec<bool> = all
+            .iter()
+            .map(|s| placed.program_point(s.from).z < high && placed.program_point(s.to).z < high)
+            .collect();
+        let starts: Vec<(String, usize)> = starts
+            .into_iter()
+            .map(|(name, first)| {
+                (
+                    name,
+                    keep[..first.min(keep.len())].iter().filter(|k| **k).count(),
+                )
+            })
+            .collect();
+        let segments: Vec<_> = all
+            .into_iter()
+            .zip(&keep)
+            .filter(|(_, k)| **k)
+            .map(|(s, _)| s)
+            .collect();
+        encode_toolpath(&segments, &starts)
+    }
+}
+
+/// Toolpath segments, and where each operation starts, in the layout of
+/// [`Api::toolpath_preview`].
+fn encode_toolpath(
+    segments: &[cndt_process_mill::PreviewSegment],
+    starts: &[(String, usize)],
+) -> Result<Vec<u8>, ApiError> {
+    let too_long = || ApiError::new("internal", "toolpath too long");
+    let mut out = Vec::with_capacity(16 + segments.len() * 25);
+    out.extend_from_slice(TOOLPATH_MAGIC);
+    out.extend_from_slice(
+        &u32::try_from(segments.len())
+            .map_err(|_| too_long())?
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &u32::try_from(starts.len())
+            .map_err(|_| too_long())?
+            .to_le_bytes(),
+    );
+    for (name, first) in starts {
+        out.extend_from_slice(&u32::try_from(*first).map_err(|_| too_long())?.to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(name.len())
+                .map_err(|_| too_long())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(name.as_bytes());
+    }
+    for s in segments {
+        out.push(u8::from(!s.rapid));
+        for v in [s.from.x, s.from.y, s.from.z, s.to.x, s.to.y, s.to.z] {
+            #[allow(clippy::cast_possible_truncation)]
+            out.extend_from_slice(&(v as f32).to_le_bytes());
+        }
+    }
+    Ok(out)
+}
+
+impl Api {
     fn deflection(&self) -> f64 {
         self.rebuilt.properties.map_or(0.05, |p| {
             let [x, y, z] = p.bounds.size();
