@@ -265,6 +265,18 @@ pub enum SketchEdit {
         /// The opposite corner.
         to: Point2,
     },
+    /// Adds a slot (a stadium): two arcs joined by two lines, from the
+    /// centres of its two ends and its width. Tangent, equal-radius, radius
+    /// and centre-distance constraints keep it a slot when it is edited; a
+    /// construction line joins the two centres.
+    AddSlot {
+        /// The centre of one end.
+        from: Point2,
+        /// The centre of the other end.
+        to: Point2,
+        /// The width across the slot, in millimetres.
+        width: f64,
+    },
     /// Adds a constraint.
     Constrain(Constraint),
     /// Drives a dimension by an expression of the parameters, such as
@@ -313,6 +325,7 @@ impl SketchEdit {
             Self::AddCircle { .. } => "sketch.add_circle",
             Self::AddArc { .. } => "sketch.add_arc",
             Self::AddRectangle { .. } => "sketch.add_rectangle",
+            Self::AddSlot { .. } => "sketch.add_slot",
             Self::Constrain(_) => "sketch.constrain",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => {
                 "sketch.set_dimension"
@@ -331,6 +344,7 @@ impl SketchEdit {
             Self::AddCircle { .. } => "Add circle",
             Self::AddArc { .. } => "Add arc",
             Self::AddRectangle { .. } => "Add rectangle",
+            Self::AddSlot { .. } => "Add slot",
             Self::Constrain(_) => "Add constraint",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => "Change dimension",
             Self::MovePoint { .. } => "Move point",
@@ -396,6 +410,7 @@ impl SketchEdit {
                     sketch.add_constraint(constraint, &options)?;
                 }
             }
+            Self::AddSlot { from, to, width } => add_slot(sketch, from, to, width, &options)?,
             Self::Constrain(ref constraint) => {
                 sketch.add_constraint(constraint.clone(), &options)?;
             }
@@ -420,6 +435,70 @@ impl SketchEdit {
         }
         Ok(())
     }
+}
+
+/// Draws a slot between two end centres. The ends are counter-clockwise
+/// arcs, so the profile detector sees one closed loop.
+fn add_slot(
+    sketch: &mut Sketch,
+    from: Point2,
+    to: Point2,
+    width: f64,
+    options: &SolveOptions,
+) -> Result<(), SketchError> {
+    let length = from.distance(to);
+    if length.is_nan() || length <= 1e-9 {
+        return Err(SketchError::BadValue {
+            kind: "slot length",
+            value: length,
+            expected: "more than zero",
+        });
+    }
+    if width.is_nan() || width <= 1e-9 {
+        return Err(SketchError::BadValue {
+            kind: "slot width",
+            value: width,
+            expected: "more than zero",
+        });
+    }
+    let radius = width / 2.0;
+    // Unit direction, and the unit normal to its left.
+    let (dx, dy) = ((to.x - from.x) / length, (to.y - from.y) / length);
+    let (nx, ny) = (-dy * radius, dx * radius);
+    let offset = |c: Point2, sign: f64| Point2::new(c.x + sign * nx, c.y + sign * ny);
+    let c1 = sketch.add_point(from)?;
+    let c2 = sketch.add_point(to)?;
+    let left1 = sketch.add_point(offset(from, 1.0))?;
+    let left2 = sketch.add_point(offset(to, 1.0))?;
+    let right1 = sketch.add_point(offset(from, -1.0))?;
+    let right2 = sketch.add_point(offset(to, -1.0))?;
+    let top = sketch.add_line(left1, left2)?;
+    let bottom = sketch.add_line(right1, right2)?;
+    // Counter-clockwise: the far end from its right side round to its left,
+    // the near end from its left side round to its right.
+    let far = sketch.add_arc(c2, right2, left2)?;
+    let near = sketch.add_arc(c1, left1, right1)?;
+    let axis = sketch.add_line(c1, c2)?;
+    sketch.set_construction(axis, true)?;
+    for (line, arc) in [(top, near), (top, far), (bottom, near), (bottom, far)] {
+        sketch.add_constraint(Constraint::Tangent { a: line, b: arc }, options)?;
+    }
+    sketch.add_constraint(Constraint::Equal { a: near, b: far }, options)?;
+    sketch.add_constraint(
+        Constraint::Radius {
+            curve: near,
+            value: radius,
+        },
+        options,
+    )?;
+    sketch.add_constraint(
+        Constraint::Length {
+            line: axis,
+            value: length,
+        },
+        options,
+    )?;
+    Ok(())
 }
 
 fn point(sketch: &mut Sketch, reference: PointRef) -> Result<EntityId, SketchError> {
@@ -561,6 +640,96 @@ mod tests {
 
     fn sketch(session: &Session, id: SketchId) -> &Sketch {
         &session.document().sketch(id).unwrap().sketch
+    }
+
+    fn slot(from: (f64, f64), to: (f64, f64), width: f64) -> SketchEdit {
+        SketchEdit::AddSlot {
+            from: Point2::new(from.0, from.1),
+            to: Point2::new(to.0, to.1),
+            width,
+        }
+    }
+
+    fn slot_area(length: f64, width: f64) -> f64 {
+        length * width + std::f64::consts::PI * (width / 2.0).powi(2)
+    }
+
+    #[test]
+    fn a_slot_is_one_closed_region_of_the_right_size() {
+        // A slanted slot, so nothing depends on being axis aligned.
+        let (mut session, id) = session_with_sketch();
+        edit(&mut session, id, slot((0.0, 0.0), (24.0, 18.0), 6.0)).unwrap();
+        let profiles = sketch(&session, id).profiles();
+        assert_eq!(profiles.profiles.len(), 1);
+        assert!(profiles.open.is_empty());
+        let profile = &profiles.profiles[0];
+        assert_eq!(profile.outer.curves.len(), 4);
+        assert!(profile.holes.is_empty());
+        let expected = slot_area(30.0, 6.0);
+        assert!(
+            (profile.outer.area.abs() - expected).abs() < 0.2,
+            "area {} against {expected}",
+            profile.outer.area
+        );
+        // Placement is the only freedom left: two for position, one for angle.
+        assert_eq!(sketch(&session, id).freedom().dof, Some(3));
+    }
+
+    #[test]
+    fn slot_dimensions_drive_it_and_it_stays_closed() {
+        let (mut session, id) = session_with_sketch();
+        edit(&mut session, id, slot((0.0, 0.0), (20.0, 0.0), 6.0)).unwrap();
+        let dimensions: Vec<_> = sketch(&session, id)
+            .constraints()
+            .filter(|(_, c)| matches!(c, Constraint::Radius { .. } | Constraint::Length { .. }))
+            .map(|(constraint, c)| (constraint, c.kind()))
+            .collect();
+        assert_eq!(dimensions.len(), 2);
+        for (constraint, kind) in dimensions {
+            // Width 10 is a radius of 5; the centres move to 30 apart.
+            let value = if kind == "radius" { 5.0 } else { 30.0 };
+            edit(
+                &mut session,
+                id,
+                SketchEdit::SetDimension { constraint, value },
+            )
+            .unwrap();
+        }
+        let profiles = sketch(&session, id).profiles();
+        assert_eq!(profiles.profiles.len(), 1);
+        let area = profiles.profiles[0].outer.area.abs();
+        assert!(
+            (area - slot_area(30.0, 10.0)).abs() < 0.3,
+            "area {area} against {}",
+            slot_area(30.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn slot_undo_and_redo() {
+        let (mut session, id) = session_with_sketch();
+        edit(&mut session, id, slot((0.0, 0.0), (20.0, 0.0), 6.0)).unwrap();
+        let drawn = sketch(&session, id).clone();
+        assert_eq!(session.undo_label().as_deref(), Some("Add slot"));
+        session.undo().unwrap();
+        assert_eq!(sketch(&session, id).entities().count(), 0);
+        session.redo().unwrap();
+        assert_eq!(sketch(&session, id), &drawn);
+    }
+
+    #[test]
+    fn a_slot_with_no_length_or_no_width_is_refused_and_changes_nothing() {
+        let (mut session, id) = session_with_sketch();
+        for bad in [
+            slot((5.0, 5.0), (5.0, 5.0), 6.0),
+            slot((0.0, 0.0), (20.0, 0.0), 0.0),
+            slot((0.0, 0.0), (20.0, 0.0), -3.0),
+            slot((0.0, 0.0), (20.0, 0.0), f64::NAN),
+        ] {
+            let error = edit(&mut session, id, bad).unwrap_err().to_string();
+            assert!(error.contains("more than zero"), "{error}");
+            assert_eq!(sketch(&session, id).entities().count(), 0);
+        }
     }
 
     #[test]
