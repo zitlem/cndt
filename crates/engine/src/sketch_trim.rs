@@ -96,7 +96,7 @@ fn line_circle(a: Point2, b: Point2, center: Point2, radius: f64) -> Vec<Point2>
     hits
 }
 
-fn circle_circle(c1: Point2, r1: f64, c2: Point2, r2: f64) -> Vec<Point2> {
+pub(crate) fn circle_circle(c1: Point2, r1: f64, c2: Point2, r2: f64) -> Vec<Point2> {
     let d = c1.distance(c2);
     if d <= NEAR || d > r1 + r2 || d < (r1 - r2).abs() {
         return Vec::new();
