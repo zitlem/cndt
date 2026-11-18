@@ -674,7 +674,12 @@ async function showToolpath(setup: number | null): Promise<void> {
       throw error;
     }
   }
-  if (current) renderSetups(current);
+  const shown = current;
+  if (shown) {
+    // Drawing a toolpath plans it afresh: its operations are no longer stale.
+    current = { ...shown, stale_operations: (await state()).stale_operations };
+    renderSetups(current);
+  }
 }
 
 /**
@@ -883,6 +888,13 @@ function renderSetups(state: DocumentState): void {
       const li = globalThis.document.createElement("li");
       li.textContent = operationText(op.operation);
       li.title = text.doubleClickToDelete;
+      if (state.stale_operations.includes(op.id)) {
+        const mark = globalThis.document.createElement("span");
+        mark.className = "stale";
+        mark.textContent = text.staleMarker;
+        mark.title = text.staleTitle;
+        li.append(" ", mark);
+      }
       li.addEventListener(
         "dblclick",
         guarded(async () => render(await execute("cam.remove_operation", { setup: id, operation: op.id }))),

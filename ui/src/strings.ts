@@ -464,6 +464,8 @@ export const ui = {
   controllerTitle: "Machine or controller the Post… button writes for",
   deleteSetup: "Delete this setup",
   doubleClickToDelete: "Double-click to delete",
+  staleMarker: "stale",
+  staleTitle: "The design changed after this toolpath was drawn. Show the setup again to bring it up to date.",
   addFace: "Face",
   addContour: "Contour…",
   addPocket: "Pocket…",
