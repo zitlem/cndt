@@ -866,7 +866,42 @@ function renderSetups(state: DocumentState): void {
       guarded(() => simulateSetup(simulatedSetup === id ? null : id)),
     );
     row.append(kind, add, detect, simulate);
-    item.append(head, ops, row);
+    // The vise holding the stock (decision 0020): how much it grips, from
+    // the stock's bottom up; empty for none. Its jaws are checked against
+    // every tool in the simulation.
+    const viseRow = globalThis.document.createElement("label");
+    viseRow.className = "vise-row";
+    viseRow.title = text.viseTitle;
+    const vise = globalThis.document.createElement("input");
+    vise.type = "number";
+    vise.min = "0";
+    vise.step = "any";
+    vise.placeholder = text.noVise;
+    vise.value = setup.vise ? String(setup.vise.grip) : "";
+    const along = globalThis.document.createElement("select");
+    for (const [value, label] of [
+      ["x", text.jawsFrontBack],
+      ["y", text.jawsLeftRight],
+    ] as const) {
+      const option = globalThis.document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      along.append(option);
+    }
+    along.value = setup.vise?.along ?? "x";
+    const applyVise = guarded(async () => {
+      const grip = vise.value.trim() === "" ? null : Number(vise.value);
+      render(
+        await execute(
+          "cam.set_vise",
+          grip === null ? { setup: id } : { setup: id, grip, along: along.value, jaw: setup.vise?.jaw ?? 25 },
+        ),
+      );
+    });
+    vise.addEventListener("change", applyVise);
+    along.addEventListener("change", applyVise);
+    viseRow.append(text.viseLabel, vise, along);
+    item.append(head, ops, row, viseRow);
     ui.setupList.append(item);
   }
 }

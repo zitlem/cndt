@@ -1018,6 +1018,8 @@ impl Command for EditCam {
             E::RemoveOperation { .. } => "Delete operation",
             E::SetTool { .. } => "Set tool",
             E::RemoveTool(_) => "Delete tool",
+            E::SetVise { vise: Some(_), .. } => "Set vise",
+            E::SetVise { vise: None, .. } => "Remove vise",
         })
     }
 

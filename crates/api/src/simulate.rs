@@ -167,8 +167,17 @@ impl Api {
             let count = ((hi - lo) / cell).ceil().max(1.0);
             (lo - (count * cell - (hi - lo)) / 2.0, count as usize)
         };
-        let (x0, nx) = fit(stock.min.x, stock.max.x);
-        let (y0, ny) = fit(stock.min.y, stock.max.y);
+        // With a vise anywhere, every setup's grid reaches past the stock
+        // by the thickest jaw, the same on every side, so carried cells
+        // still map onto cells and the jaws are on the grid.
+        let margin = document
+            .cam()
+            .setups
+            .iter()
+            .filter_map(|s| s.setup.vise.map(|v| v.jaw))
+            .fold(0.0, f64::max);
+        let (x0, nx) = fit(stock.min.x - margin, stock.max.x + margin);
+        let (y0, ny) = fit(stock.min.y - margin, stock.max.y + margin);
         let grid = cndt_sim::Grid {
             x0,
             y0,
@@ -191,6 +200,58 @@ impl Api {
         let from_above = placed.side != Side::Bottom;
         let placement = placement_of(&placed)
             .ok_or_else(|| ApiError::new("internal", "the setup is not a quarter turn"))?;
+        // The real stock in program coordinates (a side setup's planning
+        // box is larger, conservatively): where the jaws grip it, and where
+        // the grid's margin holds no stock.
+        let exact = {
+            let (min, max) = self.model_stock()?;
+            let corners = (0..8).map(|k| {
+                placement.program([
+                    if k & 1 == 0 { min[0] } else { max[0] },
+                    if k & 2 == 0 { min[1] } else { max[1] },
+                    if k & 4 == 0 { min[2] } else { max[2] },
+                ])
+            });
+            corners.fold(
+                ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+                |(lo, hi), p| {
+                    (
+                        [0, 1, 2].map(|a| lo[a].min(p[a])),
+                        [0, 1, 2].map(|a| hi[a].max(p[a])),
+                    )
+                },
+            )
+        };
+        let on_stock = |c: usize| {
+            let [x, y] = grid.centres_at(c);
+            (exact.0[0]..=exact.1[0]).contains(&x) && (exact.0[1]..=exact.1[1]).contains(&y)
+        };
+        let fixture: Vec<Option<f64>> = match document
+            .cam()
+            .setups
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.setup.vise)
+        {
+            None => Vec::new(),
+            Some(vise) => {
+                let top = exact.0[2] + vise.grip;
+                // Across the jaws' axis: the jaws stand outside the stock's
+                // two faces, `jaw` thick, along the whole grid.
+                let across = match vise.along {
+                    cndt_model::cam::JawAxis::X => 1,
+                    cndt_model::cam::JawAxis::Y => 0,
+                };
+                let (lo, hi) = (exact.0[across], exact.1[across]);
+                (0..grid.len())
+                    .map(|c| {
+                        let v = grid.centres_at(c)[across];
+                        ((lo - vise.jaw..lo).contains(&v) || (hi..hi + vise.jaw).contains(&v))
+                            .then_some(top)
+                    })
+                    .collect()
+            }
+        };
         let (heights, floors): (Vec<f64>, Vec<f64>) = match carry {
             Carry::Dexels(dexels) => {
                 if dexels.is_none() {
@@ -209,7 +270,13 @@ impl Api {
                     } else {
                         (to_model(stock.max.z), to_model(stock.min.z))
                     };
-                    *columns = Some((grid, vec![(low, high); grid.len()]));
+                    // Cells in the margin past the stock hold nothing.
+                    *columns = Some((
+                        grid,
+                        (0..grid.len())
+                            .map(|c| if on_stock(c) { (low, high) } else { (low, low) })
+                            .collect(),
+                    ));
                 }
                 let Some((_, carried)) = columns.as_ref() else {
                     return Err(ApiError::new("internal", "no stock to simulate"));
@@ -263,6 +330,7 @@ impl Api {
             heights,
             floors,
             part,
+            fixture,
         };
         let report = cndt_sim::simulate(&planned.program, &tools, &input)
             .map_err(|e| ApiError::new("simulation", e.to_string()))?;

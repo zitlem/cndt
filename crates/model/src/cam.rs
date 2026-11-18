@@ -368,8 +368,79 @@ pub struct SetupDef {
     /// part is clamped by hand for this setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<f64>,
+    /// The vise holding the part, so the simulation can check that no tool
+    /// touches its jaws (decision 0020). `None`: no fixture is checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vise: Option<Vise>,
     /// In machining order.
     pub operations: Vec<OperationEntry>,
+}
+
+/// A machine vise, in the setup's program coordinates: two jaws gripping
+/// the stock's faces across one axis, from the stock's bottom up to `grip`
+/// (decision 0020).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Vise {
+    /// How much of the stock's height the jaws hold, in millimetres, from
+    /// its bottom up.
+    pub grip: f64,
+    /// The program axis the jaws run along: `x` (the jaws clamp the front
+    /// and back faces) or `y`.
+    #[serde(default, skip_serializing_if = "JawAxis::is_x")]
+    pub along: JawAxis,
+    /// Each jaw's thickness away from the stock, in millimetres.
+    #[serde(default = "default_jaw")]
+    pub jaw: f64,
+}
+
+/// The program axis a vise's jaws run along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JawAxis {
+    /// Along X: the jaws clamp the stock's front and back.
+    #[default]
+    X,
+    /// Along Y: the jaws clamp its left and right.
+    Y,
+}
+
+impl JawAxis {
+    /// `true` for the default, so files only store the other one.
+    #[must_use]
+    pub fn is_x(&self) -> bool {
+        *self == Self::X
+    }
+}
+
+/// A typical machine vise jaw: 25 mm thick.
+pub const DEFAULT_JAW: f64 = 25.0;
+
+const fn default_jaw() -> f64 {
+    DEFAULT_JAW
+}
+
+impl Vise {
+    /// Checks the values are usable.
+    ///
+    /// # Errors
+    ///
+    /// A reason when the grip or the jaw is not a positive number in range.
+    pub fn check(&self) -> Result<(), String> {
+        if !(self.grip.is_finite() && self.grip > 0.0 && self.grip <= 500.0) {
+            return Err(format!(
+                "the vise's grip must be above 0 and at most 500 mm, not {}",
+                self.grip
+            ));
+        }
+        if !(self.jaw.is_finite() && self.jaw >= 1.0 && self.jaw <= 200.0) {
+            return Err(format!(
+                "a vise jaw must be 1 to 200 mm thick, not {}",
+                self.jaw
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A setup with its id.
@@ -452,6 +523,13 @@ pub enum CamEdit {
     },
     /// Removes a tool.
     RemoveTool(u32),
+    /// Sets or removes a setup's vise.
+    SetVise {
+        /// The setup.
+        setup: u32,
+        /// The vise, or `None` to remove it.
+        vise: Option<Vise>,
+    },
 }
 
 impl Cam {
@@ -508,6 +586,7 @@ impl Cam {
                         work_offset,
                         flip_about,
                         index,
+                        vise: None,
                         operations: Vec::new(),
                     },
                 });
@@ -572,6 +651,17 @@ impl Cam {
                     return Err(format!("there is no tool {number}"));
                 }
             }
+            CamEdit::SetVise { setup, vise } => {
+                if let Some(vise) = &vise {
+                    vise.check()?;
+                }
+                let entry = self
+                    .setups
+                    .iter_mut()
+                    .find(|e| e.id == setup)
+                    .ok_or_else(|| format!("there is no setup {setup}"))?;
+                entry.setup.vise = vise;
+            }
         }
         Ok(None)
     }
@@ -593,6 +683,12 @@ impl Cam {
                         "the stock's {what} allowance must be 0 to 1000 mm, not {value}"
                     ));
                 }
+            }
+        }
+        for entry in &self.setups {
+            if let Some(vise) = &entry.setup.vise {
+                vise.check()
+                    .map_err(|e| format!("{}: {e}", entry.setup.name))?;
             }
         }
         for (number, tool) in &self.tools {

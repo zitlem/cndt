@@ -875,6 +875,64 @@ impl Registry {
                 },
             },
             CommandSpec {
+                name: "cam.set_vise",
+                description: "Hold a setup's stock in a vise, so the simulation checks no tool touches its jaws; without grip, remove it.",
+                args: &[
+                    ArgSpec {
+                        name: "setup",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The setup.",
+                    },
+                    ArgSpec {
+                        name: "grip",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Millimetres of the stock held in the jaws, from its bottom up. Leave out to remove the vise.",
+                    },
+                    ArgSpec {
+                        name: "along",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "x (the default: jaws on the front and back) or y.",
+                    },
+                    ArgSpec {
+                        name: "jaw",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Each jaw's thickness in millimetres; 25 by default.",
+                    },
+                ],
+                build: |args| {
+                    use cndt_model::cam::{CamEdit, DEFAULT_JAW, JawAxis, Vise};
+                    let setup = id(args, "setup")?;
+                    let vise = if args.contains_key("grip") {
+                        let along = if args.contains_key("along") {
+                            match text(args, "along")?.as_str() {
+                                "x" => JawAxis::X,
+                                "y" => JawAxis::Y,
+                                other => {
+                                    return Err(format!("unknown jaw axis {other:?}; use x or y"));
+                                }
+                            }
+                        } else {
+                            JawAxis::X
+                        };
+                        Some(Vise {
+                            grip: number(args, "grip")?,
+                            along,
+                            jaw: optional_number(args, "jaw")?.unwrap_or(DEFAULT_JAW),
+                        })
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(EditCam::new(
+                        "cam.set_vise",
+                        CamEdit::SetVise { setup, vise },
+                    )))
+                },
+            },
+            CommandSpec {
                 name: "cam.remove_tool",
                 description: "Delete a tool from the library.",
                 args: &[ArgSpec {
@@ -1918,6 +1976,10 @@ mod tests {
                 json!({"edges": [["f0/side/e4", "f0/side/e5"]], "radius": 3}),
             ),
             ("feature.edit_blend", json!({"feature": 3, "size": 1})),
+            (
+                "cam.set_vise",
+                json!({"setup": 0, "grip": 6, "along": "y", "jaw": 20}),
+            ),
             (
                 "feature.import",
                 json!({"source": "bracket.step", "content": "ISO-10303-21;", "operation": "cut"}),
