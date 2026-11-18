@@ -144,6 +144,8 @@ export const page = {
   "cam-post-editor.label": "Edit post",
   "cam-post-all.title": "Post all setups as one program",
   "cam-post-all.label": "Post all",
+  "cam-setup-sheet.title": "A printable sheet for the operator: work offsets, zero, stock, tools, cutting time and every verification finding",
+  "cam-setup-sheet.label": "Setup sheet",
   "actions.label": "ACTIONS",
   "prove-out.field": "Post for",
   "prove-out.title": "A prove-out raises every Z so the machine runs the program in the air above the part",
@@ -387,6 +389,9 @@ export const ui = {
     `Saved ${lines} lines of an AIR CUT: every Z is ${lift} mm above the real program. It cuts nothing; do not use it to cut.`,
   savedGcode: (lines: number, verdict: string) =>
     `Saved ${lines} lines of UNVERIFIED G-code. Verification: ${verdict}; report saved beside it. Prove it out carefully.`,
+  saveSetupSheet: "Save the setup sheet",
+  setupSheetFiles: "Web page",
+  savedSetupSheet: (path: string) => `Saved the setup sheet to ${path}. Open it in a browser and print it (UNVERIFIED).`,
   setupName: (name: string, offset: number, table: string) => `${name} · G${offset}${table}`,
   tableAngle: (angle: number) => ` · B${angle}`,
   hide: "Hide",

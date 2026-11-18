@@ -30,6 +30,10 @@ other:
                                             verification finds problems in is refused unless
                                             --override, which the program header records; with
                                             --prove-out, every Z raised that far for an air cut
+  sheet <file.cndt> [out.html] [--machine <id>] [--setups <id,id,...>]
+                                            write the setup sheet: a printable page for the operator
+                                            (work offsets, zero, stock, tools, cutting time and every
+                                            verification finding); to out.html, or to the terminal
   export <file.cndt> <out.step|out.stl>     write the part as STEP or STL
   info <file.step>                          show the topology and size of a STEP file
   api                                       answer JSON requests on stdin, one per line
@@ -49,7 +53,7 @@ fn main() -> ExitCode {
     ];
     for (flag, value) in &mut options {
         if let Some(at) = args.iter().position(|a| a == flag) {
-            if args.first() != Some(&"post") || at + 1 >= args.len() {
+            if !matches!(args.first(), Some(&"post" | &"sheet")) || at + 1 >= args.len() {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             }
@@ -110,6 +114,8 @@ fn main() -> ExitCode {
             Ok(setup) => post(Path::new(path), id, &target, Some(setup)),
             Err(_) => Err(format!("{setup:?} is not a setup id")),
         },
+        ["sheet", path] => sheet(Path::new(path), None, &target),
+        ["sheet", path, out] => sheet(Path::new(path), Some(Path::new(out)), &target),
         ["api"] => serve_stdin(),
         ["version" | "--version" | "-V"] => {
             println!("cndt {}", env!("CARGO_PKG_VERSION"));
@@ -206,6 +212,30 @@ fn post(path: &Path, id: &str, target: &Target<'_>, setup: Option<u32>) -> Resul
     }
     print!("{}", result["gcode"].as_str().unwrap_or_default());
     Ok(())
+}
+
+/// Writes the setup sheet to a file, or prints it.
+fn sheet(path: &Path, out: Option<&Path>, target: &Target<'_>) -> Result<(), String> {
+    let mut api = Api::new();
+    open(&mut api, path)?;
+    let mut request = json!({"method": "setup_sheet"});
+    if let Some(machine) = target.machine {
+        request["machine"] = json!(machine);
+    }
+    if let Some(setups) = &target.setups {
+        request["setups"] = json!(setups);
+    }
+    let result = call(&mut api, &request)?;
+    let html = result["html"].as_str().unwrap_or_default();
+    match out {
+        Some(out) => {
+            std::fs::write(out, html).map_err(|e| format!("cannot write {}: {e}", out.display()))
+        }
+        None => {
+            print!("{html}");
+            Ok(())
+        }
+    }
 }
 
 /// Writes the part to a STEP or STL file.
