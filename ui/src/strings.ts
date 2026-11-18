@@ -506,6 +506,11 @@ export const ui = {
   cantSketchThere: (reason: string) => `Can't sketch there: ${reason}.`,
   addSetupFirst: "Add a setup first, from SETUP in the ribbon.",
   toolName: (number: number | string, description: string) => `T${number} ${description}`,
+  viseLabel: "Vise",
+  viseTitle: "How much of the stock the vise jaws hold, from its bottom up. The simulation checks every tool against the jaws. Empty: no vise.",
+  noVise: "grip mm",
+  jawsFrontBack: "jaws front/back",
+  jawsLeftRight: "jaws left/right",
   toolDialogTitle: (number: number | null) => (number === null ? "New tool" : `Tool T${number}`),
   typicalSizes: (flutes: string, stickout: string, shank: string, holder: string, holderLength: string) =>
     `Typical for this kind and size: flutes ${flutes}, stickout ${stickout}, shank Ø${shank}, holder Ø${holder} × ${holderLength} mm. Measure the real tool before the first cut.`,

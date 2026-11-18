@@ -1805,3 +1805,22 @@ span.ribbon-label {
   max-height: calc(100% - 24px);
   overflow-y: auto;
 }
+
+.vise-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.vise-row input {
+  width: 52px;
+  flex: none;
+}
+
+.vise-row select {
+  flex: 1;
+  min-width: 0;
+}
