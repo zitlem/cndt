@@ -20,6 +20,7 @@ import {
   type Parameter,
   request,
   state,
+  type ProjectThumbnail,
   type StepInfo,
   stepPreview,
   simulationMesh,
@@ -1528,6 +1529,37 @@ element("new").addEventListener(
   }),
 );
 
+/** Shows the picture saved in a project file and asks to go ahead. True to open it. */
+async function previewProject(path: string): Promise<boolean> {
+  const { png_base64: png } = await request<ProjectThumbnail>({ method: "project_thumbnail", path });
+  const panel = element("open-preview");
+  const image = element<HTMLImageElement>("open-preview-image");
+  image.hidden = !png;
+  if (png) image.src = `data:image/png;base64,${png}`;
+  element("open-preview-note").textContent = png ? text.previewShown : text.previewNone;
+  element("open-preview-name").textContent = path.split(/[\\/]/).pop() ?? path;
+  panel.hidden = false;
+  const okButton = element("open-preview-ok");
+  okButton.focus();
+  return new Promise<boolean>((resolve) => {
+    const finish = (answer: boolean): void => {
+      panel.hidden = true;
+      okButton.removeEventListener("click", onOk);
+      element("open-preview-cancel").removeEventListener("click", onCancel);
+      window.removeEventListener("keydown", onKey);
+      resolve(answer);
+    };
+    const onOk = (): void => finish(true);
+    const onCancel = (): void => finish(false);
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") finish(false);
+    };
+    okButton.addEventListener("click", onOk);
+    element("open-preview-cancel").addEventListener("click", onCancel);
+    window.addEventListener("keydown", onKey);
+  });
+}
+
 element("open").addEventListener(
   "click",
   guarded(async () => {
@@ -1538,6 +1570,7 @@ element("open").addEventListener(
       filters: [{ name: text.cndtProject, extensions: ["cndt"] }],
     });
     if (!path) return;
+    if (!(await previewProject(path))) return;
     if (!(await confirmDiscard(text.openAnotherProject))) return;
     render(await request<DocumentState>({ method: "open", path, discard_changes: true }));
   }),

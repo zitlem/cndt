@@ -22,6 +22,7 @@ mod dxf_import;
 mod export;
 mod setup_sheet;
 mod simulate;
+mod thumbnail;
 mod verify;
 
 use std::collections::BTreeMap;
@@ -82,6 +83,12 @@ pub enum Request {
     State,
     /// Describe every registered command and its arguments.
     Commands,
+    /// The thumbnail stored in a project file (decision 0025), without
+    /// opening it. Replies `{png_base64}`, null when the file has none.
+    ProjectThumbnail {
+        /// The project file.
+        path: PathBuf,
+    },
     /// Summarise a STEP file's topology and size without importing it.
     StepInfo {
         /// The STEP file.
@@ -1483,6 +1490,17 @@ impl Api {
                     Err(e) => failure(ApiError::new("cam", e.to_string())),
                 };
             }
+            Request::ProjectThumbnail { path } => {
+                return match cndt_format::open(&path) {
+                    Ok(project) => success(serde_json::json!({
+                        "png_base64": project
+                            .extensions()
+                            .get(thumbnail::ENTRY)
+                            .map(|png| thumbnail::base64(png)),
+                    })),
+                    Err(error) => failure(error.into()),
+                };
+            }
             Request::StepInfo { path } => {
                 return match self.kernel.import_step(&path) {
                     Ok(summary) => match serde_json::to_value(summary) {
@@ -1611,6 +1629,14 @@ impl Api {
         Ok(())
     }
 
+    /// The part's thumbnail (decision 0025), or `None` without a solid or
+    /// when it cannot be drawn: a picture is never worth failing a save for.
+    fn thumbnail_png(&self) -> Option<Vec<u8>> {
+        let body = self.rebuilt.body.as_ref()?;
+        let mesh = self.kernel.mesh(body, self.deflection()).ok()?;
+        thumbnail::render(&mesh)
+    }
+
     fn save(&mut self) -> Result<(), ApiError> {
         let path = self
             .path
@@ -1618,7 +1644,13 @@ impl Api {
             .ok_or_else(|| ApiError::new("no_path", "the document has no file yet; use save_as"))?;
         let mut project = Project::new(self.session.document().clone());
         for (name, data) in &self.extensions {
-            project.set_extension(name, data.clone())?;
+            // The picture is made again from the part on every save.
+            if name != thumbnail::ENTRY {
+                project.set_extension(name, data.clone())?;
+            }
+        }
+        if let Some(png) = self.thumbnail_png() {
+            project.set_extension(thumbnail::ENTRY, png)?;
         }
         cndt_format::save(&project, &path)?;
         self.session.mark_saved();
@@ -1637,6 +1669,7 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("redo", &[]),
     ("state", &[]),
     ("commands", &[]),
+    ("project_thumbnail", &["path"]),
     ("step_info", &["path"]),
     (
         "post",
@@ -2358,6 +2391,68 @@ mod tests {
         );
         std::fs::remove_file(project).unwrap();
         std::fs::remove_file(mesh_path).unwrap();
+    }
+
+    #[test]
+    fn saving_writes_a_thumbnail_that_can_be_read_without_opening() {
+        let path = temp_file("thumbnail.cndt");
+        let mut api = Api::new();
+        // No solid yet: nothing is stored.
+        call(&mut api, json!({"method": "save_as", "path": path}));
+        let none = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": path}),
+        );
+        assert_eq!(none["ok"], true, "{none}");
+        assert!(none["result"]["png_base64"].is_null());
+
+        let exec = |api: &mut Api, command: &str, args: Value| {
+            let reply = call(
+                api,
+                json!({"method": "execute", "command": command, "args": args}),
+            );
+            assert_eq!(reply["ok"], true, "{reply}");
+        };
+        exec(&mut api, "sketch.create", json!({"plane": "xy"}));
+        exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 40, "y": 20}}),
+        );
+        exec(
+            &mut api,
+            "feature.extrude",
+            json!({"sketch": 0, "distance": 10}),
+        );
+        call(&mut api, json!({"method": "save"}));
+
+        let reply = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": path}),
+        );
+        let encoded = reply["result"]["png_base64"].as_str().unwrap().to_owned();
+        assert!(
+            encoded.starts_with("iVBORw0KGgo"),
+            "a PNG signature: {encoded:.20}"
+        );
+        let stored = cndt_format::open(&path).unwrap();
+        let png = stored.extensions().get(thumbnail::ENTRY).unwrap();
+        assert_eq!(thumbnail::base64(png), encoded);
+
+        // Saving again makes the same picture; opening and saving keeps one entry.
+        call(&mut api, json!({"method": "save"}));
+        let again = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": path}),
+        );
+        assert_eq!(again["result"]["png_base64"], encoded);
+        // A file that is not a project is refused with a readable error.
+        let bad = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": "missing.cndt"}),
+        );
+        assert_eq!(bad["ok"], false);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
