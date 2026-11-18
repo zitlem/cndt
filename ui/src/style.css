@@ -1783,3 +1783,25 @@ span.ribbon-label {
   font-size: 11px;
   letter-spacing: 0.04em;
 }
+
+.tool-list li {
+  cursor: pointer;
+}
+
+.tool-list li:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.small-button {
+  margin: 0 0 8px 16px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* Taller forms (the tool editor) scroll inside the view. */
+#tool-dialog {
+  width: 300px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+}
