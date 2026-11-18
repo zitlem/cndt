@@ -2222,9 +2222,10 @@ fn plan_entry(
     }
     if entry.setup.side.is_lateral() {
         notes.push(format!(
-            "{} is a side setup: its simulation starts from the whole raw block, \
-             not from what the other setups left, so it can show rapids into \
-             material those setups already removed.",
+            "{} is a side setup: the stock carried to and from it is kept as \
+             columns along three axes, and a hollow inside a column (an \
+             undercut) reads as solid, so the simulation can show rapids into \
+             material that is no longer there.",
             entry.setup.name
         ));
     }
