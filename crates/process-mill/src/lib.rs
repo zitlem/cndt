@@ -2784,6 +2784,141 @@ mod tests {
         assert_eq!(flipped, Err(CamError::Nothing));
     }
 
+    /// The block faced on both sides: stock set, a Face operation in each
+    /// of a top and a bottom setup.
+    fn faced_both_sides(bottom_index: Option<f64>) -> (Document, u32, u32) {
+        let mut d = block_with_bottom_hole();
+        d.edit_cam(CamEdit::SetStock(cndt_model::cam::Stock {
+            side: 2.0,
+            top: 2.0,
+            bottom: 3.0,
+        }))
+        .unwrap();
+        let mut add = |side, work_offset, index| {
+            let id = d
+                .edit_cam(CamEdit::AddSetup {
+                    name: String::new(),
+                    side,
+                    work_offset,
+                    flip_about: cndt_model::cam::FlipAxis::X,
+                    index,
+                })
+                .unwrap()
+                .unwrap();
+            d.edit_cam(CamEdit::AddOperation {
+                setup: id,
+                operation: OperationDef::Face { tool: None },
+            })
+            .unwrap();
+            id
+        };
+        let top = add(Side::Top, 1, None);
+        let under = add(Side::Bottom, 2, bottom_index);
+        (d, top, under)
+    }
+
+    /// The events of a planned program, in order.
+    fn events(planned: &Planned) -> Vec<Event> {
+        planned
+            .program
+            .operations
+            .iter()
+            .flat_map(|op| &op.steps)
+            .filter_map(|step| match step {
+                Step::Event(e) => Some(e.clone()),
+                Step::Move(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_hand_turned_side_stops_the_program_and_sets_the_next_offset() {
+        let (d, top, under) = faced_both_sides(None);
+        let r = rebuild(&d, &OpenCascade);
+        let planned = plan_setups(&d, &r, &OpenCascade, &[top, under]).unwrap();
+        let names: Vec<&str> = planned
+            .program
+            .operations
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("Turn the part for")),
+            "{names:?}"
+        );
+        let all = events(&planned);
+        // Spindle and coolant off and home, then the operator's stop, then
+        // the new offset, in that order.
+        let stop = all
+            .iter()
+            .position(|e| matches!(e, Event::ProgramStop { optional: false }))
+            .expect("a program stop");
+        let offset = all
+            .iter()
+            .position(|e| matches!(e, Event::WorkOffset { offset: 2 }))
+            .expect("the bottom's work offset");
+        let home = all[..stop]
+            .iter()
+            .rposition(|e| matches!(e, Event::Home))
+            .expect("home before the stop");
+        assert!(home < stop && stop < offset, "{all:?}");
+        assert!(
+            all[..stop].iter().any(|e| matches!(e, Event::SpindleOff)),
+            "{all:?}"
+        );
+        // The comment tells the operator which offset to set.
+        assert!(
+            all.iter().any(|e| matches!(
+                e,
+                Event::Comment { text } if text.contains("Turn the part over") && text.contains("G55")
+            )),
+            "{all:?}"
+        );
+        // Hand-turned: the table is never asked to move.
+        assert!(
+            !all.iter().any(|e| matches!(e, Event::Index { .. })),
+            "{all:?}"
+        );
+        // And the same program every time.
+        assert_eq!(
+            Ok(planned),
+            plan_setups(&d, &r, &OpenCascade, &[top, under])
+        );
+    }
+
+    #[test]
+    fn a_table_turned_side_indexes_and_does_not_stop() {
+        let (d, top, under) = faced_both_sides(Some(180.0));
+        let r = rebuild(&d, &OpenCascade);
+        let planned = plan_setups(&d, &r, &OpenCascade, &[top, under]).unwrap();
+        let all = events(&planned);
+        assert!(
+            all.iter().any(|e| matches!(
+                e,
+                Event::Index { axis, angle } if axis == "B" && (*angle - 180.0).abs() < 1e-9
+            )),
+            "{all:?}"
+        );
+        assert!(
+            !all.iter().any(|e| matches!(e, Event::ProgramStop { .. })),
+            "{all:?}"
+        );
+        assert!(
+            planned
+                .program
+                .operations
+                .iter()
+                .any(|o| o.name.starts_with("Table to B180")),
+            "{:?}",
+            planned
+                .program
+                .operations
+                .iter()
+                .map(|o| &o.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn every_error_says_what_to_do_or_what_is_wrong() {
         for e in [
