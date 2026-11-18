@@ -211,6 +211,11 @@ export interface Point3 {
   z: number;
 }
 
+/** The picture saved inside a project file; null when it has none (decision 0025). */
+export interface ProjectThumbnail {
+  png_base64: string | null;
+}
+
 export interface StepInfo {
   solids: number;
   shells: number;

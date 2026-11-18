@@ -568,6 +568,15 @@
         <ul id="palette-list" role="listbox"></ul>
         <p id="palette-note" class="muted small" aria-live="polite"></p>
       </div>
+      <div id="open-preview" class="open-preview" role="dialog" aria-modal="true" aria-label="[[open-preview.aria]]" hidden>
+        <img id="open-preview-image" alt="[[open-preview.image]]" width="128" height="128" />
+        <p id="open-preview-note" class="muted small"></p>
+        <p id="open-preview-name"></p>
+        <div class="open-preview-buttons">
+          <button id="open-preview-cancel" type="button">[[open-preview.cancel]]</button>
+          <button id="open-preview-ok" type="button" class="primary">[[open-preview.ok]]</button>
+        </div>
+      </div>
       <div id="toast" class="toast" role="alert" hidden></div>
     </div>
     <script type="module" src="./src/main.ts"></script>
