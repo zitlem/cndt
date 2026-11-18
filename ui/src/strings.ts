@@ -43,6 +43,10 @@ export const page = {
   "palette-open.title": "Search every command (Ctrl+K, or Cmd+K on a Mac)",
   "palette.aria": "Command palette",
   "palette.placeholder": "Type a command…",
+  "open-preview.aria": "Project preview",
+  "open-preview.image": "Picture of the part, saved with the project",
+  "open-preview.cancel": "Cancel",
+  "open-preview.ok": "Open",
   "ribbon-tabs.aria": "Ribbon",
   "tab.solid": "SOLID",
   "tab.sketch": "SKETCH",
@@ -364,6 +368,8 @@ export function fillPage(root: Document): void {
 
 /** What the code writes at run time. Entries that need a value are functions of it. */
 export const ui = {
+  previewNone: "This project has no picture yet; it is saved with the project from the next save.",
+  previewShown: "The part as last saved.",
   paletteNone: "Nothing matches.",
   paletteDisabled: "Not available now",
   paletteNoForm: (args: string) =>
@@ -458,6 +464,8 @@ export const ui = {
   controllerTitle: "Machine or controller the Post… button writes for",
   deleteSetup: "Delete this setup",
   doubleClickToDelete: "Double-click to delete",
+  staleMarker: "stale",
+  staleTitle: "The design changed after this toolpath was drawn. Show the setup again to bring it up to date.",
   addFace: "Face",
   addContour: "Contour…",
   addPocket: "Pocket…",

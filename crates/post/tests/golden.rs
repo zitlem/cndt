@@ -708,3 +708,56 @@ fn a_bad_extends_is_refused_with_a_reason() {
         );
     }
 }
+
+/// The shipped GRBL post's text with one line replaced, for refusal tests.
+fn grbl_with(from: &str, to: &str) -> String {
+    let text = std::fs::read_to_string(root().join("posts/grbl.toml")).unwrap();
+    assert!(text.contains(from), "grbl.toml no longer contains {from:?}");
+    text.replacen(from, to, 1)
+}
+
+#[test]
+fn a_post_definition_that_could_post_unsafely_is_refused_with_a_reason() {
+    let refused = |text: String, wanted: &str| {
+        let error = Post::from_toml(&text).unwrap_err();
+        assert!(matches!(error, PostError::InvalidDefinition(_)), "{error}");
+        assert!(error.to_string().contains(wanted), "{wanted}: {error}");
+    };
+    // The safety header cannot be left out.
+    refused(grbl_with("    \"{header}\",\n", ""), "{header}");
+    // More decimals than the formatter supports.
+    refused(grbl_with("decimals = 3", "decimals = 9"), "decimals");
+    // A placeholder the post does not define.
+    refused(
+        grbl_with("\"G21 G17 G90 G94\"", "\"G21 {nonsense}\""),
+        "nonsense",
+    );
+    // A misspelt field does not pass silently.
+    refused(grbl_with("decimals = 3", "decimalz = 3"), "decimalz");
+    // Not TOML at all.
+    refused(String::from("this is [not toml"), "invalid post definition");
+}
+
+#[test]
+fn a_program_that_is_not_safe_is_not_posted() {
+    let unsafe_program = Program {
+        name: String::from("bad"),
+        number: 1,
+        work_offset: 9,
+        operations: vec![Operation {
+            name: String::from("op"),
+            steps: vec![rapid(0.0, 0.0, 5.0)],
+        }],
+    };
+    for id in [
+        "fanuc-mill",
+        "grbl",
+        "haas-mill",
+        "linuxcnc-mill",
+        "mazak-smoothg",
+    ] {
+        let error = load(id).run(&unsafe_program, APP_VERSION).unwrap_err();
+        assert!(matches!(error, PostError::Toolpath(_)), "{id}: {error}");
+        assert!(error.to_string().contains("work offset"), "{id}: {error}");
+    }
+}

@@ -1328,6 +1328,69 @@ impl Registry {
                 },
             },
             CommandSpec {
+                name: "sketch.trim",
+                description: "Trim a line, arc or circle: remove the stretch of it nearest a picked point, between the places where other curves cross it. Refused if nothing crosses it. Constraints on the trimmed entity are dropped.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entity",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The line, arc or circle to trim.",
+                    },
+                    ArgSpec {
+                        name: "at",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "A point on the stretch to remove, in millimetres.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::Trim {
+                            entity: EntityId(id(args, "entity")?),
+                            at: position(args, "at")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.offset",
+                description: "Offset a circle, or lines and arcs joined end to end into one chain, a distance toward a picked side. The copy is new geometry; the original stays. Corners are extended to meet. Refused if the copy would collapse.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entities",
+                        kind: ArgKind::Ids,
+                        required: true,
+                        description: "One circle, or the lines and arcs of one chain.",
+                    },
+                    ArgSpec {
+                        name: "distance",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "How far to offset, in millimetres; more than zero.",
+                    },
+                    ArgSpec {
+                        name: "toward",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "A point on the side to offset toward, in millimetres.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::Offset {
+                            entities: ids(args, "entities")?,
+                            distance: number(args, "distance")?,
+                            toward: position(args, "toward")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
                 name: "sketch.constrain",
                 description: "Add a constraint or dimension. Refused if it conflicts with or repeats the existing ones.",
                 args: &[
@@ -2304,6 +2367,14 @@ mod tests {
             (
                 "sketch.add_slot",
                 json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0}, "width": 6}),
+            ),
+            (
+                "sketch.trim",
+                json!({"sketch": 0, "entity": 1, "at": {"x": 5, "y": 0}}),
+            ),
+            (
+                "sketch.offset",
+                json!({"sketch": 0, "entities": [1], "distance": 2, "toward": {"x": 0, "y": 5}}),
             ),
             (
                 "sketch.constrain",
