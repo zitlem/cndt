@@ -33,6 +33,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0019](0019-side-setups.md) | Setups on the part's sides | Accepted |
 | [0020](0020-vise.md) | A vise per setup, checked in the simulation | Accepted |
 | [0021](0021-revolve-feature.md) | Revolve as a solid feature | Accepted |
+| [0022](0022-circular-pattern.md) | Circular pattern | Accepted |
 
 ## Open decisions
 

@@ -99,6 +99,13 @@ const ui = {
   patternSpacingX: element<HTMLInputElement>("pattern-spacing-x"),
   patternCountY: element<HTMLInputElement>("pattern-count-y"),
   patternSpacingY: element<HTMLInputElement>("pattern-spacing-y"),
+  circularButton: element<HTMLButtonElement>("circular-pattern"),
+  circularDialog: element<HTMLFormElement>("circular-dialog"),
+  circularTitle: element<HTMLHeadingElement>("circular-title"),
+  circularSource: element<HTMLSelectElement>("circular-source"),
+  circularCount: element<HTMLInputElement>("circular-count"),
+  circularAngle: element<HTMLInputElement>("circular-angle"),
+  circularCenter: element<HTMLSelectElement>("circular-center"),
   filletButton: element<HTMLButtonElement>("fillet"),
   blendDialog: element<HTMLFormElement>("blend-dialog"),
   blendTitle: element<HTMLHeadingElement>("blend-title"),
@@ -467,6 +474,9 @@ function renderFeatures(state: DocumentState): void {
   ui.patternButton.disabled = !(state.document.features ?? []).some(
     (f) => f.feature.type === "extrude" || f.feature.type === "hole",
   );
+  ui.circularButton.disabled = !(state.document.features ?? []).some(
+    (f) => f.feature.type === "extrude" || f.feature.type === "hole" || f.feature.type === "revolve",
+  );
   ui.filletButton.disabled = !state.body;
   const built = state.rollback ?? features.length;
   for (const [index, { id, feature }] of features.entries()) {
@@ -508,6 +518,7 @@ function renderFeatures(state: DocumentState): void {
     item.addEventListener("click", () => {
       if (feature.type === "import" || feature.type === "reference") return; // nothing to edit: re-import to change it
       if (feature.type === "pattern") openPattern(id);
+      else if (feature.type === "circular_pattern") openCircular(id);
       else if (feature.type === "hole") openHole(id);
       else if (feature.type === "extrude") openExtrude(id);
       else if (feature.type === "revolve") openRevolve(id);
@@ -933,6 +944,10 @@ function featureDetail(feature: import("./api").Feature, id?: number): string {
     const source = current?.document.features?.find((f) => f.id === feature.feature)?.feature.name ?? "?";
     return text.patternDetail(feature.count_x, feature.count_y, source);
   }
+  if (feature.type === "circular_pattern") {
+    const source = current?.document.features?.find((f) => f.id === feature.feature)?.feature.name ?? "?";
+    return text.circularDetail(feature.count, formatNumber(feature.angle), source);
+  }
   if (feature.type === "fillet") return text.filletDetail(formatNumber(feature.radius));
   if (feature.type === "reference") {
     const triangles = id === undefined ? undefined : current?.references?.[String(id)]?.triangles;
@@ -1009,6 +1024,75 @@ function openPattern(feature: number | null): void {
 function closePattern(): void {
   ui.patternDialog.hidden = true;
   editingPattern = null;
+  ui.circularDialog.hidden = true;
+  editingCircular = null;
+}
+
+let editingCircular: number | null = null;
+
+/** The centre choices for a source feature: the sketch origin and the points of its sketch. */
+function fillCircularCenters(source: number, chosen: number | undefined): void {
+  if (!current) return;
+  const features = current.document.features ?? [];
+  const feature = features.find((f) => f.id === source)?.feature;
+  const sketchId =
+    feature && (feature.type === "extrude" || feature.type === "hole" || feature.type === "revolve")
+      ? feature.sketch
+      : undefined;
+  const entities = sketchId === undefined ? {} : (current.document.sketches?.[String(sketchId)]?.sketch.entities ?? {});
+  const origin = globalThis.document.createElement("option");
+  origin.value = "";
+  origin.textContent = text.sketchOrigin;
+  const options = Object.entries(entities)
+    .filter(([, e]) => e.geometry.type === "point")
+    .map(([key, e]) => {
+      const option = globalThis.document.createElement("option");
+      option.value = key;
+      const g = e.geometry;
+      option.textContent =
+        g.type === "point" ? text.pointLabel(Number(key), formatNumber(g.at.x), formatNumber(g.at.y)) : key;
+      return option;
+    });
+  ui.circularCenter.replaceChildren(origin, ...options);
+  ui.circularCenter.value = chosen === undefined ? "" : String(chosen);
+}
+
+function openCircular(feature: number | null): void {
+  if (!current) return;
+  closeExtrude();
+  closeRevolve();
+  closeHole();
+  closeBlend();
+  closePattern();
+  editingCircular = feature;
+  const features = current.document.features ?? [];
+  ui.circularSource.replaceChildren(
+    ...features
+      .filter((f) => f.feature.type === "extrude" || f.feature.type === "hole" || f.feature.type === "revolve")
+      .map((f) => {
+        const option = globalThis.document.createElement("option");
+        option.value = String(f.id);
+        option.textContent = f.feature.name;
+        return option;
+      }),
+  );
+  const existing = features.find((f) => f.id === feature)?.feature;
+  if (existing?.type === "circular_pattern") {
+    ui.circularTitle.textContent = text.edit(existing.name);
+    ui.circularSource.value = String(existing.feature);
+    ui.circularSource.disabled = true;
+    ui.circularCount.value = String(existing.count);
+    ui.circularAngle.value = String(existing.angle);
+    fillCircularCenters(existing.feature, existing.center);
+  } else {
+    ui.circularTitle.textContent = text.circularPattern;
+    ui.circularSource.disabled = false;
+    const last = ui.circularSource.options[ui.circularSource.options.length - 1];
+    if (last) ui.circularSource.value = last.value;
+    fillCircularCenters(Number(ui.circularSource.value), undefined);
+  }
+  ui.circularDialog.hidden = false;
+  ui.circularSource.focus();
 }
 
 /** The chamfer or fillet being set up: which kind, the picked faces, and
@@ -1728,6 +1812,30 @@ ui.patternDialog.addEventListener("submit", (event) => {
       editingPattern === null
         ? await execute("feature.pattern", { feature: Number(ui.patternSource.value), ...grid })
         : await execute("feature.edit_pattern", { feature: editingPattern, ...grid });
+    closePattern();
+    render(next);
+  })();
+});
+ui.circularButton.addEventListener("click", () => openCircular(null));
+element("circular-cancel").addEventListener("click", closePattern);
+ui.circularSource.addEventListener("change", () =>
+  fillCircularCenters(Number(ui.circularSource.value), undefined),
+);
+ui.circularDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closePattern();
+});
+ui.circularDialog.addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    const args = {
+      count: Number(ui.circularCount.value),
+      angle: Number(ui.circularAngle.value),
+      ...(ui.circularCenter.value === "" ? {} : { center: Number(ui.circularCenter.value) }),
+    };
+    const next =
+      editingCircular === null
+        ? await execute("feature.circular_pattern", { feature: Number(ui.circularSource.value), ...args })
+        : await execute("feature.edit_circular_pattern", { feature: editingCircular, ...args });
     closePattern();
     render(next);
   })();
