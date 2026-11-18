@@ -855,4 +855,114 @@ mod tests {
     fn describes_itself() {
         assert!(OpenCascade.description().starts_with("OpenCascade 7"));
     }
+
+    fn square(side: f64) -> Vec<Vec<Curve>> {
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let corners = [p(0.0, 0.0), p(side, 0.0), p(side, side), p(0.0, side)];
+        vec![
+            (0..4)
+                .map(|i| Curve::Line {
+                    start: corners[i],
+                    end: corners[(i + 1) % 4],
+                })
+                .collect(),
+        ]
+    }
+
+    fn volume(body: &Body) -> f64 {
+        OpenCascade.properties(body).unwrap().volume
+    }
+
+    #[test]
+    fn extrudes_a_square_to_the_closed_form_volume() {
+        let made = OpenCascade
+            .extrude(&square(10.0), [0.0, 0.0, 1.0], 5.0)
+            .unwrap();
+        assert!((volume(&made.body) - 500.0).abs() < 1e-6);
+        assert_eq!(OpenCascade.properties(&made.body).unwrap().faces, 6);
+    }
+
+    #[test]
+    fn a_zero_distance_extrude_is_refused() {
+        let error = OpenCascade
+            .extrude(&square(10.0), [0.0, 0.0, 1.0], 0.0)
+            .unwrap_err();
+        assert!(!error.to_string().is_empty(), "{error:?}");
+    }
+
+    #[test]
+    fn revolves_a_square_about_an_edge_into_a_cylinder() {
+        let made = OpenCascade
+            .revolve_profile(
+                &square(2.0),
+                [0.0, 0.0, 1.0],
+                Point3::new(0.0, 0.0, 0.0),
+                [0.0, 1.0, 0.0],
+                360.0,
+            )
+            .unwrap();
+        let expected = std::f64::consts::PI * 4.0 * 2.0;
+        assert!(
+            (volume(&made.body) - expected).abs() < 1e-6,
+            "{} vs {expected}",
+            volume(&made.body)
+        );
+    }
+
+    #[test]
+    fn fuse_and_cut_change_the_volume_by_the_overlap() {
+        let a = OpenCascade
+            .extrude(&square(10.0), [0.0, 0.0, 1.0], 10.0)
+            .unwrap()
+            .body;
+        let b = OpenCascade
+            .translate(
+                &OpenCascade
+                    .extrude(&square(10.0), [0.0, 0.0, 1.0], 10.0)
+                    .unwrap()
+                    .body,
+                [5.0, 0.0, 0.0],
+            )
+            .unwrap();
+        let fused = OpenCascade.boolean(&a, &b, BooleanOp::Fuse).unwrap();
+        assert!((volume(&fused.body) - 1500.0).abs() < 1e-6);
+        let cut = OpenCascade.boolean(&a, &b, BooleanOp::Cut).unwrap();
+        assert!((volume(&cut.body) - 500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn translate_and_rotate_move_the_body_without_changing_its_volume() {
+        let body = OpenCascade
+            .extrude(&square(10.0), [0.0, 0.0, 1.0], 5.0)
+            .unwrap()
+            .body;
+        let moved = OpenCascade.translate(&body, [100.0, 0.0, 0.0]).unwrap();
+        let bounds = OpenCascade.properties(&moved).unwrap().bounds;
+        assert!((bounds.min.x - 100.0).abs() < 1e-6, "{bounds:?}");
+        // A quarter turn about Z: x becomes y.
+        let turned = OpenCascade
+            .rotate(&body, [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+            .unwrap();
+        assert!((volume(&turned) - 500.0).abs() < 1e-6);
+        let bounds = OpenCascade.properties(&turned).unwrap().bounds;
+        assert!((bounds.max.x - 0.0).abs() < 1e-6 && (bounds.min.x + 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_fillet_too_large_for_the_edge_is_refused_with_a_reason() {
+        let body = OpenCascade
+            .extrude(&square(10.0), [0.0, 0.0, 1.0], 10.0)
+            .unwrap()
+            .body;
+        let edges = OpenCascade.edges(&body).unwrap();
+        let first = edges.first().unwrap().0;
+        let rounded = OpenCascade
+            .blend(&body, &[first], Blend::Fillet(1.0))
+            .unwrap();
+        assert!(volume(&rounded.body) < 1000.0);
+        let error = OpenCascade
+            .blend(&body, &[first], Blend::Fillet(500.0))
+            .unwrap_err();
+        assert!(matches!(error, KernelError::Modelling(_)), "{error:?}");
+    }
 }
