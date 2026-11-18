@@ -243,11 +243,21 @@ impl Api {
                     cndt_model::cam::JawAxis::Y => 0,
                 };
                 let (lo, hi) = (exact.0[across], exact.1[across]);
+                let parallel = cndt_model::cam::PARALLEL;
                 (0..grid.len())
                     .map(|c| {
                         let v = grid.centres_at(c)[across];
-                        ((lo - vise.jaw..lo).contains(&v) || (hi..hi + vise.jaw).contains(&v))
-                            .then_some(top)
+                        if (lo - vise.jaw..lo).contains(&v) || (hi..hi + vise.jaw).contains(&v) {
+                            Some(top)
+                        } else if (lo..lo + parallel).contains(&v)
+                            || (hi - parallel..hi).contains(&v)
+                        {
+                            // The parallels under the clamped faces: their
+                            // tops at the stock's bottom.
+                            Some(exact.0[2])
+                        } else {
+                            None
+                        }
                     })
                     .collect()
             }
