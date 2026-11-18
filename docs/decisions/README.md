@@ -31,7 +31,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0017](0017-imported-solids.md) | Imported solids in the timeline | Accepted |
 | [0018](0018-reference-meshes.md) | STL files as reference meshes | Accepted |
 | [0019](0019-side-setups.md) | Setups on the part's sides | Accepted |
-| [0020](0020-revolve-feature.md) | Revolve as a solid feature | Accepted |
+| [0021](0021-revolve-feature.md) | Revolve as a solid feature | Accepted |
 
 ## Open decisions
 

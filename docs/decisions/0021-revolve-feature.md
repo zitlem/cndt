@@ -1,4 +1,4 @@
-# 0020: Revolve as a solid feature
+# 0021: Revolve as a solid feature
 
 - **Status:** Accepted (proposed to the owner on 2026-11-18 as "revolve first"; the owner said "Continue")
 - **Date:** 2026-11-18
@@ -16,7 +16,7 @@ Add a `revolve` timeline feature, `{"type": "revolve", "name", "sketch", "profil
 - **Angle:** degrees, more than 0 up to 360; 360 by default. An expression of the parameters may drive it, as for a distance.
 - **Operation:** join or cut, as for an extrude.
 - **Exact curves.** The kernel gets a second revolve that takes the profile as lines and circular arcs, so a revolved arc is a true torus or sphere, not facets. The point-list revolve for hole tools stays as it is.
-- **Face names.** From the creating feature and the sketch curve that swept the face, as extrude names its side faces: `f<feature>/sweep/<curve>`; the start and end faces of a partial turn are `f<feature>/start/…` and `f<feature>/end/…`, like an extrude's. The history comes from OpenCascade's Generated and Modified records, with the profile-segment fallback decision 0012 already uses for faces it does not report.
+- **Face names.** From the creating feature and the sketch curve that swept the face, as extrude names its side faces: `f<feature>/side/<curve>`; the start and end faces of a partial turn are `f<feature>/start/…` and `f<feature>/end/…`, like an extrude's. The history comes from OpenCascade's Generated and Modified records, with the profile-segment fallback decision 0012 already uses for faces it does not report.
 - **Failure explains itself:** an open profile, a profile that crosses the axis, a zero angle, an axis that is not in the sketch, or an invalid solid each give a readable cause, and the rest of the timeline still builds.
 - **Command and UI:** `feature.revolve` and `feature.edit_revolve` in the command registry (so undo, scripts and the CLI work), and a Revolve button beside Extrude in the Solid ribbon, using the same dialog pattern.
 
