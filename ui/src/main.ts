@@ -24,6 +24,7 @@ import {
   stepPreview,
   simulationMesh,
 } from "./api";
+import { firstSentence, matchEntries, type PaletteEntry } from "./palette";
 import { SketchEditor, type Tool } from "./sketch";
 import { ui as text } from "./strings";
 import { type Layer, type ViewName, Viewer } from "./viewer";
@@ -2466,3 +2467,174 @@ element("cam-setup-sheet").addEventListener(
     showError(new Error(text.savedSetupSheet(path)));
   }),
 );
+
+// The command palette (Ctrl+K or Cmd+K): every engine command and every button
+// of the window, searched by name. A command that has a button runs that
+// button; one without says what it takes.
+interface PaletteItem extends PaletteEntry {
+  button: HTMLButtonElement | null;
+  note: string;
+}
+
+/** The button that stands for each engine command that has one. */
+const commandButtons: Record<string, string> = {
+  "feature.extrude": "extrude",
+  "feature.edit_extrude": "extrude",
+  "feature.revolve": "revolve",
+  "feature.edit_revolve": "revolve",
+  "feature.hole": "hole",
+  "feature.edit_hole": "hole",
+  "feature.pattern": "pattern",
+  "feature.edit_pattern": "pattern",
+  "feature.chamfer": "chamfer",
+  "feature.fillet": "fillet",
+  "feature.edit_blend": "chamfer",
+  "feature.import": "insert-step",
+  "sketch.create": "new-sketch",
+  "cam.add_setup": "cam-add-top",
+};
+
+interface CommandSpec {
+  name: string;
+  description: string;
+  args: { name: string; required: boolean }[];
+}
+
+const palette = element<HTMLDivElement>("palette");
+const paletteInput = element<HTMLInputElement>("palette-input");
+const paletteList = element<HTMLUListElement>("palette-list");
+const paletteNote = element<HTMLParagraphElement>("palette-note");
+let paletteItems: PaletteItem[] = [];
+let paletteShown: PaletteItem[] = [];
+let paletteIndex = 0;
+
+function buttonLabel(button: HTMLButtonElement): string {
+  const own = (button.querySelector("span")?.textContent ?? button.firstChild?.textContent ?? "").trim();
+  if (own) return own;
+  return (button.title || button.id).replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+async function buildPalette(): Promise<PaletteItem[]> {
+  const specs = await request<CommandSpec[]>({ method: "commands" });
+  const buttons = [
+    ...globalThis.document.querySelectorAll<HTMLButtonElement>(".ribbon button.tool[id], .menu button[id]"),
+  ];
+  const items: PaletteItem[] = buttons.map((button) => ({
+    label: buttonLabel(button),
+    detail: button.title,
+    keywords: specs.filter((spec) => commandButtons[spec.name] === button.id).map((spec) => spec.name),
+    button,
+    note: "",
+  }));
+  for (const spec of specs) {
+    if (commandButtons[spec.name]) continue;
+    const args = spec.args.map((arg) => (arg.required ? arg.name : `${arg.name}?`)).join(", ");
+    items.push({
+      label: spec.name,
+      detail: firstSentence(spec.description),
+      keywords: [],
+      button: null,
+      note: text.paletteNoForm(args || text.paletteNoArgs),
+    });
+  }
+  return items;
+}
+
+function paletteRender(): void {
+  paletteShown = matchEntries(paletteInput.value, paletteItems);
+  paletteIndex = Math.min(paletteIndex, Math.max(0, paletteShown.length - 1));
+  paletteList.replaceChildren();
+  paletteShown.forEach((item, index) => {
+    const row = globalThis.document.createElement("li");
+    row.id = `palette-item-${index}`;
+    row.setAttribute("role", "option");
+    const name = globalThis.document.createElement("span");
+    name.textContent = item.label;
+    const detail = globalThis.document.createElement("span");
+    detail.className = "palette-detail";
+    detail.textContent = item.detail;
+    row.append(name, detail);
+    if (item.button?.disabled) row.setAttribute("aria-disabled", "true");
+    row.addEventListener("click", () => paletteRun(item));
+    paletteList.append(row);
+  });
+  paletteNote.textContent = "";
+  paletteSelect(paletteIndex);
+  if (paletteShown.length === 0) paletteNote.textContent = text.paletteNone;
+}
+
+function paletteSelect(index: number): void {
+  paletteIndex = index;
+  for (const [position, row] of [...paletteList.children].entries()) {
+    row.setAttribute("aria-selected", String(position === index));
+  }
+  const item = paletteShown[index];
+  paletteList.children[index]?.scrollIntoView({ block: "nearest" });
+  paletteInput.setAttribute("aria-activedescendant", item ? `palette-item-${index}` : "");
+  if (!item) return;
+  paletteNote.textContent = item.button?.disabled ? text.paletteDisabled : item.note;
+}
+
+function paletteClose(): void {
+  palette.hidden = true;
+  paletteInput.value = "";
+}
+
+function paletteRun(item: PaletteItem): void {
+  if (!item.button) {
+    paletteNote.textContent = item.note; // stays open: there is nothing to run
+    return;
+  }
+  if (item.button.disabled) {
+    paletteNote.textContent = text.paletteDisabled;
+    return;
+  }
+  paletteClose();
+  item.button.click();
+}
+
+async function paletteOpen(): Promise<void> {
+  if (!palette.hidden) {
+    paletteInput.focus();
+    return;
+  }
+  palette.hidden = false;
+  paletteIndex = 0;
+  paletteInput.focus();
+  try {
+    paletteItems = await buildPalette();
+  } catch (error) {
+    paletteClose();
+    showError(error);
+    return;
+  }
+  paletteRender();
+}
+
+element("palette-open").addEventListener("click", () => void paletteOpen());
+paletteInput.addEventListener("input", () => {
+  paletteIndex = 0;
+  paletteRender();
+});
+paletteInput.addEventListener("keydown", (event) => {
+  const last = paletteShown.length - 1;
+  if (event.key === "ArrowDown") paletteSelect(Math.min(paletteIndex + 1, last));
+  else if (event.key === "ArrowUp") paletteSelect(Math.max(paletteIndex - 1, 0));
+  else if (event.key === "Enter") {
+    const item = paletteShown[paletteIndex];
+    if (item) paletteRun(item);
+  } else if (event.key === "Escape") paletteClose();
+  else return;
+  event.preventDefault();
+});
+globalThis.document.addEventListener("pointerdown", (event) => {
+  const target = event.target as Node;
+  if (!palette.hidden && !palette.contains(target) && !element("palette-open").contains(target)) paletteClose();
+});
+window.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    if (palette.hidden) void paletteOpen();
+    else paletteClose();
+  }
+});

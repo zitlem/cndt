@@ -1824,3 +1824,63 @@ span.ribbon-label {
   flex: 1;
   min-width: 0;
 }
+
+/* Command palette */
+.palette {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(560px, calc(100vw - 32px));
+  padding: 10px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 12px 32px var(--shadow);
+}
+
+.palette[hidden] {
+  display: none;
+}
+
+.palette ul {
+  margin: 0;
+  padding: 0;
+  max-height: 340px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.palette li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.palette li[aria-selected="true"] {
+  background: var(--accent-soft);
+}
+
+.palette li[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.palette li .palette-detail {
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette p {
+  margin: 0;
+  min-height: 1.2em;
+}

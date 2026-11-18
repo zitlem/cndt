@@ -50,6 +50,9 @@
           </label>
           <span id="saved-state" class="saved-state">[[saved-state]]</span>
         </div>
+        <button id="palette-open" type="button" class="icon-button" aria-label="[[palette-open.aria]]" title="[[palette-open.title]]">
+          <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5" /><path d="M12.5 12.5L17 17" /></svg>
+        </button>
         <button id="theme" type="button" class="icon-button theme-button" aria-label="[[theme.aria]]">
           <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5" /><path d="M10 3.5a6.5 6.5 0 0 1 0 13z" fill="currentColor" /></svg>
         </button>
@@ -543,6 +546,11 @@
         <span class="status-right">[[status.units]]</span>
       </footer>
 
+      <div id="palette" class="palette" role="dialog" aria-modal="true" aria-label="[[palette.aria]]" hidden>
+        <input id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="[[palette.placeholder]]" spellcheck="false" autocomplete="off" />
+        <ul id="palette-list" role="listbox"></ul>
+        <p id="palette-note" class="muted small" aria-live="polite"></p>
+      </div>
       <div id="toast" class="toast" role="alert" hidden></div>
     </div>
     <script type="module" src="./src/main.ts"></script>

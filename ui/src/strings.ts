@@ -39,6 +39,10 @@ export const page = {
   "document-name.label": "Document name",
   "saved-state": "Saved",
   "theme.aria": "Theme",
+  "palette-open.aria": "Search commands",
+  "palette-open.title": "Search every command (Ctrl+K, or Cmd+K on a Mac)",
+  "palette.aria": "Command palette",
+  "palette.placeholder": "Type a command…",
   "ribbon-tabs.aria": "Ribbon",
   "tab.solid": "SOLID",
   "tab.sketch": "SKETCH",
@@ -353,6 +357,11 @@ export function fillPage(root: Document): void {
 
 /** What the code writes at run time. Entries that need a value are functions of it. */
 export const ui = {
+  paletteNone: "Nothing matches.",
+  paletteDisabled: "Not available now",
+  paletteNoForm: (args: string) =>
+    `This command has no form in the window yet; give it ${args} through the API or the command line.`,
+  paletteNoArgs: "no arguments",
   themeNames: { system: "follows the system", light: "light", dark: "dark" },
   themeTitle: (now: string, next: string) => `Theme: ${now}. Click for ${next}.`,
   conflictNamed: "That can't hold together with the constraints highlighted in red. Change or delete one of them first.",
