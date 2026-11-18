@@ -46,6 +46,10 @@ A misspelled field or placeholder makes the post fail to load, so a typo can nev
 
 **Manufacture → ACTIONS → Edit post** opens the post editor. Start from a shipped post or open a `.toml` file. As you type, the current setup's program is posted through your text, and every line that differs from the shipped post's output is highlighted: review each one. Mistakes show the engine's own message. **Save as…** writes the file; **Use for posting** makes Post… and Verify use it. A program from a changed shipped post says `EDITED POST` in its header, and one from a post that is not shipped says `CUSTOM POST`.
 
+## Extending a shipped post
+
+A post can start from a shipped one and change only what differs, so later fixes to the shipped post still reach it. Put `extends = "haas-mill"` in `[post]`, set your own `id`, `name` and `version`, and write only the settings you change. Tables merge key by key; a number, string or list you write replaces the base's whole (a `program.end` list is not appended to). An extending post is always unverified, and `verified = true` is refused. See `crates/post/tests/posts/shop-haas.toml` and decision 0024.
+
 ## Changing a post
 
 Every shipped post has a golden-file test in `crates/post/tests/golden/`. If you change a post or the engine and the output changes on purpose, regenerate with:

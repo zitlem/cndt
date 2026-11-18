@@ -1815,6 +1815,31 @@ span.ribbon-label {
   overflow-y: auto;
 }
 
+.scrub-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.scrub-row select {
+  flex: none;
+  max-width: 45%;
+  min-width: 0;
+}
+
+.scrub-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.scrub-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
 .vise-row {
   display: flex;
   align-items: center;
@@ -1892,4 +1917,37 @@ span.ribbon-label {
 .palette p {
   margin: 0;
   min-height: 1.2em;
+}
+
+/* Project preview shown after choosing a file in Open */
+.open-preview {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 12px 32px var(--shadow);
+}
+
+.open-preview[hidden] {
+  display: none;
+}
+
+.open-preview p {
+  margin: 0;
+  max-width: 320px;
+  text-align: center;
+}
+
+.open-preview-buttons {
+  display: flex;
+  gap: 8px;
 }

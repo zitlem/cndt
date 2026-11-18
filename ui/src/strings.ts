@@ -43,6 +43,10 @@ export const page = {
   "palette-open.title": "Search every command (Ctrl+K, or Cmd+K on a Mac)",
   "palette.aria": "Command palette",
   "palette.placeholder": "Type a command…",
+  "open-preview.aria": "Project preview",
+  "open-preview.image": "Picture of the part, saved with the project",
+  "open-preview.cancel": "Cancel",
+  "open-preview.ok": "Open",
   "ribbon-tabs.aria": "Ribbon",
   "tab.solid": "SOLID",
   "tab.sketch": "SKETCH",
@@ -364,6 +368,8 @@ export function fillPage(root: Document): void {
 
 /** What the code writes at run time. Entries that need a value are functions of it. */
 export const ui = {
+  previewNone: "This project has no picture yet; it is saved with the project from the next save.",
+  previewShown: "The part as last saved.",
   paletteNone: "Nothing matches.",
   paletteDisabled: "Not available now",
   paletteNoForm: (args: string) =>
@@ -449,6 +455,10 @@ export const ui = {
   setupName: (name: string, offset: number, table: string) => `${name} · G${offset}${table}`,
   tableAngle: (angle: number) => ` · B${angle}`,
   hide: "Hide",
+  scrubTitle: "Show one operation, or drag to follow the tool move by move",
+  scrubAll: "All operations",
+  scrubSliderLabel: "Moves shown",
+  scrubMoves: (at: number, total: number) => `${at} / ${total}`,
   show: "Show",
   post: "Post…",
   controllerTitle: "Machine or controller the Post… button writes for",

@@ -1,0 +1,20 @@
+# A shop's Haas post: everything from the shipped haas-mill post, except
+# four decimals, block numbers counting by 5 and its own end-of-program lines.
+[post]
+extends = "haas-mill"
+id = "shop-haas"
+name = "Shop Haas"
+version = "1.0.0"
+
+[format]
+decimals = 4
+# A table merges key by key: `start` is replaced, `step` too.
+line_numbers = { start = 100, step = 5 }
+
+[program]
+end = [
+    "M9",
+    "M5",
+    "G53 G49 Z0.",
+    "M30",
+]
