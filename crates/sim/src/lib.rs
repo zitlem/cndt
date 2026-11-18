@@ -678,7 +678,7 @@ fn distance(a: Point3, b: Point3) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
     use cndt_cam_core::{Cycle, CycleKind, Operation, SpindleDirection};
@@ -988,5 +988,87 @@ mod tests {
         // A floor above its height is refused.
         setup.floors[0] = setup.heights[0] + 1.0;
         assert!(simulate(&deep, &tools(ToolShape::Flat { diameter: 2.0 }), &setup).is_err());
+    }
+
+    #[test]
+    fn a_grid_covers_its_rectangle_with_centres_in_index_order() {
+        let grid = Grid::over(1.0, 2.0, 2.0, 3.0, 0.5);
+        assert_eq!((grid.nx, grid.ny, grid.len()), (2, 2, 4));
+        assert!(!grid.is_empty());
+        let centres = grid.centres();
+        assert_eq!(centres.len(), 4);
+        // Index j * nx + i: X runs fastest.
+        assert!((centres[0][0] - 1.25).abs() < 1e-12 && (centres[0][1] - 2.25).abs() < 1e-12);
+        assert!((centres[1][0] - 1.75).abs() < 1e-12 && (centres[1][1] - 2.25).abs() < 1e-12);
+        assert!((centres[2][0] - 1.25).abs() < 1e-12 && (centres[2][1] - 2.75).abs() < 1e-12);
+        // A rectangle that is not a whole number of cells is rounded up, and
+        // a degenerate one still has a cell.
+        let odd = Grid::over(0.0, 0.0, 1.1, 0.0, 0.5);
+        assert_eq!((odd.nx, odd.ny), (3, 1));
+    }
+
+    #[test]
+    fn unusable_input_is_refused_with_a_reason() {
+        let flat = tools(ToolShape::Flat { diameter: 1.0 });
+        let empty = program(vec![]);
+        let bad = |setup: &Setup, tools: &BTreeMap<u32, Tool>| match simulate(&empty, tools, setup)
+        {
+            Err(SimError::BadInput(why)) => why,
+            other => panic!("expected BadInput, got {other:?}"),
+        };
+        let mut zero_cell = block();
+        zero_cell.grid.cell = 0.0;
+        assert!(bad(&zero_cell, &flat).contains("cells"));
+        let mut nan = block();
+        nan.heights[0] = f64::NAN;
+        assert!(bad(&nan, &flat).contains("stock"));
+        let mut upside_down = block();
+        upside_down.floors[0] = upside_down.heights[0] + 1.0;
+        assert!(bad(&upside_down, &flat).contains("bottom"));
+        let sharp = tools(ToolShape::Cone {
+            diameter: 3.0,
+            angle: 180.0,
+        });
+        assert!(bad(&block(), &sharp).contains("tool 1"));
+        let mut short_stick = Tool::bare(ToolShape::Flat { diameter: 3.0 });
+        short_stick.stickout = 1.0;
+        short_stick.flute_length = 5.0;
+        assert!(bad(&block(), &BTreeMap::from([(1, short_stick)])).contains("tool 1"));
+    }
+
+    #[test]
+    fn the_same_program_gives_the_same_report_every_time() {
+        let setup = block();
+        let steps = vec![
+            rapid(7.0, 7.0, 2.0),
+            cut(7.0, 7.0, -5.0),
+            cut(13.0, 7.0, -5.0),
+            cut(13.0, 13.0, -5.0),
+            rapid(7.0, 7.0, 2.0),
+        ];
+        let first = simulate(
+            &program(steps.clone()),
+            &tools(ToolShape::Flat { diameter: 4.0 }),
+            &setup,
+        );
+        let second = simulate(
+            &program(steps),
+            &tools(ToolShape::Flat { diameter: 4.0 }),
+            &setup,
+        );
+        assert!(first.is_ok());
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn every_error_says_what_is_wrong() {
+        for e in [
+            SimError::MissingTool(4),
+            SimError::BadInput(String::from("x")),
+            SimError::SeveralSides,
+        ] {
+            assert!(e.to_string().len() > 10, "{e:?}");
+        }
+        assert!(SimError::MissingTool(4).to_string().contains('4'));
     }
 }
