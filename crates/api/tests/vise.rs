@@ -76,6 +76,14 @@ fn a_contour_down_the_walls_hits_jaws_that_grip_too_high() {
     assert!(!problems.is_empty(), "the contour must hit the jaws");
     assert!(problems[0].contains("Contour"), "{problems:?}");
 
+    // The setup sheet tells the operator where the jaws must grip.
+    let sheet = s.call(json!({"method": "setup_sheet", "post": "mazak-smoothg", "setups": [0]}));
+    let html = sheet["result"]["html"].as_str().unwrap();
+    assert!(
+        html.contains("jaws on the front and back, gripping 10 mm of the stock from its bottom up"),
+        "{html}"
+    );
+
     // Gripping only 2 mm, inside the 3 mm of stock below the part: clear.
     s.exec("cam.set_vise", json!({"setup": 0, "grip": 2}));
     assert!(

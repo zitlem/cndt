@@ -193,6 +193,19 @@ fn a_hole_in_the_right_side_on_the_b_table() {
         "{verify}"
     );
 
+    // The setup sheet gives the right side's zero in model coordinates:
+    // the turned part's (−30, 0, 60) is model (60, 0, 30).
+    let sheet = s.call(json!({"method": "setup_sheet", "post": "mazak-smoothg", "setups": [0]}));
+    let html = sheet["result"]["html"].as_str().unwrap();
+    assert!(
+        html.contains("<th>Zero in model coordinates</th><td>X60 Y0 Z30</td>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("none entered: no fixture was checked"),
+        "{html}"
+    );
+
     // Stock carried between sides (decision 0019): a top setup facing 2 mm
     // off the top, then another right-side setup facing the right. After
     // the top one, the right facing has 2 mm less height to cut: about

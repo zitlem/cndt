@@ -158,20 +158,37 @@ impl Api {
             );
             fact(
                 &mut body,
+                "Vise",
+                &def.vise.map_or_else(
+                    || String::from("none entered: no fixture was checked"),
+                    |v| {
+                        format!(
+                            "jaws on the {}, gripping {} mm of the stock from its bottom up, {} mm thick; \
+                             every tool was checked against them",
+                            match v.along {
+                                cndt_model::cam::JawAxis::X => "front and back",
+                                cndt_model::cam::JawAxis::Y => "left and right",
+                            },
+                            num(v.grip),
+                            num(v.jaw)
+                        )
+                    },
+                ),
+            );
+            fact(
+                &mut body,
                 "Where zero is",
                 "X0 Y0 at the corner of the finished part nearest the left front, as the spindle \
                  sees it. Z0 on the finished face the spindle sees.",
             );
             if let Some(placed) = &planned.setup {
+                // In the model's own coordinates: for a side setup the
+                // origin is on the turned part (decision 0019).
+                let zero = placed.in_model(cndt_geom::Point3::new(0.0, 0.0, 0.0));
                 fact(
                     &mut body,
                     "Zero in model coordinates",
-                    &format!(
-                        "X{} Y{} Z{}",
-                        num(placed.origin.x),
-                        num(placed.origin.y),
-                        num(placed.origin.z)
-                    ),
+                    &format!("X{} Y{} Z{}", num(zero.x), num(zero.y), num(zero.z)),
                 );
                 let stock = cndt_process_mill::world(
                     document,
