@@ -137,6 +137,9 @@ pub enum Hit {
     Shank,
     /// The holder touched the stock: the tool sticks out too little.
     Holder,
+    /// Some part of the tool (cutter, shank or holder) touched the fixture
+    /// holding the stock, such as a vise jaw (decision 0020).
+    Fixture,
     /// A cut went below the finished part.
     Gouge,
 }
@@ -186,6 +189,16 @@ impl Grid {
         out
     }
 
+    /// The centre of cell `c`.
+    #[must_use]
+    pub fn centres_at(&self, c: usize) -> [f64; 2] {
+        let (i, j) = (c % self.nx.max(1), c / self.nx.max(1));
+        [
+            self.x0 + (i as f64 + 0.5) * self.cell,
+            self.y0 + (j as f64 + 0.5) * self.cell,
+        ]
+    }
+
     /// Whether there are no cells.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -213,6 +226,10 @@ pub struct Setup {
     /// The finished part's top in each cell, seen along the spindle;
     /// `None` where there is no part.
     pub part: Vec<Option<f64>>,
+    /// The top of the fixture holding the stock in each cell, such as a
+    /// vise jaw: nothing of the tool may come down to it. Empty when there
+    /// is no fixture; otherwise one per cell, `None` where there is none.
+    pub fixture: Vec<Option<f64>>,
 }
 
 impl Setup {
@@ -224,6 +241,7 @@ impl Setup {
             heights: vec![top; grid.len()],
             floors: vec![bottom; grid.len()],
             part,
+            fixture: Vec::new(),
         }
     }
 }
@@ -324,6 +342,9 @@ pub fn simulate(
     }
     if setup.heights.len() != grid.len() || setup.floors.len() != grid.len() {
         return bad("the stock heights do not match the grid");
+    }
+    if !setup.fixture.is_empty() && setup.fixture.len() != grid.len() {
+        return bad("the fixture heights do not match the grid");
     }
     let sound = setup
         .heights
@@ -578,10 +599,12 @@ impl Sim<'_> {
         // For a rapid, each cell's height before the move: the samples
         // before the last have already lowered it.
         let mut before_move: BTreeMap<usize, f64> = BTreeMap::new();
+        let mut fixture: Option<(Point3, f64)> = None;
         for p in points {
             // Before this point cuts: whatever stands above the flutes, or
             // under the holder, is hit by a part that cannot cut.
             self.check_assembly(whole, *p, &mut touched);
+            self.check_fixture(whole, *p, &mut fixture);
             let range = |lo: f64, hi: f64, origin: f64, count: usize| {
                 let first = ((lo - origin) / grid.cell).floor().max(0.0) as usize;
                 let last = (((hi - origin) / grid.cell).ceil().max(0.0) as usize).min(count);
@@ -613,6 +636,19 @@ impl Sim<'_> {
                 }
             }
         }
+        // One finding per operation that touches the fixture: its deepest.
+        if let Some((point, depth)) = fixture {
+            let finding = at.finding(Hit::Fixture, point, depth);
+            match self
+                .collisions
+                .iter_mut()
+                .find(|c| c.what == Hit::Fixture && c.operation == finding.operation)
+            {
+                Some(known) if known.depth >= depth => {}
+                Some(known) => *known = finding,
+                None => self.collisions.push(finding),
+            }
+        }
         for (hit, touch) in [Hit::Shank, Hit::Holder].into_iter().zip(touched) {
             if let Some((point, depth)) = touch {
                 self.collisions.push(at.finding(hit, point, depth));
@@ -629,6 +665,53 @@ impl Sim<'_> {
                 if deeper {
                     self.gouges
                         .insert(at.operation, at.finding(Hit::Gouge, point, depth));
+                }
+            }
+        }
+    }
+
+    /// Whether any part of the tool, with its tip at `p`, comes down onto
+    /// the fixture; keeps the deepest touch. The tool's underside at a
+    /// distance `d` from its axis: the cutter's profile within its radius,
+    /// the end of the flutes out to the shank, the holder's face out to the
+    /// holder.
+    fn check_fixture(&self, whole: Tool, p: Point3, touch: &mut Option<(Point3, f64)>) {
+        if self.setup.fixture.is_empty() {
+            return;
+        }
+        let grid = self.setup.grid;
+        let cutter = whole.cutter.radius();
+        let shank = whole.shank_diameter.max(cutter * 2.0) / 2.0;
+        let holder = (whole.holder_diameter / 2.0).max(shank);
+        let underside = |d: f64| {
+            if d <= cutter {
+                Some(p.z + whole.cutter.lift(d))
+            } else if d <= shank {
+                Some(p.z + whole.flute_length)
+            } else if d <= holder {
+                Some(p.z + whole.stickout)
+            } else {
+                None
+            }
+        };
+        let span = |lo: f64, hi: f64, origin: f64, count: usize| {
+            let first = ((lo - origin) / grid.cell).floor().max(0.0) as usize;
+            let last = (((hi - origin) / grid.cell).ceil().max(0.0) as usize).min(count);
+            first..last
+        };
+        for j in span(p.y - holder, p.y + holder, grid.y0, grid.ny) {
+            let cy = grid.y0 + (j as f64 + 0.5) * grid.cell;
+            for i in span(p.x - holder, p.x + holder, grid.x0, grid.nx) {
+                let cx = grid.x0 + (i as f64 + 0.5) * grid.cell;
+                let Some(top) = self.setup.fixture[j * grid.nx + i] else {
+                    continue;
+                };
+                let Some(bottom) = underside((cx - p.x).hypot(cy - p.y)) else {
+                    continue;
+                };
+                let depth = top - bottom;
+                if depth > TOLERANCE && touch.is_none_or(|(_, d)| depth > d) {
+                    *touch = Some((Point3::new(cx, cy, bottom), depth));
                 }
             }
         }

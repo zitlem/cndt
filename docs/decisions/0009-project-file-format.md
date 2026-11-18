@@ -131,3 +131,10 @@ A setup's `side` may be `front`, `back`, `left` or `right` as well as `top` and 
 
 - **Why a version bump:** a version 19 build refuses the unknown side as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 19 or older file with a side setup is refused as damaged.
+
+## Version 21 (2026-11-18)
+
+A setup may hold `vise`: `{"grip", "along" (left out for x), "jaw"}` (decision 0020).
+
+- **Why a version bump:** a version 20 build refuses the unknown field as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 20 or older file with a vise is refused as damaged.
