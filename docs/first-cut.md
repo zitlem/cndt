@@ -38,24 +38,28 @@ The tool library is typical sizes, not your tools. For each tool in the program:
 - Measure its length into the control's offsets.
 - In Manufacture, open Tool library in the browser and click the tool (or Add tool…). Set its number, kind, size, speed and feed, tick "Measured assembly" and enter its real flute length, stickout, shank and holder, so the shank and holder checks use real sizes. The report flags every tool still typical. (Scripts use `cam.set_tool` with the same values.)
 
-## 4. Post and read the program
+## 4. Enter the vise
+
+For each setup, type how much of the stock the vise jaws grip (from the stock's bottom up) into the setup card's Vise field, and which faces they clamp. The simulation then treats any tool touching a jaw as a problem. Check it against how the part will really sit in the vise.
+
+## 5. Post and read the program
 
 1. Simulate every setup. Resolve any **problem**; read every **review** item.
 2. Post with the machine chosen (Mazak HCN-5000), so its limits are checked.
 3. Read the report saved beside the program, and the program itself: the header, each tool change, each work offset, the first moves after each tool change.
 
-## 5. Air cut
+## 6. Air cut
 
 1. Post again with PROVE-OUT at Z +50 mm (or more, if the part is tall or the offsets are uncertain). CNDT refuses a lift that would still reach the stock.
 2. On the machine: single block on, rapid override at 25 % or less, feed override low, hand on feed hold.
 3. Run the air cut through. Watch every tool change, each approach and the order of operations. Stop at anything unexpected.
 
-## 6. Cut
+## 7. Cut
 
 1. Run the real program with single block for the first moves of each tool, and rapid override low.
 2. Watch the first cut of each operation at reduced feed.
 3. Measure the part: the outline, pocket floors, hole sizes and positions, thread with a gauge, chamfers.
 
-## 7. Record it
+## 8. Record it
 
 If the program ran as expected and the part measures right, record it as the verification gates require: the machine, the control and its software version, the date, who ran it, the post version and the program. Then, and only then, mark the post (and the machine definition) verified. Anything that went wrong is a bug report with the program, the post and what happened.

@@ -146,10 +146,11 @@ export interface Cam {
     id: number;
     setup: {
       name: string;
-      side: "top" | "bottom";
+      side: "top" | "bottom" | "front" | "back" | "left" | "right";
       work_offset: number;
       flip_about?: "x" | "y";
       index?: number;
+      vise?: { grip: number; along?: "y"; jaw: number };
       operations: { id: number; operation: CamOperation }[];
     };
   }[];

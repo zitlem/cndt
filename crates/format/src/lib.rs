@@ -54,7 +54,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 18: imported IGES files.
 /// - 19: STL reference meshes (decision 0018).
 /// - 20: setups on the part's sides (decision 0019).
-pub const SCHEMA_VERSION: u32 = 20;
+/// - 21: a vise per setup (decision 0020).
+pub const SCHEMA_VERSION: u32 = 21;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -299,6 +300,14 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 20 knew nothing of vises.
+    if manifest.schema_version < 21 && document.cam().setups.iter().any(|s| s.setup.vise.is_some())
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain vises",
+            manifest.schema_version
+        )));
+    }
     // Version 19 knew nothing of side setups.
     if manifest.schema_version < 20
         && document
@@ -942,6 +951,38 @@ mod tests {
         let v15 = raw_zip(&[(MANIFEST, &manifest(15)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v15)).unwrap_err();
         assert!(error.to_string().contains("tool assemblies"), "{error}");
+    }
+
+    #[test]
+    fn vises_need_version_21() {
+        use cndt_model::cam::{CamEdit, FlipAxis, JawAxis, Side, Vise};
+        let mut document = Document::new("Vise");
+        let id = document
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+                flip_about: FlipAxis::X,
+                index: None,
+            })
+            .unwrap()
+            .unwrap();
+        document
+            .edit_cam(CamEdit::SetVise {
+                setup: id,
+                vise: Some(Vise {
+                    grip: 8.0,
+                    along: JawAxis::Y,
+                    jaw: 20.0,
+                }),
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        let v20 = raw_zip(&[(MANIFEST, &manifest(20)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v20)).unwrap_err();
+        assert!(error.to_string().contains("vises"), "{error}");
     }
 
     #[test]
