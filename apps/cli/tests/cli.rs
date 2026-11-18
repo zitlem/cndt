@@ -153,3 +153,53 @@ fn api_mode_answers_each_line() {
     assert_eq!(lines[1]["result"]["dirty"], false);
     assert_eq!(lines[2]["error"]["kind"], "bad_request");
 }
+
+#[test]
+fn sheet_writes_the_setup_sheet_to_a_file_or_the_terminal() {
+    let dir = temp_dir("sheet");
+    let file = dir.join("block.cndt").display().to_string();
+    let out = dir.join("block.html").display().to_string();
+    let (ok, _, stderr) = cndt(&["new", &file, "Block"]);
+    assert!(ok, "{stderr}");
+    for (command, args) in [
+        ("sketch.create", r#"{"plane":"xy","name":"Outline"}"#),
+        (
+            "sketch.add_rectangle",
+            r#"{"sketch":0,"from":{"x":0,"y":0},"to":{"x":60,"y":40}}"#,
+        ),
+        ("feature.extrude", r#"{"sketch":0,"distance":30}"#),
+        ("cam.set_stock", r#"{"side":2,"top":2,"bottom":3}"#),
+        ("cam.add_setup", r#"{"side":"top","work_offset":1}"#),
+        ("cam.add_operation", r#"{"setup":0,"type":"face"}"#),
+    ] {
+        let (ok, _, stderr) = cndt(&["exec", &file, command, args]);
+        assert!(ok, "{command}: {stderr}");
+    }
+
+    let (ok, stdout, stderr) = cndt(&["sheet", &file, &out, "--machine", "mazak-hcn-5000"]);
+    assert!(ok, "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        written.contains("SETUP SHEET <em>UNVERIFIED</em>"),
+        "{written}"
+    );
+    assert!(written.contains("G54 work offset"), "{written}");
+    assert!(written.contains("Mazak HCN-5000"), "{written}");
+
+    // Without a file name it goes to the terminal, the very same bytes.
+    let (ok, stdout, stderr) = cndt(&["sheet", &file, "--machine", "mazak-hcn-5000"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, written);
+
+    let (ok, _, stderr) = cndt(&["sheet", &file, "--machine", "no-such-machine"]);
+    assert!(!ok);
+    assert!(stderr.contains("no machine"), "{stderr}");
+    let (ok, _, stderr) = cndt(&["sheet", &file, "--setups", "x"]);
+    assert!(!ok);
+    assert!(
+        stderr.is_empty() || stderr.contains("setup ids"),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

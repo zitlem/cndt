@@ -20,6 +20,7 @@
 mod dxf;
 mod dxf_import;
 mod export;
+mod setup_sheet;
 mod simulate;
 mod verify;
 
@@ -169,6 +170,28 @@ pub enum Request {
         #[serde(default)]
         cell: Option<f64>,
         /// A file to write the report to.
+        #[serde(default)]
+        path: Option<PathBuf>,
+    },
+    /// Writes the setup sheet: a printable HTML page for the operator at
+    /// the machine, with each setup's work offset, zero, stock, tools,
+    /// cutting time and every verification finding. Changes nothing;
+    /// replies `{html, setups}`. With `path`, also writes the page there.
+    /// The post defaults to the machine's own, else `fanuc-mill`.
+    SetupSheet {
+        /// A shipped post.
+        #[serde(default)]
+        post: Option<String>,
+        /// A post definition as TOML text, as for `post`.
+        #[serde(default)]
+        definition: Option<String>,
+        /// A shipped machine, as for `post`.
+        #[serde(default)]
+        machine: Option<String>,
+        /// The setups, in machining order; all of them if left out.
+        #[serde(default)]
+        setups: Option<Vec<u32>>,
+        /// A file to write the page to.
         #[serde(default)]
         path: Option<PathBuf>,
     },
@@ -1314,6 +1337,35 @@ impl Api {
                     Err(error) => failure(error),
                 };
             }
+            Request::SetupSheet {
+                post,
+                definition,
+                machine,
+                setups,
+                path,
+            } => {
+                let id = match (&post, machine.as_deref().map(shipped_machine)) {
+                    (Some(id), _) => Ok(id.clone()),
+                    (None, Some(Ok(m))) => Ok(m.machine.post),
+                    (None, Some(Err(error))) => Err(error),
+                    (None, None) => Ok(String::from("fanuc-mill")),
+                };
+                return match id.and_then(|id| {
+                    let post = PostRef { id, definition };
+                    self.setup_sheet(
+                        &post,
+                        machine.as_deref(),
+                        setups.as_deref(),
+                        path.as_deref(),
+                    )
+                }) {
+                    Ok(sheet) => success(serde_json::json!({
+                        "html": sheet.html,
+                        "setups": sheet.setups,
+                    })),
+                    Err(error) => failure(error),
+                };
+            }
             Request::Export { path } => {
                 return match self.export(&path) {
                     Ok(value) => success(value),
@@ -1586,6 +1638,10 @@ const FIELDS: &[(&str, &[&str])] = &[
     (
         "verify",
         &["post", "definition", "machine", "setups", "cell", "path"],
+    ),
+    (
+        "setup_sheet",
+        &["post", "definition", "machine", "setups", "path"],
     ),
     ("export", &["path"]),
     ("import_dxf", &["path", "plane", "name"]),

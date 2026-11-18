@@ -741,6 +741,7 @@ function renderSetups(state: DocumentState): void {
   ui.setupList.replaceChildren();
   ui.noSetups.hidden = setups.length > 0;
   element<HTMLButtonElement>("cam-post-all").disabled = setups.length < 2;
+  element<HTMLButtonElement>("cam-setup-sheet").disabled = setups.length < 1;
   for (const { id, setup } of setups) {
     const item = globalThis.document.createElement("li");
     item.classList.toggle("showing", shownSetup === id);
@@ -2178,5 +2179,26 @@ element("import-dxf").addEventListener(
     viewer.fit();
     const notes = next.import_notes ?? [];
     showError(new Error(text.importedDrawing(notes)));
+  }),
+);
+
+// The setup sheet: a printable page for the operator at the machine.
+element("cam-setup-sheet").addEventListener(
+  "click",
+  guarded(async () => {
+    const path = await save({
+      title: text.saveSetupSheet,
+      defaultPath: `${current?.document.name ?? text.untitled} setup sheet.html`,
+      filters: [{ name: text.setupSheetFiles, extensions: ["html"] }],
+    });
+    if (!path) return;
+    await request({
+      method: "setup_sheet",
+      post: chosenTarget.post,
+      definition: chosenTarget.definition,
+      machine: chosenTarget.machine,
+      path,
+    });
+    showError(new Error(text.savedSetupSheet(path)));
   }),
 );
