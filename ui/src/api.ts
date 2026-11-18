@@ -184,6 +184,8 @@ export interface DocumentState {
   sketch_frames: Record<string, FrameStatus>;
   body: BodyView | null;
   body_revision: number;
+  /** Operations whose toolpath was planned and whose design changed since. */
+  stale_operations: number[];
   /** How many timeline features are built while the history is rolled back. */
   rollback: number | null;
   /** Each reference mesh that read: its size, for measuring (decision 0018). */

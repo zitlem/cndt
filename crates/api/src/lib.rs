@@ -22,6 +22,7 @@ mod dxf_import;
 mod export;
 mod setup_sheet;
 mod simulate;
+mod stale;
 mod verify;
 
 use std::collections::BTreeMap;
@@ -423,6 +424,9 @@ struct StateView<'a> {
     /// Goes up by one on every rebuild; fetch `body_mesh` again when it
     /// changes.
     body_revision: u64,
+    /// Operations whose toolpath was planned and whose design has changed
+    /// since (architecture rule 9); plan the setup again to clear it.
+    stale_operations: Vec<u32>,
     /// How many timeline features are built, when the history is rolled
     /// back; `null` for all of them.
     rollback: Option<usize>,
@@ -486,6 +490,12 @@ pub struct Api {
     /// A view of the past, not part of the document; any change to the
     /// document brings it back to the end.
     rollback: Option<usize>,
+    /// What each operation's toolpath was last planned from, by operation id
+    /// (see [`stale`]); not part of the document.
+    planned: std::sync::Mutex<BTreeMap<u32, u64>>,
+    /// The part's geometry fingerprint, worked out when first needed after a
+    /// rebuild.
+    geometry: std::sync::Mutex<Option<Option<u64>>>,
 }
 
 impl Default for Api {
@@ -679,6 +689,8 @@ impl Api {
             simulated: None,
             rollback: None,
             verified: None,
+            planned: std::sync::Mutex::new(BTreeMap::new()),
+            geometry: std::sync::Mutex::new(None),
         }
     }
 
@@ -686,6 +698,81 @@ impl Api {
     fn refresh(&mut self) {
         self.rebuilt = rebuild_to(self.session.document(), self.kernel.as_ref(), self.rollback);
         self.revision += 1;
+        if let Ok(mut geometry) = self.geometry.lock() {
+            *geometry = None;
+        }
+    }
+
+    /// Forgets what any toolpath was planned from (another document).
+    fn forget_plans(&self) {
+        if let Ok(mut planned) = self.planned.lock() {
+            planned.clear();
+        }
+    }
+
+    /// Fingerprint of the rebuilt part: its triangles and its face names.
+    fn geometry_fingerprint(&self) -> Option<u64> {
+        let mut cached = self.geometry.lock().ok()?;
+        if let Some(value) = *cached {
+            return value;
+        }
+        let value = self.rebuilt.body.as_ref().and_then(|body| {
+            let mesh = self.kernel.mesh(body, self.deflection()).ok()?;
+            let mut hash = stale::Fingerprint::new();
+            hash.bytes(&stale::mesh_fingerprint(&mesh).to_le_bytes());
+            hash.value(&self.rebuilt.faces);
+            Some(hash.finish())
+        });
+        *cached = Some(value);
+        value
+    }
+
+    /// The fingerprint of each operation of `setup` as the design stands.
+    fn operation_fingerprints(&self, setup: &cndt_model::cam::SetupEntry) -> Vec<(u32, u64)> {
+        let geometry = self.geometry_fingerprint();
+        let document = self.session.document();
+        setup
+            .setup
+            .operations
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id,
+                    stale::operation_fingerprint(document, geometry, setup, entry),
+                )
+            })
+            .collect()
+    }
+
+    /// Stamps the operations of a setup just planned.
+    fn note_planned(&self, setup: Option<u32>) {
+        let cam = self.session.document().cam();
+        let entry = match setup {
+            Some(id) => cam.setups.iter().find(|e| e.id == id),
+            None => cam.setups.first(),
+        };
+        let Some(entry) = entry else { return };
+        let stamps = self.operation_fingerprints(entry);
+        if let Ok(mut planned) = self.planned.lock() {
+            planned.extend(stamps);
+        }
+    }
+
+    /// The operations planned earlier whose design has changed since.
+    fn stale_operations(&self) -> Vec<u32> {
+        let stamped = match self.planned.lock() {
+            Ok(planned) if !planned.is_empty() => planned.clone(),
+            _ => return Vec::new(),
+        };
+        let mut stale = Vec::new();
+        for entry in &self.session.document().cam().setups {
+            for (id, now) in self.operation_fingerprints(entry) {
+                if stamped.get(&id).is_some_and(|then| *then != now) {
+                    stale.push(id);
+                }
+            }
+        }
+        stale
     }
 
     /// The rebuilt part's edges as polylines, in the layout documented on
@@ -1084,6 +1171,7 @@ impl Api {
         let Some(placed) = planned.setup else {
             return Err(ApiError::new("cam", "the setup has no placement"));
         };
+        self.note_planned(setup);
         let segments = cndt_process_mill::preview(&planned.program, &placed);
         let mut out = Vec::with_capacity(12 + segments.len() * 25);
         out.extend_from_slice(TOOLPATH_MAGIC);
@@ -1524,6 +1612,7 @@ impl Api {
                     .unwrap_or_default(),
             }),
             body_revision: self.revision,
+            stale_operations: self.stale_operations(),
             rollback: self.rollback,
             tool_assemblies: self
                 .session
@@ -1580,6 +1669,7 @@ impl Api {
         self.session = Session::new(document);
         self.path = None;
         self.extensions.clear();
+        self.forget_plans();
         Ok(())
     }
 
@@ -1589,6 +1679,7 @@ impl Api {
         self.extensions = project.extensions().clone();
         self.session = Session::new(project.document);
         self.path = Some(path);
+        self.forget_plans();
         Ok(())
     }
 
