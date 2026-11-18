@@ -107,6 +107,7 @@ fn ci() -> Result<(), String> {
         npm(&ui, &["ci", "--no-fund", "--no-audit"])?;
     }
     npm(&ui, &["run", "build"])?;
+    npm(&ui, &["test"])?;
     cargo(&root, &["fmt", "--all", "--check"])?;
     cargo(
         &root,
