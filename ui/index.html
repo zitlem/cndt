@@ -308,6 +308,7 @@
               <details class="node" data-workspace="manufacture" hidden>
                 <summary>[[browser.tool-library]]</summary>
                 <ul id="tool-list" class="tool-list"></ul>
+                <button id="tool-add" type="button" class="secondary small-button">[[tool-add]]</button>
               </details>
             </details>
           </div>
@@ -397,6 +398,52 @@
             </div>
           </form>
         
+          <form id="tool-dialog" class="dialog" hidden>
+            <h3 id="tool-dialog-title">[[tool-dialog.title]]</h3>
+            <div class="form-row">
+              <label>[[tool-dialog.number]]<input id="tool-number" type="number" min="1" max="999" step="1" required /></label>
+              <label>[[tool-dialog.kind]]
+                <select id="tool-kind">
+                  <option value="spot_drill">[[tool-kind.spot-drill]]</option>
+                  <option value="drill">[[tool-kind.drill]]</option>
+                  <option value="tap">[[tool-kind.tap]]</option>
+                  <option value="reamer">[[tool-kind.reamer]]</option>
+                  <option value="end_mill">[[tool-kind.end-mill]]</option>
+                  <option value="face_mill">[[tool-kind.face-mill]]</option>
+                  <option value="chamfer_mill">[[tool-kind.chamfer-mill]]</option>
+                </select>
+              </label>
+            </div>
+            <label data-tool-for="tap">[[tool-dialog.thread]]
+              <select id="tool-thread">
+                <option>M3x0.5</option><option>M4x0.7</option><option>M5x0.8</option>
+                <option selected>M6x1.0</option><option>M8x1.25</option><option>M10x1.5</option><option>M12x1.75</option>
+              </select>
+            </label>
+            <div class="form-row">
+              <label>[[tool-dialog.diameter]]<input id="tool-diameter" type="number" step="any" min="0" required /></label>
+              <label>[[tool-dialog.rpm]]<input id="tool-rpm" type="number" step="any" min="0" required /></label>
+              <label>[[tool-dialog.feed]]<input id="tool-feed" type="number" step="any" min="0" required /></label>
+            </div>
+            <label>[[tool-dialog.description]]<input id="tool-description" type="text" spellcheck="false" /></label>
+            <label class="check"><input id="tool-measured" type="checkbox" /> [[tool-dialog.measured]]</label>
+            <div class="form-row" data-tool-measured>
+              <label>[[tool-dialog.flute-length]]<input id="tool-flute" type="number" step="any" min="0" /></label>
+              <label>[[tool-dialog.stickout]]<input id="tool-stickout" type="number" step="any" min="0" /></label>
+              <label>[[tool-dialog.shank]]<input id="tool-shank" type="number" step="any" min="0" /></label>
+            </div>
+            <div class="form-row" data-tool-measured>
+              <label>[[tool-dialog.holder-diameter]]<input id="tool-holder-diameter" type="number" step="any" min="0" /></label>
+              <label>[[tool-dialog.holder-length]]<input id="tool-holder-length" type="number" step="any" min="0" /></label>
+            </div>
+            <p id="tool-typical" class="muted small"></p>
+            <div class="dialog-buttons">
+              <button id="tool-delete" type="button" class="secondary">[[tool-dialog.delete]]</button>
+              <button id="tool-cancel" type="button" class="secondary">[[tool-dialog.cancel]]</button>
+              <button type="submit" class="primary">[[tool-dialog.ok]]</button>
+            </div>
+          </form>
+
           <section id="post-editor" class="dialog post-editor" hidden aria-label="[[post-editor.aria]]">
             <div class="report-head">
               <h3>[[post-editor.title]]</h3>

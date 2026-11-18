@@ -1995,9 +1995,123 @@ function renderTools(state: DocumentState): void {
       item.classList.toggle("typical", !a.measured);
     }
     item.append(name, detail);
+    item.tabIndex = 0;
+    item.addEventListener("click", () => openTool(Number(number)));
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") openTool(Number(number));
+    });
     list.append(item);
   }
 }
+
+// ---------------------------------------------------------------- tool editor
+
+const toolDialog = element<HTMLFormElement>("tool-dialog");
+const toolField = (id: string) => element<HTMLInputElement>(id);
+const ASSEMBLY_FIELDS = [
+  ["tool-flute", "flute_length"],
+  ["tool-stickout", "stickout"],
+  ["tool-shank", "shank_diameter"],
+  ["tool-holder-diameter", "holder_diameter"],
+  ["tool-holder-length", "holder_length"],
+] as const;
+let editingTool: number | null = null;
+
+/** Shows the thread only for a tap, and the assembly only when measured. */
+function syncToolFields(): void {
+  const kind = element<HTMLSelectElement>("tool-kind").value;
+  for (const row of toolDialog.querySelectorAll<HTMLElement>("[data-tool-for]")) {
+    row.hidden = row.dataset["toolFor"] !== kind;
+  }
+  const measured = toolField("tool-measured").checked;
+  for (const row of toolDialog.querySelectorAll<HTMLElement>("[data-tool-measured]")) row.hidden = !measured;
+}
+
+/** Opens the tool editor on a library tool, or on a new one for `null`. */
+function openTool(number: number | null): void {
+  if (!current) return;
+  const tools = current.document.cam?.tools ?? {};
+  const tool = number === null ? undefined : (tools[String(number)] as Record<string, unknown> | undefined);
+  editingTool = number;
+  element("tool-dialog-title").textContent = text.toolDialogTitle(number);
+  const used = Object.keys(tools).map(Number);
+  toolField("tool-number").value = String(number ?? Math.max(0, ...used) + 1);
+  const kind = (tool?.["kind"] as { type: string; thread?: string } | undefined) ?? { type: "end_mill" };
+  element<HTMLSelectElement>("tool-kind").value = kind.type;
+  if (kind.thread) element<HTMLSelectElement>("tool-thread").value = kind.thread;
+  toolField("tool-diameter").value = String(tool?.["diameter"] ?? 10);
+  toolField("tool-rpm").value = String(tool?.["rpm"] ?? 8000);
+  toolField("tool-feed").value = String(tool?.["feed"] ?? 1000);
+  toolField("tool-description").value = String(tool?.["description"] ?? "");
+  // The assembly the checks use now: measured, or typical for the kind.
+  const assembly = number === null ? undefined : current.tool_assemblies?.[String(number)];
+  toolField("tool-measured").checked = assembly?.measured ?? false;
+  for (const [id, key] of ASSEMBLY_FIELDS) toolField(id).value = assembly ? String(assembly[key]) : "";
+  element("tool-typical").textContent =
+    assembly && !assembly.measured
+      ? text.typicalSizes(
+          formatNumber(assembly.flute_length),
+          formatNumber(assembly.stickout),
+          formatNumber(assembly.shank_diameter),
+          formatNumber(assembly.holder_diameter),
+          formatNumber(assembly.holder_length),
+        )
+      : "";
+  element<HTMLButtonElement>("tool-delete").hidden = number === null;
+  syncToolFields();
+  toolDialog.hidden = false;
+  toolField("tool-diameter").focus();
+}
+
+function closeTool(): void {
+  toolDialog.hidden = true;
+  editingTool = null;
+}
+
+element("tool-add").addEventListener("click", () => openTool(null));
+element("tool-cancel").addEventListener("click", closeTool);
+element("tool-kind").addEventListener("change", syncToolFields);
+toolField("tool-measured").addEventListener("change", syncToolFields);
+toolDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeTool();
+});
+element("tool-delete").addEventListener(
+  "click",
+  guarded(async () => {
+    if (editingTool === null) return;
+    render(await execute("cam.remove_tool", { number: editingTool }));
+    closeTool();
+  }),
+);
+toolDialog.addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    const number = Number(toolField("tool-number").value);
+    const kind = element<HTMLSelectElement>("tool-kind").value;
+    const args: Record<string, unknown> = {
+      number,
+      kind,
+      diameter: Number(toolField("tool-diameter").value),
+      rpm: Number(toolField("tool-rpm").value),
+      feed: Number(toolField("tool-feed").value),
+      description: toolField("tool-description").value,
+    };
+    if (kind === "tap") args["thread"] = element<HTMLSelectElement>("tool-thread").value;
+    if (toolField("tool-measured").checked) {
+      for (const [id, key] of ASSEMBLY_FIELDS) args[key] = Number(toolField(id).value);
+    }
+    // A new number that another tool already has replaces it, once asked.
+    const taken = number !== editingTool && current?.document.cam?.tools?.[String(number)] !== undefined;
+    if (taken && !(await ask(text.replaceTool(number), { kind: "warning" }))) return;
+    let next = await execute("cam.set_tool", args);
+    // Renumbered: the old number goes.
+    if (editingTool !== null && editingTool !== number) {
+      next = await execute("cam.remove_tool", { number: editingTool });
+    }
+    render(next);
+    closeTool();
+  })();
+});
 
 // ---------------------------------------------------------------- post editor
 

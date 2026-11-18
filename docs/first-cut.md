@@ -36,7 +36,7 @@ The tool library is typical sizes, not your tools. For each tool in the program:
 
 - Load it in the pocket with the program's number, or change the number in CNDT.
 - Measure its length into the control's offsets.
-- Enter its real stickout, flute length, shank and holder in CNDT (`cam.set_tool` with an assembly), so the shank and holder checks use real sizes. The report flags every tool still typical.
+- In Manufacture, open Tool library in the browser and click the tool (or Add tool…). Set its number, kind, size, speed and feed, tick "Measured assembly" and enter its real flute length, stickout, shank and holder, so the shank and holder checks use real sizes. The report flags every tool still typical. (Scripts use `cam.set_tool` with the same values.)
 
 ## 4. Post and read the program
 
