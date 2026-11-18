@@ -16,6 +16,9 @@
 //!   at once instead of producing wrong G-code.
 //! - Output is deterministic: the same program and post give the same bytes.
 
+mod readback;
+pub use readback::{ReadError, UNKNOWN_HEIGHT, read_back};
+
 use std::fmt;
 
 use cndt_cam_core::{
