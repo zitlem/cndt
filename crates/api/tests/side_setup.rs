@@ -244,9 +244,11 @@ fn a_hole_in_the_right_side_on_the_b_table() {
     // face at y 20, z 15, from x 60 inwards.
     let path = s.api.toolpath_preview(Some(0)).unwrap();
     let count = u32::from_le_bytes(path[8..12].try_into().unwrap()) as usize;
+    // The segments are the last `count * 25` bytes (after the operation names).
+    let first_segment = path.len() - count * 25;
     let mut deepest = f64::INFINITY;
     for k in 0..count {
-        let at = 12 + k * 25;
+        let at = first_segment + k * 25;
         let f = |i: usize| {
             f64::from(f32::from_le_bytes(
                 path[at + 1 + 4 * i..at + 5 + 4 * i].try_into().unwrap(),

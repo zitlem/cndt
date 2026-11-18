@@ -117,3 +117,65 @@ fn a_contour_down_the_walls_hits_jaws_that_grip_too_high() {
         "{reply}"
     );
 }
+
+/// A plate with no stock under it, on parallels under its clamped faces: a
+/// through hole in the middle is clear, one near the clamped edge drills
+/// into the parallel.
+#[test]
+fn a_through_hole_over_a_parallel_hits_it() {
+    let hit = |y: f64| -> Vec<String> {
+        let mut s = Session { api: Api::new() };
+        s.exec("sketch.create", json!({"plane": "xy", "name": "Plate"}));
+        s.exec(
+            "sketch.add_rectangle",
+            json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 60, "y": 40}}),
+        );
+        let state = s.exec("feature.extrude", json!({"sketch": 0, "distance": 10}));
+        let top = state["body"]["faces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|names| names.as_array().unwrap().iter())
+            .filter_map(Value::as_str)
+            .find(|name| name.starts_with("f0/end/"))
+            .unwrap()
+            .to_owned();
+        let state = s.exec("sketch.create", json!({"face": top}));
+        let sketch = state["document"]["next_sketch"].as_u64().unwrap() - 1;
+        // The face sketch's frame: find where model (30, y) is in it.
+        let frame = &state["sketch_frames"][sketch.to_string()]["frame"];
+        let o = &frame["origin"];
+        let (ox, oy) = (o["x"].as_f64().unwrap(), o["y"].as_f64().unwrap());
+        let (xx, xy) = (
+            frame["x"][0].as_f64().unwrap(),
+            frame["x"][1].as_f64().unwrap(),
+        );
+        let (yx, yy) = (
+            frame["y"][0].as_f64().unwrap(),
+            frame["y"][1].as_f64().unwrap(),
+        );
+        let (dx, dy) = (30.0 - ox, y - oy);
+        s.exec(
+            "sketch.add_point",
+            json!({"sketch": sketch, "at": {"x": dx * xx + dy * xy, "y": dx * yx + dy * yy}}),
+        );
+        s.exec(
+            "feature.hole",
+            json!({"sketch": sketch, "diameter": 6.6, "depth": "through"}),
+        );
+        s.exec("cam.set_stock", json!({"side": 2, "top": 1, "bottom": 0}));
+        s.exec("cam.add_setup", json!({"side": "top"}));
+        s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
+        s.exec("cam.set_vise", json!({"setup": 0, "grip": 5}));
+        s.fixture_problems()
+    };
+    assert!(
+        hit(20.0).is_empty(),
+        "the middle is over the gap between the parallels"
+    );
+    let problems = hit(3.0);
+    assert!(
+        problems.iter().any(|p| p.contains("parallel")),
+        "a hole 3 mm from the clamped edge drills into the parallel: {problems:?}"
+    );
+}

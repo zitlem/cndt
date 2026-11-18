@@ -5,6 +5,9 @@
 // (rule 12). Nothing here knows about the engine or the kernel.
 
 import { invoke } from "@tauri-apps/api/core";
+import type { Toolpath } from "./scrub";
+
+export type { Toolpath };
 
 export type Unit = "millimetre" | "degree" | "unitless";
 
@@ -333,12 +336,6 @@ export async function bodyEdges(): Promise<Float32Array[]> {
   return lines;
 }
 
-/** A setup's toolpath as segments in model coordinates. */
-export interface Toolpath {
-  rapids: Float32Array;
-  cuts: Float32Array;
-}
-
 /** A reference mesh's triangles (decision 0018). */
 export async function referenceMesh(feature: number): Promise<Mesh> {
   try {
@@ -367,18 +364,30 @@ export async function toolpathPreview(setup: number): Promise<Toolpath> {
     throw new ApiFailure("cam", String(error));
   }
   const view = new DataView(buffer);
-  const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
-  if (buffer.byteLength < 12 || magic !== "CNDTTPH1") {
+  const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(8, buffer.byteLength)));
+  if (buffer.byteLength < 16 || magic !== "CNDTTPH2") {
     throw new ApiFailure("internal", "the toolpath data is not in the expected format");
   }
+  const wrong = () => new ApiFailure("internal", "the toolpath data has the wrong length");
   const count = view.getUint32(8, true);
-  if (buffer.byteLength !== 12 + count * 25) throw new ApiFailure("internal", "the toolpath data has the wrong length");
-  const rapids: number[] = [];
-  const cuts: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const at = 12 + i * 25;
-    const out = view.getUint8(at) === 0 ? rapids : cuts;
-    for (let k = 0; k < 6; k++) out.push(view.getFloat32(at + 1 + 4 * k, true));
+  const operationCount = view.getUint32(12, true);
+  const operations: Toolpath["operations"] = [];
+  let at = 16;
+  for (let i = 0; i < operationCount; i++) {
+    if (at + 8 > buffer.byteLength) throw wrong();
+    const first = view.getUint32(at, true);
+    const length = view.getUint32(at + 4, true);
+    if (at + 8 + length > buffer.byteLength) throw wrong();
+    operations.push({ name: new TextDecoder().decode(new Uint8Array(buffer, at + 8, length)), first });
+    at += 8 + length;
   }
-  return { rapids: new Float32Array(rapids), cuts: new Float32Array(cuts) };
+  if (buffer.byteLength !== at + count * 25) throw wrong();
+  const coords = new Float32Array(count * 6);
+  const kinds = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    const start = at + i * 25;
+    kinds[i] = view.getUint8(start);
+    for (let k = 0; k < 6; k++) coords[i * 6 + k] = view.getFloat32(start + 1 + 4 * k, true);
+  }
+  return { coords, kinds, operations };
 }

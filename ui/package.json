@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "check": "tsc --noEmit",
-    "test": "node --test tests/palette.test.mjs",
+    "test": "node --test tests/palette.test.mjs tests/scrub.test.mjs",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

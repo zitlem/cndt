@@ -416,6 +416,11 @@ impl JawAxis {
 /// A typical machine vise jaw: 25 mm thick.
 pub const DEFAULT_JAW: f64 = 25.0;
 
+/// The stock sits on two parallels under its clamped faces, each this
+/// thick, standing against the jaws (decision 0020): a tool going below
+/// the stock's bottom over them hits them.
+pub const PARALLEL: f64 = 4.0;
+
 const fn default_jaw() -> f64 {
     DEFAULT_JAW
 }
