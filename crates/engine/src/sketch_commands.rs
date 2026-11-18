@@ -285,6 +285,16 @@ pub enum SketchEdit {
         /// Where on it to cut; the nearest stretch to this point goes.
         at: Point2,
     },
+    /// Offsets a chain of lines and arcs, or a circle, a distance to the side
+    /// that holds `toward`. The copies are new geometry.
+    Offset {
+        /// The curves: one circle, or lines and arcs joined end to end.
+        entities: Vec<EntityId>,
+        /// How far, in millimetres; more than zero.
+        distance: f64,
+        /// A point on the side to offset toward.
+        toward: Point2,
+    },
     /// Adds a constraint.
     Constrain(Constraint),
     /// Drives a dimension by an expression of the parameters, such as
@@ -335,6 +345,7 @@ impl SketchEdit {
             Self::AddRectangle { .. } => "sketch.add_rectangle",
             Self::AddSlot { .. } => "sketch.add_slot",
             Self::Trim { .. } => "sketch.trim",
+            Self::Offset { .. } => "sketch.offset",
             Self::Constrain(_) => "sketch.constrain",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => {
                 "sketch.set_dimension"
@@ -355,6 +366,7 @@ impl SketchEdit {
             Self::AddRectangle { .. } => "Add rectangle",
             Self::AddSlot { .. } => "Add slot",
             Self::Trim { .. } => "Trim",
+            Self::Offset { .. } => "Offset",
             Self::Constrain(_) => "Add constraint",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => "Change dimension",
             Self::MovePoint { .. } => "Move point",
@@ -422,6 +434,11 @@ impl SketchEdit {
             }
             Self::AddSlot { from, to, width } => add_slot(sketch, from, to, width, &options)?,
             Self::Trim { entity, at } => crate::sketch_trim::trim(sketch, entity, at, &options)?,
+            Self::Offset {
+                ref entities,
+                distance,
+                toward,
+            } => crate::sketch_offset::offset(sketch, entities, distance, toward)?,
             Self::Constrain(ref constraint) => {
                 sketch.add_constraint(constraint.clone(), &options)?;
             }
