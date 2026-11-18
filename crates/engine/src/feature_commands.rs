@@ -4,7 +4,7 @@
 use cndt_model::sketch::{EntityId, Geometry, ProfileKey};
 use cndt_model::{
     Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ImportData, ImportFormat,
-    ModelError, Operation, SketchId, default_profiles,
+    ModelError, Operation, RevolveAxis, SketchId, default_profiles,
 };
 
 use crate::{Command, CommandError};
@@ -110,6 +110,208 @@ impl Command for AddExtrude {
     fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
         let id = self.created.ok_or(CommandError::NotApplied)?;
         self.undone = Some(document.remove_feature(id)?);
+        Ok(())
+    }
+}
+
+/// Adds a revolve at the end of the timeline (decision 0021).
+#[derive(Debug, Clone)]
+pub struct AddRevolve {
+    sketch: SketchId,
+    profiles: Option<Vec<ProfileKey>>,
+    axis: RevolveAxis,
+    angle: f64,
+    expression: Option<String>,
+    operation: Operation,
+    name: Option<String>,
+    created: Option<FeatureId>,
+    undone: Option<(usize, FeatureEntry)>,
+}
+
+impl AddRevolve {
+    /// Turns `profiles` of `sketch` (by default every region that is
+    /// material) `angle` degrees about `axis`.
+    #[must_use]
+    pub const fn new(
+        sketch: SketchId,
+        profiles: Option<Vec<ProfileKey>>,
+        axis: RevolveAxis,
+        angle: f64,
+        operation: Operation,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            sketch,
+            profiles,
+            axis,
+            angle,
+            expression: None,
+            operation,
+            name,
+            created: None,
+            undone: None,
+        }
+    }
+
+    /// Makes the angle follow an expression of the parameters.
+    #[must_use]
+    pub fn with_expression(mut self, expression: Option<String>) -> Self {
+        self.expression = expression;
+        self
+    }
+}
+
+impl Command for AddRevolve {
+    fn name(&self) -> &'static str {
+        "feature.revolve"
+    }
+
+    fn label(&self) -> String {
+        String::from(match self.operation {
+            Operation::Join => "Revolve",
+            Operation::Cut => "Revolve cut",
+        })
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        if let Some((index, entry)) = self.undone.take() {
+            document.restore_feature(index, entry);
+            return Ok(());
+        }
+        let record = document
+            .sketch(self.sketch)
+            .ok_or(ModelError::UnknownSketch(self.sketch))?;
+        let profiles = match &self.profiles {
+            Some(p) => p.clone(),
+            None => default_profiles(&record.sketch),
+        };
+        if profiles.is_empty() {
+            return Err(ModelError::InvalidFeature(format!(
+                "{} has no closed profile to revolve; close the outline first",
+                record.name
+            ))
+            .into());
+        }
+        let name = match &self.name {
+            Some(name) => name.clone(),
+            None => document.next_feature_name("Revolve"),
+        };
+        let angle = match &self.expression {
+            Some(text) => document.evaluate(text)?,
+            None => self.angle,
+        };
+        let feature = Feature::Revolve {
+            name,
+            sketch: self.sketch,
+            profiles,
+            axis: self.axis,
+            angle,
+            angle_expression: self.expression.clone(),
+            operation: self.operation,
+        };
+        self.created = Some(document.add_feature(feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let id = self.created.ok_or(CommandError::NotApplied)?;
+        self.undone = Some(document.remove_feature(id)?);
+        Ok(())
+    }
+}
+
+/// Changes a revolve's angle, axis, operation or profiles.
+#[derive(Debug, Clone)]
+pub struct EditRevolve {
+    id: FeatureId,
+    angle: Option<f64>,
+    expression: Option<String>,
+    axis: Option<RevolveAxis>,
+    operation: Option<Operation>,
+    profiles: Option<Vec<ProfileKey>>,
+    previous: Option<Feature>,
+}
+
+impl EditRevolve {
+    /// Changes whichever of the values are given.
+    #[must_use]
+    pub const fn new(
+        id: FeatureId,
+        angle: Option<f64>,
+        axis: Option<RevolveAxis>,
+        operation: Option<Operation>,
+        profiles: Option<Vec<ProfileKey>>,
+    ) -> Self {
+        Self {
+            id,
+            angle,
+            expression: None,
+            axis,
+            operation,
+            profiles,
+            previous: None,
+        }
+    }
+
+    /// Makes the angle follow an expression instead.
+    #[must_use]
+    pub fn with_expression(mut self, expression: Option<String>) -> Self {
+        self.expression = expression;
+        self
+    }
+}
+
+impl Command for EditRevolve {
+    fn name(&self) -> &'static str {
+        "feature.edit_revolve"
+    }
+
+    fn label(&self) -> String {
+        String::from("Edit revolve")
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let mut feature = document
+            .feature(self.id)
+            .cloned()
+            .ok_or(ModelError::UnknownFeature(self.id))?;
+        let Feature::Revolve {
+            angle,
+            angle_expression,
+            axis,
+            operation,
+            profiles,
+            ..
+        } = &mut feature
+        else {
+            return Err(
+                ModelError::InvalidFeature(String::from("that feature is not a revolve")).into(),
+            );
+        };
+        // A plain number replaces an expression; an expression sets both.
+        if let Some(text) = &self.expression {
+            *angle = document.evaluate(text)?;
+            *angle_expression = Some(text.clone());
+        } else if let Some(a) = self.angle {
+            *angle = a;
+            *angle_expression = None;
+        }
+        if let Some(a) = self.axis {
+            *axis = a;
+        }
+        if let Some(o) = self.operation {
+            *operation = o;
+        }
+        if let Some(p) = &self.profiles {
+            p.clone_into(profiles);
+        }
+        self.previous = Some(document.replace_feature(self.id, feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let previous = self.previous.take().ok_or(CommandError::NotApplied)?;
+        document.replace_feature(self.id, previous)?;
         Ok(())
     }
 }

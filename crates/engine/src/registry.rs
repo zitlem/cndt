@@ -10,13 +10,14 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    AddBlend, AddExtrude, AddHole, AddImport, BlendKind, Command, CommandError, CreateSketch,
-    DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole, EditSketch, Grid,
-    PointRef, RemoveParameter, RenameDocument, SetParameter, SetPattern, SketchEdit,
+    AddBlend, AddExtrude, AddHole, AddImport, AddRevolve, BlendKind, Command, CommandError,
+    CreateSketch, DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole,
+    EditRevolve, EditSketch, Grid, PointRef, RemoveParameter, RenameDocument, SetParameter,
+    SetPattern, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, Thread};
-use cndt_model::{FeatureId, Operation};
+use cndt_model::{FeatureId, Operation, RevolveAxis};
 
 /// The type of a command argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -269,6 +270,77 @@ impl Registry {
                     Ok(Box::new(
                         EditExtrude::new(FeatureId(id(args, "feature")?), distance, op, profiles)
                             .with_expression(expression),
+                    ))
+                },
+            },
+            CommandSpec {
+                name: "feature.revolve",
+                description: "Turn sketch profiles about an axis in their plane into a solid, or cut them from it. The profile may touch the axis but not cross it.",
+                args: REVOLVE_ARGS,
+                build: |args| {
+                    let operation = if args.contains_key("operation") {
+                        operation(args)?
+                    } else {
+                        Operation::Join
+                    };
+                    let profiles = if args.contains_key("profiles") {
+                        Some(profiles(args)?)
+                    } else {
+                        None
+                    };
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    let (angle, expression) = if args.contains_key("angle") {
+                        number_or_expression(args, "angle")?
+                    } else {
+                        (360.0, None)
+                    };
+                    Ok(Box::new(
+                        AddRevolve::new(
+                            sketch_id(args)?,
+                            profiles,
+                            revolve_axis(args)?.unwrap_or(RevolveAxis::SketchY),
+                            angle,
+                            operation,
+                            name,
+                        )
+                        .with_expression(expression),
+                    ))
+                },
+            },
+            CommandSpec {
+                name: "feature.edit_revolve",
+                description: "Change a revolve's angle, axis, operation or profiles.",
+                args: EDIT_REVOLVE_ARGS,
+                build: |args| {
+                    let (angle, expression) = if args.contains_key("angle") {
+                        let (a, e) = number_or_expression(args, "angle")?;
+                        (Some(a), e)
+                    } else {
+                        (None, None)
+                    };
+                    let op = if args.contains_key("operation") {
+                        Some(operation(args)?)
+                    } else {
+                        None
+                    };
+                    let profiles = if args.contains_key("profiles") {
+                        Some(profiles(args)?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(
+                        EditRevolve::new(
+                            FeatureId(id(args, "feature")?),
+                            angle,
+                            revolve_axis(args)?,
+                            op,
+                            profiles,
+                        )
+                        .with_expression(expression),
                     ))
                 },
             },
@@ -1705,6 +1777,75 @@ fn cam(name: &'static str, edit: cndt_model::cam::CamEdit) -> Result<Box<dyn Com
 }
 
 /// The `feature` argument of the timeline commands.
+/// The arguments of `feature.revolve`; `feature.edit_revolve` takes all but
+/// the first, after the feature id.
+const REVOLVE_ARGS: &[ArgSpec] = &[
+    SKETCH,
+    ArgSpec {
+        name: "angle",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Degrees, more than 0 up to 360; 360 (a full turn) by default. May be an expression of the parameters.",
+    },
+    ArgSpec {
+        name: "axis",
+        kind: ArgKind::Text,
+        required: false,
+        description: "x or y: the sketch plane's own axis to turn about; y by default. Or give axis_line.",
+    },
+    ArgSpec {
+        name: "axis_line",
+        kind: ArgKind::Id,
+        required: false,
+        description: "A line of the sketch to turn about, usually construction geometry. Instead of axis.",
+    },
+    ArgSpec {
+        name: "operation",
+        kind: ArgKind::Operation,
+        required: false,
+        description: "join (default) or cut.",
+    },
+    ArgSpec {
+        name: "profiles",
+        kind: ArgKind::Profiles,
+        required: false,
+        description: "Which regions; by default every region that is material.",
+    },
+    ArgSpec {
+        name: "name",
+        kind: ArgKind::Text,
+        required: false,
+        description: "Defaults to the next RevolveN.",
+    },
+];
+
+const EDIT_REVOLVE_ARGS: &[ArgSpec] = &[
+    FEATURE,
+    REVOLVE_ARGS[1],
+    REVOLVE_ARGS[2],
+    REVOLVE_ARGS[3],
+    REVOLVE_ARGS[4],
+    REVOLVE_ARGS[5],
+];
+
+/// The axis a revolve turns about, if the arguments name one.
+fn revolve_axis(args: &Map<String, Value>) -> Result<Option<RevolveAxis>, String> {
+    match (args.contains_key("axis"), args.contains_key("axis_line")) {
+        (true, true) => Err(String::from("give axis or axis_line, not both")),
+        (false, false) => Ok(None),
+        (false, true) => Ok(Some(RevolveAxis::Line {
+            entity: EntityId(id(args, "axis_line")?),
+        })),
+        (true, false) => match text(args, "axis")?.as_str() {
+            "x" => Ok(Some(RevolveAxis::SketchX)),
+            "y" => Ok(Some(RevolveAxis::SketchY)),
+            other => Err(format!(
+                "unknown axis {other:?}; use x or y, or give axis_line"
+            )),
+        },
+    }
+}
+
 const FEATURE: ArgSpec = ArgSpec {
     name: "feature",
     kind: ArgKind::Id,
@@ -1944,6 +2085,14 @@ mod tests {
             (
                 "feature.edit_extrude",
                 json!({"feature": 0, "distance": 25, "operation": "cut", "profiles": [[4, 5, 6, 7]]}),
+            ),
+            (
+                "feature.revolve",
+                json!({"sketch": 0, "angle": 270, "axis": "x", "operation": "cut"}),
+            ),
+            (
+                "feature.edit_revolve",
+                json!({"feature": 0, "angle": "sweep / 2", "axis_line": 3, "profiles": [[4, 5, 6, 7]]}),
             ),
             ("feature.delete", json!({"feature": 0})),
             ("cam.set_stock", json!({"side": 2, "top": 2, "bottom": 3})),

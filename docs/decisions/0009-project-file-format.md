@@ -138,3 +138,10 @@ A setup may hold `vise`: `{"grip", "along" (left out for x), "jaw"}` (decision 0
 
 - **Why a version bump:** a version 20 build refuses the unknown field as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 20 or older file with a vise is refused as damaged.
+
+## Version 22 (2026-11-18)
+
+A feature may be `{"type": "revolve", "name", "sketch", "profiles", "axis", "angle", "angle_expression" (left out when the angle is a plain number), "operation"}`, the axis being `{"type": "line", "entity"}`, `{"type": "sketch_x"}` or `{"type": "sketch_y"}` (decision 0021).
+
+- **Why a version bump:** a version 21 build refuses the unknown feature type as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 21 or older file with a revolve is refused as damaged.

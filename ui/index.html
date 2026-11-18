@@ -78,6 +78,9 @@
                   <button id="extrude" type="button" class="tool" title="[[extrude.title]]">
                 <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 14l6 3 6-3-6-3zM4 14V7l6-3 6 3v7M10 11V4" /></svg><span>[[extrude.label]]</span>
               </button>
+                  <button id="revolve" type="button" class="tool" title="[[revolve.title]]">
+                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 2v16M10 4c5 0 7 3 7 6s-2 6-7 6M10 4c-2 0-3 1-3 2.5S8 9 10 9" /></svg><span>[[revolve.label]]</span>
+              </button>
                   <button id="hole" type="button" class="tool" title="[[hole.title]]">
                 <svg aria-hidden="true" viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="5" ry="2" /><path d="M5 5v9M15 5v9M5 14l5 4 5-4" /></svg><span>[[hole.label]]</span>
               </button>
@@ -320,6 +323,25 @@
 
         <section id="viewport" class="viewport" aria-label="[[viewport.aria]]">
           <div id="viewport-hint" class="viewport-hint">[[viewport-hint]]</div>
+          <form id="revolve-dialog" class="dialog" hidden>
+            <h3 id="revolve-title">[[revolve-title]]</h3>
+            <label>[[revolve-dialog.sketch]]<select id="revolve-sketch"></select></label>
+            <label>[[revolve-dialog.axis]]<select id="revolve-axis"></select></label>
+            <div class="form-row">
+              <label>[[revolve-dialog.angle]]<input id="revolve-angle" type="text" spellcheck="false" required value="360" title="[[revolve-angle.title]]" /></label>
+              <label>[[revolve-dialog.operation]]
+                <select id="revolve-operation">
+                  <option value="join">[[revolve-operation.join]]</option>
+                  <option value="cut">[[revolve-operation.cut]]</option>
+                </select>
+              </label>
+            </div>
+            <p class="muted small">[[revolve-dialog.note]]</p>
+            <div class="dialog-buttons">
+              <button id="revolve-cancel" type="button" class="secondary">[[revolve-cancel]]</button>
+              <button type="submit" class="primary">[[revolve-dialog.ok]]</button>
+            </div>
+          </form>
           <form id="extrude-dialog" class="dialog" hidden>
             <h3 id="extrude-title">[[extrude-title]]</h3>
             <label>[[extrude-dialog.sketch]]<select id="extrude-sketch"></select></label>
