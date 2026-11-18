@@ -295,6 +295,35 @@ pub enum SketchEdit {
         /// A point on the side to offset toward.
         toward: Point2,
     },
+    /// Copies entities to the other side of a line, held by symmetric
+    /// constraints.
+    Mirror {
+        /// The lines, arcs, circles and points to copy.
+        entities: Vec<EntityId>,
+        /// The mirror line.
+        axis: EntityId,
+    },
+    /// Repeats entities along a straight step, each copy held equal to the
+    /// original.
+    PatternLinear {
+        /// The entities to repeat.
+        entities: Vec<EntityId>,
+        /// How many in all, the original included.
+        count: u32,
+        /// The step from one copy to the next, in millimetres.
+        step: Point2,
+    },
+    /// Repeats entities about a centre, each copy held equal to the original.
+    PatternCircular {
+        /// The entities to repeat.
+        entities: Vec<EntityId>,
+        /// How many in all, the original included.
+        count: u32,
+        /// The centre of the turn.
+        center: Point2,
+        /// The turn in degrees: 360 spreads the copies round a full circle.
+        angle: f64,
+    },
     /// Adds a constraint.
     Constrain(Constraint),
     /// Drives a dimension by an expression of the parameters, such as
@@ -346,6 +375,9 @@ impl SketchEdit {
             Self::AddSlot { .. } => "sketch.add_slot",
             Self::Trim { .. } => "sketch.trim",
             Self::Offset { .. } => "sketch.offset",
+            Self::Mirror { .. } => "sketch.mirror",
+            Self::PatternLinear { .. } => "sketch.pattern_linear",
+            Self::PatternCircular { .. } => "sketch.pattern_circular",
             Self::Constrain(_) => "sketch.constrain",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => {
                 "sketch.set_dimension"
@@ -367,6 +399,9 @@ impl SketchEdit {
             Self::AddSlot { .. } => "Add slot",
             Self::Trim { .. } => "Trim",
             Self::Offset { .. } => "Offset",
+            Self::Mirror { .. } => "Mirror",
+            Self::PatternLinear { .. } => "Linear pattern",
+            Self::PatternCircular { .. } => "Circular pattern",
             Self::Constrain(_) => "Add constraint",
             Self::SetDimension { .. } | Self::SetDimensionExpression { .. } => "Change dimension",
             Self::MovePoint { .. } => "Move point",
@@ -439,6 +474,20 @@ impl SketchEdit {
                 distance,
                 toward,
             } => crate::sketch_offset::offset(sketch, entities, distance, toward)?,
+            Self::Mirror { ref entities, axis } => {
+                crate::sketch_pattern::mirror(sketch, entities, axis)?;
+            }
+            Self::PatternLinear {
+                ref entities,
+                count,
+                step,
+            } => crate::sketch_pattern::pattern_linear(sketch, entities, count, step)?,
+            Self::PatternCircular {
+                ref entities,
+                count,
+                center,
+                angle,
+            } => crate::sketch_pattern::pattern_circular(sketch, entities, count, center, angle)?,
             Self::Constrain(ref constraint) => {
                 sketch.add_constraint(constraint.clone(), &options)?;
             }
