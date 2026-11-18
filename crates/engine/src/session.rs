@@ -41,6 +41,20 @@ impl Session {
         }
     }
 
+    /// Starts a session on a document that has changes not yet saved, such as
+    /// one recovered from a snapshot after a crash. [`Session::is_dirty`] is
+    /// true until [`Session::mark_saved`].
+    #[must_use]
+    pub const fn new_unsaved(document: Document) -> Self {
+        Self {
+            document,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            next_id: 0,
+            clean_top: Some(u64::MAX),
+        }
+    }
+
     /// The current document.
     #[must_use]
     pub const fn document(&self) -> &Document {
@@ -172,6 +186,14 @@ mod tests {
         assert!(matches!(result, Err(CommandError::Model(_))));
         assert_eq!(session.document(), &before);
         assert_eq!(session.undo_label().as_deref(), Some("Set a"));
+    }
+
+    #[test]
+    fn an_unsaved_session_is_dirty_until_saved() {
+        let mut session = Session::new_unsaved(Document::default());
+        assert!(session.is_dirty());
+        session.mark_saved();
+        assert!(!session.is_dirty());
     }
 
     #[test]
