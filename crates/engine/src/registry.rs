@@ -1239,6 +1239,42 @@ impl Registry {
                 },
             },
             CommandSpec {
+                name: "sketch.add_slot",
+                description: "Add a slot: two arcs joined by two tangent lines, from the centres of its two ends and its width. Its width (as a radius) and the distance between the centres are dimensions.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "from",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "The centre of one end, in millimetres.",
+                    },
+                    ArgSpec {
+                        name: "to",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "The centre of the other end.",
+                    },
+                    ArgSpec {
+                        name: "width",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Width across the slot, in millimetres.",
+                    },
+                ],
+                build: |args| {
+                    let (from, to) = (position(args, "from")?, position(args, "to")?);
+                    edit(
+                        args,
+                        SketchEdit::AddSlot {
+                            from,
+                            to,
+                            width: number(args, "width")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
                 name: "sketch.constrain",
                 description: "Add a constraint or dimension. Refused if it conflicts with or repeats the existing ones.",
                 args: &[
@@ -2170,6 +2206,10 @@ mod tests {
             (
                 "sketch.add_rectangle",
                 json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 96, "y": 56}}),
+            ),
+            (
+                "sketch.add_slot",
+                json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0}, "width": 6}),
             ),
             (
                 "sketch.constrain",
