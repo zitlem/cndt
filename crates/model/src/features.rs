@@ -38,10 +38,44 @@ pub enum Operation {
     Cut,
 }
 
+/// What a revolve turns about (decision 0020): a line of its own sketch, or
+/// one of the sketch plane's two axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RevolveAxis {
+    /// A line of the sketch, usually construction geometry.
+    Line {
+        /// The line.
+        entity: EntityId,
+    },
+    /// The sketch plane's X axis through its origin.
+    SketchX,
+    /// The sketch plane's Y axis through its origin.
+    SketchY,
+}
+
 /// A solid feature.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Feature {
+    /// Turns sketch profiles about an axis in their plane (decision 0020).
+    Revolve {
+        /// Shown in the timeline, such as `Revolve1`.
+        name: String,
+        /// The sketch the profiles are in.
+        sketch: SketchId,
+        /// The regions to turn, by name.
+        profiles: Vec<ProfileKey>,
+        /// What they turn about.
+        axis: RevolveAxis,
+        /// Degrees, more than 0 up to 360.
+        angle: f64,
+        /// An expression the angle follows, such as `sweep / 2`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        angle_expression: Option<String>,
+        /// Join or cut.
+        operation: Operation,
+    },
     /// Sweeps sketch profiles along the sketch plane's normal.
     Extrude {
         /// Shown in the timeline, such as `Extrude1`.
@@ -344,6 +378,7 @@ impl Feature {
     pub fn name(&self) -> &str {
         match self {
             Self::Extrude { name, .. }
+            | Self::Revolve { name, .. }
             | Self::Hole { name, .. }
             | Self::Chamfer { name, .. }
             | Self::Pattern { name, .. }
@@ -357,7 +392,9 @@ impl Feature {
     #[must_use]
     pub const fn sketch(&self) -> Option<SketchId> {
         match self {
-            Self::Extrude { sketch, .. } | Self::Hole { sketch, .. } => Some(*sketch),
+            Self::Extrude { sketch, .. }
+            | Self::Revolve { sketch, .. }
+            | Self::Hole { sketch, .. } => Some(*sketch),
             Self::Chamfer { .. }
             | Self::Fillet { .. }
             | Self::Pattern { .. }
@@ -408,6 +445,19 @@ impl Feature {
                 }
                 if profiles.is_empty() {
                     return Err(String::from("pick at least one profile to extrude"));
+                }
+                Ok(())
+            }
+            Self::Revolve {
+                angle, profiles, ..
+            } => {
+                if !(angle.is_finite() && *angle > 0.0 && *angle <= 360.0) {
+                    return Err(format!(
+                        "the revolve angle must be more than 0° and at most 360°, not {angle}"
+                    ));
+                }
+                if profiles.is_empty() {
+                    return Err(String::from("pick at least one profile to revolve"));
                 }
                 Ok(())
             }
@@ -981,6 +1031,172 @@ fn extrude_tool(
     tool.ok_or_else(|| String::from("pick at least one profile to extrude"))
 }
 
+/// The axis in sketch coordinates: a point on it and its direction.
+fn axis_in_sketch(sketch: &Sketch, axis: RevolveAxis) -> Result<([f64; 2], [f64; 2]), String> {
+    match axis {
+        RevolveAxis::SketchX => Ok(([0.0, 0.0], [1.0, 0.0])),
+        RevolveAxis::SketchY => Ok(([0.0, 0.0], [0.0, 1.0])),
+        RevolveAxis::Line { entity } => {
+            let Some(Geometry::Line { start, end }) = sketch.entity(entity).map(|e| &e.geometry)
+            else {
+                return Err(format!("{entity} is not a line, so it cannot be the axis"));
+            };
+            let (a, b) = match (sketch.point(*start), sketch.point(*end)) {
+                (Some(a), Some(b)) => (a, b),
+                _ => return Err(format!("the axis {entity} has lost an end point")),
+            };
+            let d = [b.x - a.x, b.y - a.y];
+            if d[0].hypot(d[1]) < 1e-9 {
+                return Err(format!("the axis {entity} has no length"));
+            }
+            Ok(([a.x, a.y], d))
+        }
+    }
+}
+
+/// Points along a sketch curve, enough to tell which side of a line it is on.
+fn curve_points(sketch: &Sketch, entity: EntityId) -> Vec<[f64; 2]> {
+    match sketch.entity(entity).map(|e| &e.geometry) {
+        Some(Geometry::Line { start, end }) => [start, end]
+            .iter()
+            .filter_map(|p| sketch.point(**p))
+            .map(|p| [p.x, p.y])
+            .collect(),
+        Some(Geometry::Arc { center, start, end }) => {
+            let (Some(c), Some(s), Some(e)) = (
+                sketch.point(*center),
+                sketch.point(*start),
+                sketch.point(*end),
+            ) else {
+                return Vec::new();
+            };
+            let r = c.distance(s);
+            let from = (s.y - c.y).atan2(s.x - c.x);
+            let to = (e.y - c.y).atan2(e.x - c.x);
+            let sweep = (to - from).rem_euclid(std::f64::consts::TAU);
+            (0..=64)
+                .map(|k| {
+                    let a = from + sweep * f64::from(k) / 64.0;
+                    [c.x + r * a.cos(), c.y + r * a.sin()]
+                })
+                .collect()
+        }
+        Some(Geometry::Circle { center, radius }) => sketch
+            .point(*center)
+            .map(|c| {
+                (0..64)
+                    .map(|k| {
+                        let a = std::f64::consts::TAU * f64::from(k) / 64.0;
+                        [c.x + radius * a.cos(), c.y + radius * a.sin()]
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Builds one revolve's tool body and its face names. The faces are named as
+/// an extrude's are: by the feature and the sketch curve that swept them,
+/// with start and end caps for a partial turn.
+fn revolve_tool(
+    document: &Document,
+    kernel: &dyn Kernel,
+    id: FeatureId,
+    feature: &Feature,
+    frame: &Frame,
+) -> Result<(Body, Names), String> {
+    let Feature::Revolve {
+        sketch,
+        profiles,
+        axis,
+        angle,
+        ..
+    } = feature
+    else {
+        return Err(String::from("not a revolve"));
+    };
+    let record = document
+        .sketch(*sketch)
+        .ok_or_else(|| format!("its sketch ({sketch}) has been deleted"))?;
+    let (through, direction) = axis_in_sketch(&record.sketch, *axis)?;
+    let length = direction[0].hypot(direction[1]);
+    let side = |p: [f64; 2]| {
+        (direction[0] * (p[1] - through[1]) - direction[1] * (p[0] - through[0])) / length
+    };
+    let origin = frame.at(through[0], through[1]);
+    let world_direction = [
+        frame.x[0] * direction[0] + frame.y[0] * direction[1],
+        frame.x[1] * direction[0] + frame.y[1] * direction[1],
+        frame.x[2] * direction[0] + frame.y[2] * direction[1],
+    ];
+    let found = record.sketch.profiles();
+    let mut tool: Option<(Body, Names)> = None;
+    for key in profiles {
+        let profile = found.get(key).ok_or_else(|| {
+            format!(
+                "a profile it uses is no longer closed in {}; edit the revolve and pick the profiles again",
+                record.name
+            )
+        })?;
+        let mut loops = Vec::new();
+        let mut origins = Vec::new();
+        let (mut low, mut high) = (0.0_f64, 0.0_f64);
+        for l in std::iter::once(&profile.outer).chain(&profile.holes) {
+            let curves = loop_curves(&record.sketch, frame, l)?;
+            for (_, entity) in &curves {
+                for p in curve_points(&record.sketch, *entity) {
+                    let d = side(p);
+                    low = low.min(d);
+                    high = high.max(d);
+                }
+            }
+            origins.extend(curves.iter().map(|(_, e)| *e));
+            loops.push(curves.into_iter().map(|(c, _)| c).collect::<Vec<_>>());
+        }
+        if low < -1e-6 && high > 1e-6 {
+            return Err(format!(
+                "a profile in {} crosses the axis, which would fold the solid into itself; \
+                 move the profile or the axis so the profile stays on one side",
+                record.name
+            ));
+        }
+        let n = u32::try_from(origins.len()).unwrap_or(u32::MAX);
+        let made = kernel
+            .revolve_profile(&loops, frame.normal, origin, world_direction, *angle)
+            .map_err(|e| format!("the revolve failed: {e}"))?;
+        let name = |origin| {
+            BTreeSet::from([FaceName {
+                feature: id,
+                origin,
+            }])
+        };
+        let names = carry(&made, &|source| {
+            let origin = if source < n {
+                FaceOrigin::Side {
+                    curve: *origins.get(source as usize)?,
+                }
+            } else if source == n {
+                FaceOrigin::Start {
+                    profile: key.clone(),
+                }
+            } else {
+                FaceOrigin::End {
+                    profile: key.clone(),
+                }
+            };
+            Some(name(origin))
+        });
+        tool = Some(match tool {
+            None => (made.body, names),
+            Some((body, before)) => {
+                combine(kernel, &body, &before, &made.body, &names, BooleanOp::Fuse)?
+            }
+        });
+    }
+    tool.ok_or_else(|| String::from("pick at least one profile to revolve"))
+}
+
 /// Fuses or cuts, carrying both sides' names.
 fn combine(
     kernel: &dyn Kernel,
@@ -1403,6 +1619,11 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                 Feature::Extrude { operation, .. } => {
                     let (tool, names) =
                         extrude_tool(document, kernel, entry.id, &entry.feature, &frame)?;
+                    (tool, names, *operation)
+                }
+                Feature::Revolve { operation, .. } => {
+                    let (tool, names) =
+                        revolve_tool(document, kernel, entry.id, &entry.feature, &frame)?;
                     (tool, names, *operation)
                 }
                 Feature::Hole { .. } => {
@@ -2206,5 +2427,281 @@ mod tests {
         assert_eq!(r.references.len(), 1);
         // Rolled back to before it, the mesh is not there.
         assert!(rebuild_to(&d, &OpenCascade, Some(0)).references.is_empty());
+    }
+
+    /// A polygon through the given points (x, y), closed, in `s`.
+    fn polygon(s: &mut Sketch, points: &[(f64, f64)]) -> Vec<EntityId> {
+        let p: Vec<EntityId> = points
+            .iter()
+            .map(|&(x, y)| s.add_point(Point2::new(x, y)).unwrap())
+            .collect();
+        (0..p.len())
+            .map(|i| s.add_line(p[i], p[(i + 1) % p.len()]).unwrap())
+            .collect()
+    }
+
+    fn revolve(
+        sketch: SketchId,
+        d: &Document,
+        axis: RevolveAxis,
+        angle: f64,
+        operation: Operation,
+    ) -> Feature {
+        Feature::Revolve {
+            name: "Revolve1".into(),
+            sketch,
+            profiles: default_profiles(&d.sketch(sketch).unwrap().sketch),
+            axis,
+            angle,
+            angle_expression: None,
+            operation,
+        }
+    }
+
+    fn tokens(r: &Rebuilt) -> BTreeSet<String> {
+        r.faces.iter().flatten().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn a_stepped_shaft_by_revolving_its_half_section() {
+        let mut d = Document::new("Shaft");
+        let sk = d.add_sketch("Section", Plane::Xy).unwrap();
+        let lines = d
+            .edit_sketch(sk, |s| {
+                Ok(polygon(
+                    s,
+                    &[
+                        (0.0, 0.0),
+                        (10.0, 0.0),
+                        (10.0, 20.0),
+                        (6.0, 20.0),
+                        (6.0, 30.0),
+                        (0.0, 30.0),
+                    ],
+                ))
+            })
+            .unwrap();
+        let f = revolve(sk, &d, RevolveAxis::SketchY, 360.0, Operation::Join);
+        d.add_feature(f).unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(
+            r.status.get(&FeatureId(0)),
+            Some(&FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let volume = std::f64::consts::PI * (100.0 * 20.0 + 36.0 * 10.0);
+        assert!((r.properties.unwrap().volume - volume).abs() < 1e-6);
+        // Two ends, two walls and the shoulder: each named by the sketch
+        // line that swept it. The line on the axis swept nothing.
+        assert_eq!(r.faces.len(), 5);
+        let names = tokens(&r);
+        for line in &lines[..4] {
+            assert!(names.contains(&format!("f0/side/e{}", line.0)), "{names:?}");
+        }
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("/start/") || n.contains("/end/"))
+        );
+    }
+
+    #[test]
+    fn a_revolved_arc_is_exact_and_a_line_of_the_sketch_can_be_the_axis() {
+        // A half disc about its diameter: a sphere, one face.
+        let mut d = Document::new("Ball");
+        let sk = d.add_sketch("Half", Plane::Xy).unwrap();
+        d.edit_sketch(sk, |s| {
+            let c = s.add_point(Point2::new(0.0, 0.0))?;
+            let a = s.add_point(Point2::new(0.0, -5.0))?;
+            let b = s.add_point(Point2::new(0.0, 5.0))?;
+            s.add_arc(c, a, b)?;
+            s.add_line(b, a)?;
+            Ok(())
+        })
+        .unwrap();
+        d.add_feature(revolve(
+            sk,
+            &d,
+            RevolveAxis::SketchY,
+            360.0,
+            Operation::Join,
+        ))
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(
+            r.status.get(&FeatureId(0)),
+            Some(&FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let sphere = 4.0 / 3.0 * std::f64::consts::PI * 125.0;
+        assert!((r.properties.unwrap().volume - sphere).abs() < 1e-6);
+        assert_eq!(r.faces.len(), 1);
+
+        // A tube: a rectangle beside a line of the same sketch, which turns it.
+        let mut d = Document::new("Tube");
+        let sk = d.add_sketch("Wall", Plane::Xy).unwrap();
+        let axis = d
+            .edit_sketch(sk, |s| {
+                rectangle(s, 5.0, 0.0, 5.0, 12.0);
+                let a = s.add_point(Point2::new(0.0, -3.0))?;
+                let b = s.add_point(Point2::new(0.0, 15.0))?;
+                s.add_line(a, b)
+            })
+            .unwrap();
+        d.add_feature(revolve(
+            sk,
+            &d,
+            RevolveAxis::Line { entity: axis },
+            360.0,
+            Operation::Join,
+        ))
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(
+            r.status.get(&FeatureId(0)),
+            Some(&FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let tube = std::f64::consts::PI * (100.0 - 25.0) * 12.0;
+        assert!((r.properties.unwrap().volume - tube).abs() < 1e-6);
+        assert_eq!(r.faces.len(), 4);
+    }
+
+    #[test]
+    fn a_partial_turn_has_caps_and_a_cut_revolve_removes_material() {
+        let mut d = Document::new("Quarter");
+        let sk = d.add_sketch("Section", Plane::Xy).unwrap();
+        d.edit_sketch(sk, |s| Ok(rectangle(s, 0.0, 0.0, 5.0, 10.0)))
+            .unwrap();
+        d.add_feature(revolve(sk, &d, RevolveAxis::SketchY, 90.0, Operation::Join))
+            .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(
+            r.status.get(&FeatureId(0)),
+            Some(&FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let quarter = std::f64::consts::PI * 25.0 * 10.0 / 4.0;
+        assert!((r.properties.unwrap().volume - quarter).abs() < 1e-6);
+        let names = tokens(&r);
+        assert!(
+            names.iter().any(|n| n.starts_with("f0/start/")),
+            "{names:?}"
+        );
+        assert!(names.iter().any(|n| n.starts_with("f0/end/")), "{names:?}");
+
+        // A full cylinder with a ring cut out of it by a revolve.
+        let mut d = Document::new("Groove");
+        let body = d.add_sketch("Body", Plane::Xy).unwrap();
+        d.edit_sketch(body, |s| Ok(rectangle(s, 0.0, 0.0, 10.0, 20.0)))
+            .unwrap();
+        d.add_feature(revolve(
+            body,
+            &d,
+            RevolveAxis::SketchY,
+            360.0,
+            Operation::Join,
+        ))
+        .unwrap();
+        let groove = d.add_sketch("Groove", Plane::Xy).unwrap();
+        d.edit_sketch(groove, |s| Ok(rectangle(s, 8.0, 8.0, 3.0, 4.0)))
+            .unwrap();
+        let mut cut = revolve(groove, &d, RevolveAxis::SketchY, 360.0, Operation::Cut);
+        if let Feature::Revolve { name, .. } = &mut cut {
+            *name = "Groove".into();
+        }
+        d.add_feature(cut).unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        assert_eq!(
+            r.status.get(&FeatureId(1)),
+            Some(&FeatureStatus::Ok),
+            "{:?}",
+            r.status
+        );
+        let groove_volume = std::f64::consts::PI * (100.0 - 64.0) * 4.0;
+        let cylinder = std::f64::consts::PI * 100.0 * 20.0;
+        assert!((r.properties.unwrap().volume - (cylinder - groove_volume)).abs() < 1e-6);
+        // The groove's walls carry the cut feature's name; the cylinder's
+        // keep the first feature's.
+        let names = tokens(&r);
+        assert!(names.iter().any(|n| n.starts_with("f1/side/")), "{names:?}");
+        assert!(names.iter().any(|n| n.starts_with("f0/side/")), "{names:?}");
+    }
+
+    #[test]
+    fn failures_say_why() {
+        // A profile across the axis would fold into itself.
+        let mut d = Document::new("Across");
+        let sk = d.add_sketch("Section", Plane::Xy).unwrap();
+        d.edit_sketch(sk, |s| Ok(rectangle(s, -2.0, 0.0, 5.0, 10.0)))
+            .unwrap();
+        d.add_feature(revolve(
+            sk,
+            &d,
+            RevolveAxis::SketchY,
+            360.0,
+            Operation::Join,
+        ))
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        match r.status.get(&FeatureId(0)) {
+            Some(FeatureStatus::Failed { reason }) => {
+                assert!(reason.contains("crosses the axis"), "{reason}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // An axis that is not a line of the sketch.
+        let mut d = Document::new("Bad axis");
+        let sk = d.add_sketch("Section", Plane::Xy).unwrap();
+        d.edit_sketch(sk, |s| Ok(rectangle(s, 1.0, 0.0, 5.0, 10.0)))
+            .unwrap();
+        d.add_feature(revolve(
+            sk,
+            &d,
+            RevolveAxis::Line {
+                entity: EntityId(999),
+            },
+            360.0,
+            Operation::Join,
+        ))
+        .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        match r.status.get(&FeatureId(0)) {
+            Some(FeatureStatus::Failed { reason }) => {
+                assert!(reason.contains("not a line"), "{reason}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Angles outside 0 to 360 are refused when the feature is added.
+        for angle in [0.0, -5.0, 361.0, f64::NAN] {
+            let f = revolve(sk, &d, RevolveAxis::SketchY, angle, Operation::Join);
+            assert!(f.check().is_err(), "{angle}");
+        }
+    }
+
+    #[test]
+    fn a_revolve_survives_saving_as_json() {
+        let f = Feature::Revolve {
+            name: "Revolve1".into(),
+            sketch: SketchId(0),
+            profiles: Vec::new(),
+            axis: RevolveAxis::Line {
+                entity: EntityId(4),
+            },
+            angle: 270.0,
+            angle_expression: Some("sweep".into()),
+            operation: Operation::Cut,
+        };
+        let text = serde_json::to_string(&f).unwrap();
+        assert!(text.contains("\"type\":\"revolve\""), "{text}");
+        assert!(
+            text.contains("\"axis\":{\"type\":\"line\",\"entity\":4}"),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<Feature>(&text).unwrap(), f);
     }
 }

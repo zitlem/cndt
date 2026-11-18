@@ -108,6 +108,27 @@ pub trait Kernel: fmt::Debug + Send + Sync {
         distance: f64,
     ) -> Result<Made, KernelError>;
 
+    /// Revolves a planar region about an axis in its plane, through `angle`
+    /// degrees (more than 0 up to 360). Loops are as for
+    /// [`Kernel::extrude`]; the region may touch the axis but not cross it.
+    /// Arcs stay exact: a revolved arc is a true torus, sphere or cone.
+    ///
+    /// History sources: curve `i`, counting through all loops, for the face
+    /// it swept (a curve on the axis sweeps none); for a partial turn `n`
+    /// for the start cap and `n + 1` for the end cap.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] when the profile or the turn is not valid.
+    fn revolve_profile(
+        &self,
+        loops: &[Vec<Curve>],
+        normal: [f64; 3],
+        axis_origin: Point3,
+        axis_dir: [f64; 3],
+        angle: f64,
+    ) -> Result<Made, KernelError>;
+
     /// Revolves a closed polygon a full turn about an axis. The polygon lies
     /// in a plane through the axis and may touch it along an edge.
     ///
@@ -429,6 +450,34 @@ fn made(made: cndt_occt_sys::Made) -> Made {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OpenCascade;
 
+/// The profile loops in the bridge's own curve type.
+fn occt_loops(loops: &[Vec<Curve>]) -> Vec<Vec<cndt_occt_sys::Curve>> {
+    use cndt_occt_sys::Curve as C;
+    loops
+        .iter()
+        .map(|curves| {
+            curves
+                .iter()
+                .map(|c| match *c {
+                    Curve::Line { start, end } => C::Line {
+                        start: xyz(start),
+                        end: xyz(end),
+                    },
+                    Curve::Arc { center, start, end } => C::Arc {
+                        center: xyz(center),
+                        start: xyz(start),
+                        end: xyz(end),
+                    },
+                    Curve::Circle { center, radius } => C::Circle {
+                        center: xyz(center),
+                        radius,
+                    },
+                })
+                .collect()
+        })
+        .collect()
+}
+
 impl Kernel for OpenCascade {
     fn description(&self) -> String {
         format!("OpenCascade {}", cndt_occt_sys::version())
@@ -467,33 +516,28 @@ impl Kernel for OpenCascade {
         normal: [f64; 3],
         distance: f64,
     ) -> Result<Made, KernelError> {
-        use cndt_occt_sys::Curve as C;
-        let loops: Vec<Vec<C>> = loops
-            .iter()
-            .map(|curves| {
-                curves
-                    .iter()
-                    .map(|c| match *c {
-                        Curve::Line { start, end } => C::Line {
-                            start: xyz(start),
-                            end: xyz(end),
-                        },
-                        Curve::Arc { center, start, end } => C::Arc {
-                            center: xyz(center),
-                            start: xyz(start),
-                            end: xyz(end),
-                        },
-                        Curve::Circle { center, radius } => C::Circle {
-                            center: xyz(center),
-                            radius,
-                        },
-                    })
-                    .collect()
-            })
-            .collect();
-        cndt_occt_sys::extrude(&loops, normal, distance)
+        cndt_occt_sys::extrude(&occt_loops(loops), normal, distance)
             .map(made)
             .map_err(modelling)
+    }
+
+    fn revolve_profile(
+        &self,
+        loops: &[Vec<Curve>],
+        normal: [f64; 3],
+        axis_origin: Point3,
+        axis_dir: [f64; 3],
+        angle: f64,
+    ) -> Result<Made, KernelError> {
+        cndt_occt_sys::revolve_profile(
+            &occt_loops(loops),
+            normal,
+            xyz(axis_origin),
+            axis_dir,
+            angle,
+        )
+        .map(made)
+        .map_err(modelling)
     }
 
     fn revolve(
