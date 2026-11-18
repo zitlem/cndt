@@ -1,6 +1,6 @@
 # 0020: Revolve as a solid feature
 
-- **Status:** Proposed (not yet confirmed by the owner; do not build until it is)
+- **Status:** Accepted (proposed to the owner on 2026-11-18 as "revolve first"; the owner said "Continue")
 - **Date:** 2026-11-18
 
 ## Context
