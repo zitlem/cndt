@@ -120,6 +120,7 @@ export type Feature =
       bytes: number;
       hash: string;
     }
+  | { type: "circular_pattern"; name: string; feature: number; count: number; angle: number; center?: number }
   | {
       type: "pattern";
       name: string;

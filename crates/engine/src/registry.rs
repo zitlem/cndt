@@ -12,8 +12,8 @@ use serde_json::{Map, Value};
 use crate::{
     AddBlend, AddExtrude, AddHole, AddImport, AddRevolve, BlendKind, Command, CommandError,
     CreateSketch, DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole,
-    EditRevolve, EditSketch, Grid, PointRef, RemoveParameter, RenameDocument, SetParameter,
-    SetPattern, SketchEdit,
+    EditRevolve, EditSketch, Grid, PointRef, RemoveParameter, RenameDocument, SetCircularPattern,
+    SetParameter, SetPattern, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, Thread};
@@ -535,6 +535,59 @@ impl Registry {
                     Ok(Box::new(SetPattern::edit(
                         FeatureId(id(args, "feature")?),
                         grid(args)?,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.circular_pattern",
+                description: "Repeat an extrude, hole or revolve turned about its sketch's normal through a point.",
+                args: &[
+                    ArgSpec {
+                        name: "feature",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The extrude, hole or revolve to repeat.",
+                    },
+                    CIRCULAR_ARGS[0],
+                    CIRCULAR_ARGS[1],
+                    CIRCULAR_ARGS[2],
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next CircularPatternN.",
+                    },
+                ],
+                build: |args| {
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(SetCircularPattern::add(
+                        FeatureId(id(args, "feature")?),
+                        id(args, "count")?,
+                        circular_angle(args)?,
+                        circular_center(args)?,
+                        name,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.edit_circular_pattern",
+                description: "Change a circular pattern's count, angle and centre.",
+                args: &[
+                    FEATURE,
+                    CIRCULAR_ARGS[0],
+                    CIRCULAR_ARGS[1],
+                    CIRCULAR_ARGS[2],
+                ],
+                build: |args| {
+                    Ok(Box::new(SetCircularPattern::edit(
+                        FeatureId(id(args, "feature")?),
+                        id(args, "count")?,
+                        circular_angle(args)?,
+                        circular_center(args)?,
                     )))
                 },
             },
@@ -1761,6 +1814,39 @@ const GRID_ARGS: [ArgSpec; 4] = [
     },
 ];
 
+const CIRCULAR_ARGS: [ArgSpec; 3] = [
+    ArgSpec {
+        name: "count",
+        kind: ArgKind::Id,
+        required: true,
+        description: "Copies, counting the original; at least 2.",
+    },
+    ArgSpec {
+        name: "angle",
+        kind: ArgKind::Number,
+        required: false,
+        description: "Degrees the copies span, more than 0 up to 360. 360 by default.",
+    },
+    ArgSpec {
+        name: "center",
+        kind: ArgKind::Id,
+        required: false,
+        description: "A point of the source's sketch to turn about; the sketch origin by default.",
+    },
+];
+
+fn circular_angle(args: &Map<String, Value>) -> Result<f64, String> {
+    Ok(optional_number(args, "angle")?.unwrap_or(360.0))
+}
+
+fn circular_center(args: &Map<String, Value>) -> Result<Option<EntityId>, String> {
+    if args.contains_key("center") {
+        id(args, "center").map(|value| Some(EntityId(value)))
+    } else {
+        Ok(None)
+    }
+}
+
 fn grid(args: &Map<String, Value>) -> Result<Grid, String> {
     Ok(Grid {
         count_x: id(args, "count_x")?,
@@ -2151,6 +2237,14 @@ mod tests {
             (
                 "feature.edit_pattern",
                 json!({"feature": 2, "count_x": 3, "spacing_x": 20, "count_y": 2, "spacing_y": 10}),
+            ),
+            (
+                "feature.circular_pattern",
+                json!({"feature": 1, "count": 6, "angle": 360, "center": 2}),
+            ),
+            (
+                "feature.edit_circular_pattern",
+                json!({"feature": 2, "count": 4, "angle": 90}),
             ),
             (
                 "feature.chamfer",

@@ -20,7 +20,7 @@ use cndt_model::{Document, ModelError};
 pub use commands::{RemoveParameter, RenameDocument, SetParameter};
 pub use feature_commands::{
     AddBlend, AddExtrude, AddHole, AddImport, AddReference, AddRevolve, BlendKind, DeleteFeature,
-    EditBlend, EditCam, EditExtrude, EditHole, EditRevolve, Grid, SetPattern,
+    EditBlend, EditCam, EditExtrude, EditHole, EditRevolve, Grid, SetCircularPattern, SetPattern,
 };
 pub use registry::{ArgKind, ArgSpec, CommandSpec, Registry};
 pub use session::Session;
