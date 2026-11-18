@@ -619,3 +619,92 @@ fn what_cannot_be_read_back_is_refused_with_the_line() {
         assert_eq!(error.line, gcode.lines().count(), "{gcode}");
     }
 }
+
+const SHOP_HAAS: &str = include_str!("posts/shop-haas.toml");
+
+#[test]
+fn an_extending_post_keeps_the_base_and_changes_what_it_sets() {
+    let post = Post::from_toml(SHOP_HAAS).unwrap();
+    let base = load("haas-mill");
+    let (def, base_def) = (post.definition(), base.definition());
+    assert_eq!(def.post.id, "shop-haas");
+    assert_eq!(def.format.decimals, 4);
+    assert_eq!(def.program.end.len(), 4);
+    assert_eq!(def.format.line_numbers.unwrap().start, 100);
+    // Untouched settings come from the base.
+    assert_eq!(def.codes.tool_change, base_def.codes.tool_change);
+    assert_eq!(def.program.start, base_def.program.start);
+    assert_eq!(def.format.feed_decimals, base_def.format.feed_decimals);
+    assert_ne!(def.program.end, base_def.program.end);
+}
+
+#[test]
+fn an_extending_post_matches_its_golden_file() {
+    let output = Post::from_toml(SHOP_HAAS)
+        .unwrap()
+        .run(&sample(), APP_VERSION)
+        .unwrap();
+    let path = root().join("crates/post/tests/golden/shop-haas.nc");
+    if std::env::var_os("CNDT_UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, &output).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(output, expected, "output differs from {}", path.display());
+    assert!(
+        output.contains("(POST SHOP-HAAS 1.0.0 UNVERIFIED)"),
+        "{output}"
+    );
+}
+
+#[test]
+fn an_extending_post_is_never_verified() {
+    let verified = SHOP_HAAS.replace(
+        "version = \"1.0.0\"",
+        "version = \"1.0.0\"\nverified = true",
+    );
+    let error = Post::from_toml(&verified).unwrap_err().to_string();
+    assert!(error.contains("cannot be verified"), "{error}");
+    assert!(
+        !Post::from_toml(SHOP_HAAS)
+            .unwrap()
+            .definition()
+            .post
+            .verified
+    );
+}
+
+#[test]
+fn a_bad_extends_is_refused_with_a_reason() {
+    let cases = [
+        (
+            SHOP_HAAS.replace("\"haas-mill\"", "\"nope\""),
+            "not a shipped post",
+        ),
+        (SHOP_HAAS.replace("\"haas-mill\"", "3"), "must be a post id"),
+        (
+            SHOP_HAAS.replace("id = \"shop-haas\"", "id = \"haas-mill\""),
+            "must differ",
+        ),
+        (
+            SHOP_HAAS.replace("name = \"Shop Haas\"\n", ""),
+            "must set post.name",
+        ),
+        (
+            SHOP_HAAS.replace("decimals = 4", "decimals = 4\ndecimls = 5"),
+            "unknown field",
+        ),
+        (
+            SHOP_HAAS.replace("decimals = 4", "decimals = 9"),
+            "at most 6",
+        ),
+        (SHOP_HAAS.replace("\"M30\",\n]", "\"M30 {x}\",\n]"), "{x}"),
+    ];
+    for (text, expected) in cases {
+        let error = Post::from_toml(&text).unwrap_err().to_string();
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} in: {error}"
+        );
+    }
+}
