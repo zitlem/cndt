@@ -1,6 +1,6 @@
 # 0022: Circular pattern
 
-- **Status:** Proposed (not yet confirmed by the owner; do not build until it is)
+- **Status:** Accepted (by the owner, 2026-11-18)
 - **Date:** 2026-11-18
 
 ## Context

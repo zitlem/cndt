@@ -145,3 +145,10 @@ A feature may be `{"type": "revolve", "name", "sketch", "profiles", "axis", "ang
 
 - **Why a version bump:** a version 21 build refuses the unknown feature type as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 21 or older file with a revolve is refused as damaged.
+
+## Version 23 (2026-11-18)
+
+A feature may be `{"type": "circular_pattern", "name", "feature", "count", "angle", "center" (left out for the sketch origin)}` (decision 0022).
+
+- **Why a version bump:** a version 22 build refuses the unknown feature type as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 22 or older file with a circular pattern is refused as damaged.

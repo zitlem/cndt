@@ -1012,6 +1012,132 @@ impl Command for SetPattern {
     }
 }
 
+/// Adds a circular pattern of an earlier feature, or with `id`, changes one's
+/// count, angle and centre (decision 0022).
+#[derive(Debug, Clone)]
+pub struct SetCircularPattern {
+    id: Option<FeatureId>,
+    source: FeatureId,
+    count: u32,
+    angle: f64,
+    center: Option<EntityId>,
+    name: Option<String>,
+    before: Option<Box<Document>>,
+}
+
+impl SetCircularPattern {
+    /// A new circular pattern repeating `source`.
+    #[must_use]
+    pub const fn add(
+        source: FeatureId,
+        count: u32,
+        angle: f64,
+        center: Option<EntityId>,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            id: None,
+            source,
+            count,
+            angle,
+            center,
+            name,
+            before: None,
+        }
+    }
+
+    /// New values for circular pattern `id`.
+    #[must_use]
+    pub const fn edit(id: FeatureId, count: u32, angle: f64, center: Option<EntityId>) -> Self {
+        Self {
+            id: Some(id),
+            source: FeatureId(0),
+            count,
+            angle,
+            center,
+            name: None,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetCircularPattern {
+    fn name(&self) -> &'static str {
+        if self.id.is_some() {
+            "feature.edit_circular_pattern"
+        } else {
+            "feature.circular_pattern"
+        }
+    }
+
+    fn label(&self) -> String {
+        String::from(if self.id.is_some() {
+            "Edit circular pattern"
+        } else {
+            "Circular pattern"
+        })
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = document.clone();
+        let (count, angle, center) = (self.count, self.angle, self.center);
+        match self.id {
+            Some(id) => {
+                let Some(Feature::CircularPattern { name, feature, .. }) =
+                    document.feature(id).cloned()
+                else {
+                    return Err(ModelError::InvalidFeature(String::from(
+                        "that feature is not a circular pattern",
+                    ))
+                    .into());
+                };
+                let pattern = Feature::CircularPattern {
+                    name,
+                    feature,
+                    count,
+                    angle,
+                    center,
+                };
+                document.replace_feature(id, pattern)?;
+            }
+            None => {
+                match document.feature(self.source) {
+                    Some(
+                        Feature::Extrude { .. } | Feature::Hole { .. } | Feature::Revolve { .. },
+                    ) => {}
+                    Some(_) => {
+                        return Err(ModelError::InvalidFeature(String::from(
+                            "only extrudes, holes and revolves can be patterned",
+                        ))
+                        .into());
+                    }
+                    None => return Err(ModelError::UnknownFeature(self.source).into()),
+                }
+                let name = self
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| document.next_feature_name("CircularPattern"));
+                let pattern = Feature::CircularPattern {
+                    name,
+                    feature: self.source,
+                    count,
+                    angle,
+                    center,
+                };
+                document.add_feature(pattern)?;
+            }
+        }
+        self.before = Some(Box::new(before));
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = self.before.take().ok_or(CommandError::NotApplied)?;
+        *document = *before;
+        Ok(())
+    }
+}
+
 /// Deletes a feature from the timeline.
 #[derive(Debug, Clone)]
 pub struct DeleteFeature {
