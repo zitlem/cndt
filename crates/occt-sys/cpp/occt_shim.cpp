@@ -1250,6 +1250,45 @@ int cndt_occt_rotate(const cndt_shape* shape, const double m[9], cndt_shape** ou
     }
 }
 
+// A mirror image of `shape` in the plane through `point` (3 values) with
+// unit normal `normal` (3 values). The copy's faces are in the same order as
+// the original's.
+int cndt_occt_mirror(const cndt_shape* shape, const double point[3], const double normal[3], cndt_shape** out, char* err, std::size_t err_len) {
+    if (shape == nullptr || point == nullptr || normal == nullptr || out == nullptr) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    try {
+        const double length = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+        if (!(length > 1e-9)) {
+            set_error(err, err_len, "the mirror plane has no direction");
+            return kBadArgument;
+        }
+        gp_Trsf flip;
+        flip.SetMirror(gp_Ax2(gp_Pnt(point[0], point[1], point[2]), gp_Dir(normal[0], normal[1], normal[2])));
+        BRepBuilderAPI_Transform transform(shape->shape, flip, Standard_True);
+        if (!transform.IsDone()) {
+            set_error(err, err_len, "the part could not be mirrored");
+            return kModelFailed;
+        }
+        auto made = std::make_unique<cndt_shape>();
+        made->shape = transform.Shape();
+        if (count_unique(made->shape, TopAbs_FACE) != count_unique(shape->shape, TopAbs_FACE)) {
+            set_error(err, err_len, "the mirrored copy lost faces");
+            return kModelFailed;
+        }
+        *out = made.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
 // Owned edge polylines. Opaque to Rust; free with `cndt_occt_free_polylines`.
 struct cndt_polylines {
     std::vector<std::uint32_t> counts;  // points per edge, in edge-map order

@@ -4,7 +4,7 @@
 use cndt_model::sketch::{EntityId, Geometry, ProfileKey};
 use cndt_model::{
     Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ImportData, ImportFormat,
-    ModelError, Operation, RevolveAxis, SketchId, default_profiles,
+    MirrorPlane, ModelError, Operation, RevolveAxis, SketchId, default_profiles,
 };
 
 use crate::{Command, CommandError};
@@ -1125,6 +1125,116 @@ impl Command for SetCircularPattern {
                     center,
                 };
                 document.add_feature(pattern)?;
+            }
+        }
+        self.before = Some(Box::new(before));
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = self.before.take().ok_or(CommandError::NotApplied)?;
+        *document = *before;
+        Ok(())
+    }
+}
+
+/// Adds a mirror of an earlier feature, or with `id`, changes one's plane
+/// (decision 0023).
+#[derive(Debug, Clone)]
+pub struct SetMirror {
+    id: Option<FeatureId>,
+    source: FeatureId,
+    plane: MirrorPlane,
+    name: Option<String>,
+    before: Option<Box<Document>>,
+}
+
+impl SetMirror {
+    /// A new mirror of `source` in `plane`.
+    #[must_use]
+    pub const fn add(source: FeatureId, plane: MirrorPlane, name: Option<String>) -> Self {
+        Self {
+            id: None,
+            source,
+            plane,
+            name,
+            before: None,
+        }
+    }
+
+    /// A new plane for mirror `id`.
+    #[must_use]
+    pub const fn edit(id: FeatureId, plane: MirrorPlane) -> Self {
+        Self {
+            id: Some(id),
+            source: FeatureId(0),
+            plane,
+            name: None,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetMirror {
+    fn name(&self) -> &'static str {
+        if self.id.is_some() {
+            "feature.edit_mirror"
+        } else {
+            "feature.mirror"
+        }
+    }
+
+    fn label(&self) -> String {
+        String::from(if self.id.is_some() {
+            "Edit mirror"
+        } else {
+            "Mirror"
+        })
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = document.clone();
+        let plane = self.plane;
+        match self.id {
+            Some(id) => {
+                let Some(Feature::Mirror { name, feature, .. }) = document.feature(id).cloned()
+                else {
+                    return Err(ModelError::InvalidFeature(String::from(
+                        "that feature is not a mirror",
+                    ))
+                    .into());
+                };
+                document.replace_feature(
+                    id,
+                    Feature::Mirror {
+                        name,
+                        feature,
+                        plane,
+                    },
+                )?;
+            }
+            None => {
+                match document.feature(self.source) {
+                    Some(
+                        Feature::Extrude { .. } | Feature::Hole { .. } | Feature::Revolve { .. },
+                    ) => {}
+                    Some(_) => {
+                        return Err(ModelError::InvalidFeature(String::from(
+                            "only extrudes, holes and revolves can be mirrored",
+                        ))
+                        .into());
+                    }
+                    None => return Err(ModelError::UnknownFeature(self.source).into()),
+                }
+                let name = self
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| document.next_feature_name("Mirror"));
+                document.add_feature(Feature::Mirror {
+                    name,
+                    feature: self.source,
+                    plane,
+                })?;
             }
         }
         self.before = Some(Box::new(before));

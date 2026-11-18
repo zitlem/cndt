@@ -152,3 +152,10 @@ A feature may be `{"type": "circular_pattern", "name", "feature", "count", "angl
 
 - **Why a version bump:** a version 22 build refuses the unknown feature type as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 22 or older file with a circular pattern is refused as damaged.
+
+## Version 24 (2026-11-18)
+
+A feature may be `{"type": "mirror", "name", "feature", "plane"}` where `plane` is one of `sketch_x`, `sketch_y`, `sketch_z`, `model_x`, `model_y`, `model_z` (decision 0023).
+
+- **Why a version bump:** a version 23 build refuses the unknown feature type as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 23 or older file with a mirror is refused as damaged.

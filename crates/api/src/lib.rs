@@ -2741,7 +2741,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 44, "{names:?}");
+        assert_eq!(names.len(), 46, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

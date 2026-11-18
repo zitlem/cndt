@@ -21,8 +21,8 @@ pub use cndt_sketch::{self as sketch, Sketch, SketchError};
 pub use features::{
     Counterbore, EdgeTarget, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus,
     Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, ImportData, ImportFormat,
-    MAX_IMPORT_BYTES, Operation, Rebuilt, ReferenceMesh, RevolveAxis, Thread, default_profiles,
-    rebuild, rebuild_to,
+    MAX_IMPORT_BYTES, MirrorPlane, Operation, Rebuilt, ReferenceMesh, RevolveAxis, Thread,
+    default_profiles, rebuild, rebuild_to,
 };
 use serde::{Deserialize, Serialize};
 

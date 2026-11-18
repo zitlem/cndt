@@ -57,7 +57,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 21: a vise per setup (decision 0020).
 /// - 22: revolve features (decision 0021).
 /// - 23: circular pattern features (decision 0022).
-pub const SCHEMA_VERSION: u32 = 23;
+/// - 24: mirror features (decision 0023).
+pub const SCHEMA_VERSION: u32 = 24;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -302,6 +303,18 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 23 knew nothing of mirrors.
+    if manifest.schema_version < 24
+        && document
+            .features()
+            .iter()
+            .any(|e| matches!(e.feature, cndt_model::Feature::Mirror { .. }))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain mirror features",
+            manifest.schema_version
+        )));
+    }
     // Version 22 knew nothing of circular patterns.
     if manifest.schema_version < 23
         && document
@@ -986,6 +999,50 @@ mod tests {
         let v15 = raw_zip(&[(MANIFEST, &manifest(15)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v15)).unwrap_err();
         assert!(error.to_string().contains("tool assemblies"), "{error}");
+    }
+
+    #[test]
+    fn mirrors_need_version_24() {
+        use cndt_model::sketch::Point2;
+        use cndt_model::{Feature, MirrorPlane, Operation, Plane, default_profiles};
+        let mut document = Document::new("Bracket");
+        let sketch = document.add_sketch("Boss", Plane::Xy).unwrap();
+        document
+            .edit_sketch(sketch, |s| {
+                let p: Vec<_> = [(1.0, 0.0), (5.0, 0.0), (5.0, 5.0), (1.0, 5.0)]
+                    .iter()
+                    .map(|&(x, y)| s.add_point(Point2::new(x, y)))
+                    .collect::<Result<_, _>>()?;
+                for i in 0..4 {
+                    s.add_line(p[i], p[(i + 1) % 4])?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let profiles = default_profiles(&document.sketch(sketch).unwrap().sketch);
+        let source = document
+            .add_feature(Feature::Extrude {
+                name: String::from("Extrude1"),
+                sketch,
+                profiles,
+                distance: 5.0,
+                distance_expression: None,
+                operation: Operation::Join,
+            })
+            .unwrap();
+        document
+            .add_feature(Feature::Mirror {
+                name: String::from("Mirror1"),
+                feature: source,
+                plane: MirrorPlane::SketchX,
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        let v23 = raw_zip(&[(MANIFEST, &manifest(23)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v23)).unwrap_err();
+        assert!(error.to_string().contains("mirror"), "{error}");
     }
 
     #[test]

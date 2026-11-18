@@ -160,6 +160,14 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_mirror(
+        shape: *const ShapeHandle,
+        point: *const f64,
+        normal: *const f64,
+        out: *mut *mut ShapeHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_edge_polylines(
         shape: *const ShapeHandle,
         deflection: f64,
@@ -691,6 +699,38 @@ pub fn rotate(shape: &Shape, rows: [[f64; 3]; 3]) -> Result<Shape, OcctError> {
         cndt_occt_rotate(
             shape.ptr.as_ptr(),
             m.as_ptr(),
+            &mut out,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    NonNull::new(out)
+        .map(|ptr| Shape { ptr })
+        .ok_or_else(|| OcctError::Kernel(String::from("the kernel returned no shape")))
+}
+
+/// A mirror image of `shape` in the plane through `point` with the normal
+/// `normal`. Its faces are numbered as the original's.
+///
+/// # Errors
+///
+/// [`OcctError::BadArgument`] if the normal has no direction;
+/// [`OcctError::ModelFailed`] if the copy cannot be made.
+pub fn mirror(shape: &Shape, point: [f64; 3], normal: [f64; 3]) -> Result<Shape, OcctError> {
+    let mut out: *mut ShapeHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `point` and `normal` hold 3 values for the
+    // call; `out` is a valid out-pointer; `err` is writable for its length;
+    // the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_mirror(
+            shape.ptr.as_ptr(),
+            point.as_ptr(),
+            normal.as_ptr(),
             &mut out,
             err.as_mut_ptr().cast::<c_char>(),
             err.len(),
