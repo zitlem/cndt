@@ -114,4 +114,36 @@ mod tests {
             assert!((size[axis] - expected[axis]).abs() < 1e-12, "{size:?}");
         }
     }
+
+    #[test]
+    fn distance_is_symmetric_and_zero_to_itself() {
+        let a = Point2::new(1.0, 2.0);
+        let b = Point2::new(4.0, 6.0);
+        assert!((a.distance(b) - 5.0).abs() < 1e-12);
+        assert!((b.distance(a) - 5.0).abs() < 1e-12);
+        assert!(a.distance(a).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mesh_counts_follow_the_buffers() {
+        let empty = TriangleMesh::default();
+        assert_eq!((empty.vertex_count(), empty.triangle_count()), (0, 0));
+        let one = TriangleMesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            triangle_faces: vec![0],
+            face_count: 1,
+        };
+        assert_eq!((one.vertex_count(), one.triangle_count()), (3, 1));
+    }
+
+    #[test]
+    fn a_box_with_negative_extent_reports_it() {
+        // size() does not clamp: a swapped box shows up as negative, not zero.
+        let swapped = BoundingBox {
+            min: Point3::new(5.0, 0.0, 0.0),
+            max: Point3::new(1.0, 0.0, 0.0),
+        };
+        assert!((swapped.size()[0] + 4.0).abs() < 1e-12);
+    }
 }
