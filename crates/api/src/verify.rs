@@ -246,7 +246,7 @@ impl Api {
                                 "the holder hits the stock (the tool does not stick out far enough)"
                             }
                             cndt_sim::Hit::Fixture => {
-                                "the tool hits the vise (its jaws stand higher than the tool clears)"
+                                "the tool hits the vise (a jaw, or a parallel under the stock's clamped edge)"
                             }
                             cndt_sim::Hit::Rapid | cndt_sim::Hit::Gouge => {
                                 "a rapid move runs into the stock"

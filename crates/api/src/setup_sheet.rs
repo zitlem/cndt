@@ -163,14 +163,16 @@ impl Api {
                     || String::from("none entered: no fixture was checked"),
                     |v| {
                         format!(
-                            "jaws on the {}, gripping {} mm of the stock from its bottom up, {} mm thick; \
-                             every tool was checked against them",
+                            "jaws on the {}, gripping {} mm of the stock from its bottom up, {} mm thick, \
+                             the stock on {} mm parallels under its clamped faces; every tool was \
+                             checked against them",
                             match v.along {
                                 cndt_model::cam::JawAxis::X => "front and back",
                                 cndt_model::cam::JawAxis::Y => "left and right",
                             },
                             num(v.grip),
-                            num(v.jaw)
+                            num(v.jaw),
+                            num(cndt_model::cam::PARALLEL)
                         )
                     },
                 ),
