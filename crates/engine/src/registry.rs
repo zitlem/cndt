@@ -13,10 +13,10 @@ use crate::{
     AddBlend, AddExtrude, AddHole, AddImport, AddRevolve, BlendKind, Command, CommandError,
     CreateSketch, DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole,
     EditRevolve, EditSketch, Grid, PointRef, RemoveParameter, RenameDocument, SetCircularPattern,
-    SetParameter, SetPattern, SketchEdit,
+    SetMirror, SetParameter, SetPattern, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
-use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, Thread};
+use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, MirrorPlane, Thread};
 use cndt_model::{FeatureId, Operation, RevolveAxis};
 
 /// The type of a command argument.
@@ -588,6 +588,48 @@ impl Registry {
                         id(args, "count")?,
                         circular_angle(args)?,
                         circular_center(args)?,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.mirror",
+                description: "Add the mirror image of an extrude, hole or revolve.",
+                args: &[
+                    ArgSpec {
+                        name: "feature",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The extrude, hole or revolve to mirror.",
+                    },
+                    MIRROR_PLANE,
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next MirrorN.",
+                    },
+                ],
+                build: |args| {
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(SetMirror::add(
+                        FeatureId(id(args, "feature")?),
+                        mirror_plane(args)?,
+                        name,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.edit_mirror",
+                description: "Change the plane a mirror reflects in.",
+                args: &[FEATURE, MIRROR_PLANE],
+                build: |args| {
+                    Ok(Box::new(SetMirror::edit(
+                        FeatureId(id(args, "feature")?),
+                        mirror_plane(args)?,
                     )))
                 },
             },
@@ -1835,6 +1877,22 @@ const CIRCULAR_ARGS: [ArgSpec; 3] = [
     },
 ];
 
+const MIRROR_PLANE: ArgSpec = ArgSpec {
+    name: "plane",
+    kind: ArgKind::Text,
+    required: true,
+    description: "sketch_x, sketch_y or sketch_z (through the sketch's origin, normal along its X, Y or Z), or model_x, model_y or model_z (through the model's origin).",
+};
+
+fn mirror_plane(args: &Map<String, Value>) -> Result<MirrorPlane, String> {
+    let given = text(args, "plane")?;
+    MirrorPlane::parse(&given).ok_or_else(|| {
+        format!(
+            "unknown mirror plane \"{given}\"; use sketch_x, sketch_y, sketch_z, model_x, model_y or model_z"
+        )
+    })
+}
+
 fn circular_angle(args: &Map<String, Value>) -> Result<f64, String> {
     Ok(optional_number(args, "angle")?.unwrap_or(360.0))
 }
@@ -2245,6 +2303,11 @@ mod tests {
             (
                 "feature.edit_circular_pattern",
                 json!({"feature": 2, "count": 4, "angle": 90}),
+            ),
+            ("feature.mirror", json!({"feature": 1, "plane": "sketch_x"})),
+            (
+                "feature.edit_mirror",
+                json!({"feature": 2, "plane": "model_z"}),
             ),
             (
                 "feature.chamfer",

@@ -21,7 +21,7 @@ mod solid;
 
 pub use solid::{
     Blend, BooleanOp, Curve, Exchange, Made, Properties, Segment, Shape, blend, boolean,
-    edge_polylines, edges, extrude, face_loops, face_outline, face_plane, heights, mesh,
+    edge_polylines, edges, extrude, face_loops, face_outline, face_plane, heights, mesh, mirror,
     properties, read_solid, revolve, revolve_profile, rotate, section_loops, section_outline,
     translate, write_step,
 };

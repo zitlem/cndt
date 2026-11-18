@@ -34,6 +34,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0020](0020-vise.md) | A vise per setup, checked in the simulation | Accepted |
 | [0021](0021-revolve-feature.md) | Revolve as a solid feature | Accepted |
 | [0022](0022-circular-pattern.md) | Circular pattern | Accepted |
+| [0023](0023-mirror.md) | Mirror | Proposed |
 
 ## Open decisions
 

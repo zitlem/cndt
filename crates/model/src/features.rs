@@ -147,6 +147,16 @@ pub enum Feature {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         center: Option<EntityId>,
     },
+    /// Adds the mirror image of an earlier extrude, hole or revolve (decision
+    /// 0023). The copy joins or cuts as the original does.
+    Mirror {
+        /// Shown in the timeline, such as `Mirror1`.
+        name: String,
+        /// The feature it mirrors.
+        feature: FeatureId,
+        /// The plane it reflects in.
+        plane: MirrorPlane,
+    },
     /// Rounds edges.
     Fillet {
         /// Shown in the timeline, such as `Fillet1`.
@@ -401,6 +411,7 @@ impl Feature {
             | Self::Chamfer { name, .. }
             | Self::Pattern { name, .. }
             | Self::CircularPattern { name, .. }
+            | Self::Mirror { name, .. }
             | Self::Fillet { name, .. }
             | Self::Import { name, .. }
             | Self::Reference { name, .. } => name,
@@ -418,6 +429,7 @@ impl Feature {
             | Self::Fillet { .. }
             | Self::Pattern { .. }
             | Self::CircularPattern { .. }
+            | Self::Mirror { .. }
             | Self::Import { .. }
             | Self::Reference { .. } => None,
         }
@@ -530,6 +542,8 @@ impl Feature {
                 }
                 Ok(())
             }
+            // The plane is an enum: nothing else to check.
+            Self::Mirror { .. } => Ok(()),
             Self::Chamfer {
                 edges,
                 distance: size,
@@ -1629,6 +1643,99 @@ fn circular_pattern_tool(
     Ok((body, names, original.operation))
 }
 
+/// The planes a mirror can reflect in (decision 0023). Each passes through
+/// the origin of the source's sketch (`sketch_*`) or of the model
+/// (`model_*`), with the normal along the named axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MirrorPlane {
+    /// Normal along the sketch's X axis: x becomes -x.
+    SketchX,
+    /// Normal along the sketch's Y axis: y becomes -y.
+    SketchY,
+    /// The sketch plane itself.
+    SketchZ,
+    /// The model's YZ plane.
+    ModelX,
+    /// The model's XZ plane.
+    ModelY,
+    /// The model's XY plane.
+    ModelZ,
+}
+
+impl MirrorPlane {
+    /// The plane named `text` (`sketch_x`, ..., `model_z`).
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "sketch_x" => Self::SketchX,
+            "sketch_y" => Self::SketchY,
+            "sketch_z" => Self::SketchZ,
+            "model_x" => Self::ModelX,
+            "model_y" => Self::ModelY,
+            "model_z" => Self::ModelZ,
+            _ => return None,
+        })
+    }
+}
+
+/// Builds a mirror's copy of an earlier feature's tool, with every face named
+/// by its original.
+fn mirror_tool(
+    document: &Document,
+    kernel: &dyn Kernel,
+    id: FeatureId,
+    feature: &Feature,
+    tools: &BTreeMap<FeatureId, Tool>,
+) -> Result<(Body, Names, Operation), String> {
+    let Feature::Mirror {
+        feature: source,
+        plane,
+        ..
+    } = feature
+    else {
+        return Err(String::from("not a mirror"));
+    };
+    let original = tools.get(source).ok_or_else(|| {
+        format!("the feature it mirrors ({source}) did not build, comes later, or is not an extrude, hole or revolve")
+    })?;
+    if document.sketch(original.sketch).is_none() {
+        return Err(format!(
+            "the sketch of {source} ({}) has been deleted",
+            original.sketch
+        ));
+    }
+    let frame = &original.frame;
+    let o = frame.origin;
+    let (point, normal) = match plane {
+        MirrorPlane::SketchX => ([o.x, o.y, o.z], frame.x),
+        MirrorPlane::SketchY => ([o.x, o.y, o.z], frame.y),
+        MirrorPlane::SketchZ => ([o.x, o.y, o.z], frame.normal),
+        MirrorPlane::ModelX => ([0.0; 3], [1.0, 0.0, 0.0]),
+        MirrorPlane::ModelY => ([0.0; 3], [0.0, 1.0, 0.0]),
+        MirrorPlane::ModelZ => ([0.0; 3], [0.0, 0.0, 1.0]),
+    };
+    let body = kernel
+        .mirror(&original.body, point, normal)
+        .map_err(|e| e.to_string())?;
+    let names: Names = original
+        .names
+        .iter()
+        .map(|set| {
+            set.iter()
+                .map(|n| FaceName {
+                    feature: id,
+                    origin: FaceOrigin::Copy {
+                        at: (1, 0),
+                        original: n.to_string(),
+                    },
+                })
+                .collect()
+        })
+        .collect();
+    Ok((body, names, original.operation))
+}
+
 /// Reads an imported solid, naming each face by its number.
 fn import_tool(
     kernel: &dyn Kernel,
@@ -1722,6 +1829,11 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                         pattern_tool(kernel, entry.id, &entry.feature, &tools)?;
                     return apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some);
                 }
+                if let Feature::Mirror { .. } = &entry.feature {
+                    let (tool, names, operation) =
+                        mirror_tool(document, kernel, entry.id, &entry.feature, &tools)?;
+                    return apply_tool(kernel, part.as_ref(), &tool, &names, operation).map(Some);
+                }
                 if let Feature::CircularPattern { .. } = &entry.feature {
                     let (tool, names, operation) =
                         circular_pattern_tool(document, kernel, entry.id, &entry.feature, &tools)?;
@@ -1768,6 +1880,7 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
                 | Feature::Fillet { .. }
                 | Feature::Pattern { .. }
                 | Feature::CircularPattern { .. }
+                | Feature::Mirror { .. }
                 | Feature::Import { .. }
                 | Feature::Reference { .. } => {
                     return Err(String::from("this feature has no sketch"));

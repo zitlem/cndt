@@ -274,6 +274,14 @@ pub trait Kernel: fmt::Debug + Send + Sync {
     /// [`KernelError::Modelling`] if the copy cannot be made.
     fn rotate(&self, body: &Body, rows: [[f64; 3]; 3]) -> Result<Body, KernelError>;
 
+    /// A mirror image of a body in the plane through `point` with the unit
+    /// normal `normal`. Its faces are numbered as the original's.
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::Modelling`] if the copy cannot be made.
+    fn mirror(&self, body: &Body, point: [f64; 3], normal: [f64; 3]) -> Result<Body, KernelError>;
+
     /// Fuses or cuts two bodies.
     ///
     /// History sources: face `i` of `a` is `i`; face `j` of `b` is
@@ -560,6 +568,12 @@ impl Kernel for OpenCascade {
 
     fn rotate(&self, body: &Body, rows: [[f64; 3]; 3]) -> Result<Body, KernelError> {
         cndt_occt_sys::rotate(&body.0, rows)
+            .map(|s| Body(Arc::new(s)))
+            .map_err(modelling)
+    }
+
+    fn mirror(&self, body: &Body, point: [f64; 3], normal: [f64; 3]) -> Result<Body, KernelError> {
+        cndt_occt_sys::mirror(&body.0, point, normal)
             .map(|s| Body(Arc::new(s)))
             .map_err(modelling)
     }
