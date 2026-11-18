@@ -240,8 +240,12 @@ impl Post {
     /// unknown or missing fields, a template uses an unknown placeholder, or
     /// the start lines leave out `{header}`.
     pub fn from_toml(text: &str) -> Result<Self, PostError> {
-        let definition: PostDefinition = toml::from_str(text)
+        let table: toml::Table = toml::from_str(text)
             .map_err(|error| PostError::InvalidDefinition(error.to_string()))?;
+        let table = resolve_extends(table, 0)?;
+        let definition: PostDefinition = toml::Value::Table(table)
+            .try_into()
+            .map_err(|error: toml::de::Error| PostError::InvalidDefinition(error.to_string()))?;
         check_definition(&definition)?;
         Ok(Self { definition })
     }
@@ -362,6 +366,92 @@ fn header(def: &PostDefinition, app_version: &str) -> Vec<String> {
 }
 
 /// Placeholders each template may use.
+/// The shipped posts a post may extend, by id.
+const SHIPPED: &[(&str, &str)] = &[
+    ("fanuc-mill", include_str!("../../../posts/fanuc-mill.toml")),
+    ("grbl", include_str!("../../../posts/grbl.toml")),
+    ("haas-mill", include_str!("../../../posts/haas-mill.toml")),
+    (
+        "linuxcnc-mill",
+        include_str!("../../../posts/linuxcnc-mill.toml"),
+    ),
+    (
+        "mazak-smoothg",
+        include_str!("../../../posts/mazak-smoothg.toml"),
+    ),
+];
+
+/// The longest chain of `extends` followed.
+const MAX_EXTENDS_DEPTH: usize = 4;
+
+/// Merges `over` into `base`: tables merge key by key, every other value
+/// (numbers, strings, lists) in `over` replaces the one in `base`.
+fn merge(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(into)), toml::Value::Table(from)) => merge(into, from),
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
+}
+
+/// If the post says `extends = "<shipped id>"` under `[post]`, returns the
+/// base post with this one's settings laid over it. An extending post names
+/// itself (`id`, `name`, `version`) and is never verified: the base's
+/// verification says nothing about different output (docs/safety.md, gate 2).
+fn resolve_extends(mut table: toml::Table, depth: usize) -> Result<toml::Table, PostError> {
+    let invalid = |reason: String| PostError::InvalidDefinition(reason);
+    let Some(toml::Value::Table(info)) = table.get_mut("post") else {
+        return Ok(table);
+    };
+    let Some(extends) = info.remove("extends") else {
+        return Ok(table);
+    };
+    let toml::Value::String(base_id) = extends else {
+        return Err(invalid(String::from("post.extends must be a post id")));
+    };
+    if depth >= MAX_EXTENDS_DEPTH {
+        return Err(invalid(format!(
+            "post.extends goes more than {MAX_EXTENDS_DEPTH} posts deep, at \"{base_id}\""
+        )));
+    }
+    for key in ["id", "name", "version"] {
+        if !info.contains_key(key) {
+            return Err(invalid(format!(
+                "a post that extends \"{base_id}\" must set post.{key} itself"
+            )));
+        }
+    }
+    if info
+        .get("verified")
+        .is_some_and(|v| v != &toml::Value::Boolean(false))
+    {
+        return Err(invalid(String::from(
+            "a post that extends another cannot be verified: its own output has not run on a controller",
+        )));
+    }
+    info.insert(String::from("verified"), toml::Value::Boolean(false));
+    if info.get("id").and_then(toml::Value::as_str) == Some(base_id.as_str()) {
+        return Err(invalid(format!(
+            "post.id must differ from the post it extends (\"{base_id}\")"
+        )));
+    }
+    let Some((_, base_text)) = SHIPPED.iter().find(|(id, _)| *id == base_id) else {
+        let known: Vec<&str> = SHIPPED.iter().map(|(id, _)| *id).collect();
+        return Err(invalid(format!(
+            "post.extends names \"{base_id}\", which is not a shipped post (shipped: {})",
+            known.join(", ")
+        )));
+    };
+    let base: toml::Table = toml::from_str(base_text)
+        .map_err(|error| invalid(format!("shipped post \"{base_id}\": {error}")))?;
+    let mut merged = resolve_extends(base, depth + 1)?;
+    merge(&mut merged, table);
+    Ok(merged)
+}
+
 fn check_definition(def: &PostDefinition) -> Result<(), PostError> {
     let invalid = |reason: String| PostError::InvalidDefinition(reason);
     if !def.program.start.iter().any(|line| line == "{header}") {

@@ -573,10 +573,27 @@ fn the_cndt_test_block() {
     check_golden("test-block-setup-1-fanuc-mill", gcode);
     // The preview for the 3D view: cuts and rapids, in model coordinates.
     let preview = s.api.toolpath_preview(Some(0)).unwrap();
-    assert_eq!(&preview[..8], b"CNDTTPH1");
+    assert_eq!(&preview[..8], b"CNDTTPH2");
     let count = u32::from_le_bytes(preview[8..12].try_into().unwrap()) as usize;
-    assert_eq!(preview.len(), 12 + count * 25);
     assert!(count > 1000, "{count}");
+    // Operation starts: names, then the segments, which fill the rest.
+    let ops = u32::from_le_bytes(preview[12..16].try_into().unwrap()) as usize;
+    assert!(ops > 1, "{ops}");
+    let mut at = 16;
+    let mut previous = 0;
+    for _ in 0..ops {
+        let first = u32::from_le_bytes(preview[at..at + 4].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(preview[at + 4..at + 8].try_into().unwrap()) as usize;
+        assert!(
+            first >= previous && first <= count,
+            "{first} after {previous}"
+        );
+        let name = std::str::from_utf8(&preview[at + 8..at + 8 + len]).unwrap();
+        assert!(!name.is_empty());
+        previous = first;
+        at += 8 + len;
+    }
+    assert_eq!(preview.len(), at + count * 25);
     // Written to a file as well.
     let nc = std::env::temp_dir().join(format!("cndt-test-block-{}.nc", std::process::id()));
     let reply = s.call(json!({"method": "post", "post": "fanuc-mill", "setup": 0, "path": nc}));

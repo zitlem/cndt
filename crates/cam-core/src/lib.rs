@@ -859,4 +859,61 @@ mod tests {
             Err(ToolpathError::BadWorkOffset(7))
         ));
     }
+
+    #[test]
+    fn the_lowest_z_counts_moves_and_cycle_bottoms() {
+        assert_eq!(program(vec![]).lowest_z(), None);
+        let mut steps = ready();
+        steps.push(Step::Move(Move::Linear {
+            to: p(0.0, 0.0, -3.0),
+            feed: 100.0,
+        }));
+        assert_eq!(program(steps.clone()).lowest_z(), Some(-3.0));
+        steps.push(cycle(CycleKind::Drill, 100.0));
+        assert_eq!(program(steps).lowest_z(), Some(-10.0));
+    }
+
+    #[test]
+    fn a_prove_out_lift_outside_its_range_is_refused() {
+        let program = program(ready());
+        for lift in [0.0, -5.0, f64::NAN, f64::INFINITY, MAX_PROVE_OUT + 1.0] {
+            let reason = program.lifted(lift).unwrap_err();
+            assert!(reason.contains("prove-out"), "{lift}: {reason}");
+        }
+        assert!(program.lifted(MAX_PROVE_OUT).is_ok());
+    }
+
+    #[test]
+    fn speeds_dwells_arcs_and_points_that_make_no_sense_are_refused() {
+        let mut steps = ready();
+        steps[1] = Step::Event(Event::SpindleOn {
+            rpm: 0.0,
+            direction: SpindleDirection::Clockwise,
+        });
+        assert!(matches!(
+            program(steps).validate(),
+            Err(ToolpathError::BadSpindleSpeed(_))
+        ));
+        assert!(matches!(
+            with(Step::Move(Move::Dwell { seconds: -1.0 })).validate(),
+            Err(ToolpathError::BadDwell(_))
+        ));
+        let zero_radius = with(Step::Move(Move::Arc {
+            to: p(10.0, 0.0, 5.0),
+            center: p(10.0, 0.0, 5.0),
+            direction: ArcDirection::Clockwise,
+            feed: 100.0,
+        }));
+        assert!(matches!(
+            zero_radius.validate(),
+            Err(ToolpathError::BadArc(_))
+        ));
+        let infinite = with(Step::Move(Move::Rapid {
+            to: p(f64::INFINITY, 0.0, 5.0),
+        }));
+        assert!(matches!(
+            infinite.validate(),
+            Err(ToolpathError::NotFinite(_))
+        ));
+    }
 }

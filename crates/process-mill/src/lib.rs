@@ -1690,7 +1690,19 @@ pub struct PreviewSegment {
 /// arcs are split into short chords, cycles into their rapids and feeds.
 #[must_use]
 pub fn preview(program: &Program, setup: &Setup) -> Vec<PreviewSegment> {
+    preview_operations(program, setup).0
+}
+
+/// Like [`preview`], and also where each operation starts: its name and the
+/// index of its first segment, in program order. An operation that draws
+/// nothing starts where the next one does.
+#[must_use]
+pub fn preview_operations(
+    program: &Program,
+    setup: &Setup,
+) -> (Vec<PreviewSegment>, Vec<(String, usize)>) {
     let mut out = Vec::new();
+    let mut starts = Vec::new();
     let mut at: Option<Point3> = None;
     let push = |out: &mut Vec<PreviewSegment>, from: Option<Point3>, to: Point3, rapid: bool| {
         if let Some(from) = from {
@@ -1701,75 +1713,78 @@ pub fn preview(program: &Program, setup: &Setup) -> Vec<PreviewSegment> {
             });
         }
     };
-    for step in program.operations.iter().flat_map(|op| &op.steps) {
-        let Step::Move(motion) = step else { continue };
-        match motion {
-            Move::Rapid { to } => {
-                push(&mut out, at, *to, true);
-                at = Some(*to);
-            }
-            Move::Linear { to, .. } => {
-                push(&mut out, at, *to, false);
-                at = Some(*to);
-            }
-            Move::Arc {
-                to,
-                center,
-                direction,
-                ..
-            } => {
-                let Some(start) = at else {
+    for operation in &program.operations {
+        starts.push((operation.name.clone(), out.len()));
+        for step in &operation.steps {
+            let Step::Move(motion) = step else { continue };
+            match motion {
+                Move::Rapid { to } => {
+                    push(&mut out, at, *to, true);
                     at = Some(*to);
-                    continue;
-                };
-                let r = (start.x - center.x).hypot(start.y - center.y);
-                let a0 = (start.y - center.y).atan2(start.x - center.x);
-                let a1 = (to.y - center.y).atan2(to.x - center.x);
-                let tau = std::f64::consts::TAU;
-                let ccw = *direction == ArcDirection::CounterClockwise;
-                let mut sweep = if ccw {
-                    (a1 - a0).rem_euclid(tau)
-                } else {
-                    -(a0 - a1).rem_euclid(tau)
-                };
-                if sweep.abs() < 1e-9 {
-                    sweep = if ccw { tau } else { -tau };
                 }
-                let n = ((sweep.abs() / tau) * 48.0).ceil().max(2.0) as usize;
-                let mut prev = start;
-                for k in 1..=n {
-                    let f = k as f64 / n as f64;
-                    let a = a0 + sweep * f;
-                    let p = Point3::new(
-                        center.x + r * a.cos(),
-                        center.y + r * a.sin(),
-                        start.z + (to.z - start.z) * f,
-                    );
-                    push(&mut out, Some(prev), p, false);
-                    prev = p;
+                Move::Linear { to, .. } => {
+                    push(&mut out, at, *to, false);
+                    at = Some(*to);
                 }
-                at = Some(*to);
+                Move::Arc {
+                    to,
+                    center,
+                    direction,
+                    ..
+                } => {
+                    let Some(start) = at else {
+                        at = Some(*to);
+                        continue;
+                    };
+                    let r = (start.x - center.x).hypot(start.y - center.y);
+                    let a0 = (start.y - center.y).atan2(start.x - center.x);
+                    let a1 = (to.y - center.y).atan2(to.x - center.x);
+                    let tau = std::f64::consts::TAU;
+                    let ccw = *direction == ArcDirection::CounterClockwise;
+                    let mut sweep = if ccw {
+                        (a1 - a0).rem_euclid(tau)
+                    } else {
+                        -(a0 - a1).rem_euclid(tau)
+                    };
+                    if sweep.abs() < 1e-9 {
+                        sweep = if ccw { tau } else { -tau };
+                    }
+                    let n = ((sweep.abs() / tau) * 48.0).ceil().max(2.0) as usize;
+                    let mut prev = start;
+                    for k in 1..=n {
+                        let f = k as f64 / n as f64;
+                        let a = a0 + sweep * f;
+                        let p = Point3::new(
+                            center.x + r * a.cos(),
+                            center.y + r * a.sin(),
+                            start.z + (to.z - start.z) * f,
+                        );
+                        push(&mut out, Some(prev), p, false);
+                        prev = p;
+                    }
+                    at = Some(*to);
+                }
+                Move::Cycle(cycle) => {
+                    let Some(start) = at else { continue };
+                    for hole in &cycle.holes {
+                        let over = |z: f64| Point3::new(hole.x, hole.y, z);
+                        push(&mut out, at, over(start.z), true);
+                        push(&mut out, Some(over(start.z)), over(cycle.clearance), true);
+                        push(
+                            &mut out,
+                            Some(over(cycle.clearance)),
+                            over(cycle.bottom),
+                            false,
+                        );
+                        push(&mut out, Some(over(cycle.bottom)), over(start.z), true);
+                        at = Some(over(start.z));
+                    }
+                }
+                Move::Dwell { .. } => {}
             }
-            Move::Cycle(cycle) => {
-                let Some(start) = at else { continue };
-                for hole in &cycle.holes {
-                    let over = |z: f64| Point3::new(hole.x, hole.y, z);
-                    push(&mut out, at, over(start.z), true);
-                    push(&mut out, Some(over(start.z)), over(cycle.clearance), true);
-                    push(
-                        &mut out,
-                        Some(over(cycle.clearance)),
-                        over(cycle.bottom),
-                        false,
-                    );
-                    push(&mut out, Some(over(cycle.bottom)), over(start.z), true);
-                    at = Some(over(start.z));
-                }
-            }
-            Move::Dwell { .. } => {}
         }
     }
-    out
+    (out, starts)
 }
 
 /// Operations feature detection suggests for a setup, and why it left

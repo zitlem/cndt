@@ -20,11 +20,13 @@ import {
   type Parameter,
   request,
   state,
+  type ProjectThumbnail,
   type StepInfo,
   stepPreview,
   simulationMesh,
 } from "./api";
 import { firstSentence, matchEntries, type PaletteEntry } from "./palette";
+import { operationRange, type Toolpath, visibleMoves } from "./scrub";
 import { SketchEditor, type Tool } from "./sketch";
 import { ui as text } from "./strings";
 import { type Layer, type ViewName, Viewer } from "./viewer";
@@ -643,20 +645,41 @@ const pickPrompts: Record<string, string> = {
 /** A CAM operation waiting for its face to be picked. */
 let camPick: { setup: number; type: string } | null = null;
 
+/** The drawn toolpath and what of it is shown: one operation or all, and how many moves. */
+let shownPath: Toolpath | null = null;
+let scrubOperation: number | null = null;
+let scrubMoves: number | null = null;
+
+function drawScrubbed(): void {
+  viewer.setToolpath(shownPath ? visibleMoves(shownPath, scrubOperation, scrubMoves) : null);
+}
+
 async function showToolpath(setup: number | null): Promise<void> {
+  const same = setup !== null && setup === shownSetup;
   shownSetup = setup;
   if (setup === null) {
+    shownPath = null;
     viewer.setToolpath(null);
   } else {
     try {
-      viewer.setToolpath(await toolpathPreview(setup));
+      shownPath = await toolpathPreview(setup);
+      // Keep the scrub position across a refresh of the same setup, if it still fits.
+      if (!same || (scrubOperation !== null && scrubOperation >= shownPath.operations.length)) scrubOperation = null;
+      if (!same) scrubMoves = null;
+      drawScrubbed();
     } catch (error) {
+      shownPath = null;
       viewer.setToolpath(null);
       shownSetup = null;
       throw error;
     }
   }
-  if (current) renderSetups(current);
+  const shown = current;
+  if (shown) {
+    // Drawing a toolpath plans it afresh: its operations are no longer stale.
+    current = { ...shown, stale_operations: (await state()).stale_operations };
+    renderSetups(current);
+  }
 }
 
 /**
@@ -759,6 +782,55 @@ function showReport(report: Verification): void {
   panel.hidden = false;
 }
 
+/** The scrub controls under a setup whose toolpath is drawn: an operation and a move slider. */
+function scrubRow(path: Toolpath): HTMLElement {
+  const row = globalThis.document.createElement("div");
+  row.className = "scrub-row";
+  row.title = text.scrubTitle;
+  const which = globalThis.document.createElement("select");
+  const all = globalThis.document.createElement("option");
+  all.value = "";
+  all.textContent = text.scrubAll;
+  which.append(all);
+  path.operations.forEach((operation, index) => {
+    const option = globalThis.document.createElement("option");
+    option.value = String(index);
+    option.textContent = `${index + 1}. ${operation.name}`;
+    which.append(option);
+  });
+  which.value = scrubOperation === null ? "" : String(scrubOperation);
+  const slider = globalThis.document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.setAttribute("aria-label", text.scrubSliderLabel);
+  const label = globalThis.document.createElement("span");
+  label.className = "scrub-count";
+  const sync = (): void => {
+    const [first, end] = operationRange(path, scrubOperation);
+    const total = end - first;
+    slider.max = String(total);
+    const at = Math.min(scrubMoves ?? total, total);
+    slider.value = String(at);
+    label.textContent = text.scrubMoves(at, total);
+  };
+  sync();
+  which.addEventListener("change", () => {
+    scrubOperation = which.value === "" ? null : Number(which.value);
+    scrubMoves = null;
+    sync();
+    drawScrubbed();
+  });
+  // Dragging only redraws the toolpath: rebuilding the list would drop the slider mid-drag.
+  slider.addEventListener("input", () => {
+    const total = Number(slider.max);
+    scrubMoves = Number(slider.value) >= total ? null : Number(slider.value);
+    label.textContent = text.scrubMoves(Number(slider.value), total);
+    drawScrubbed();
+  });
+  row.append(which, slider, label);
+  return row;
+}
+
 function renderSetups(state: DocumentState): void {
   const setups = state.document.cam?.setups ?? [];
   ui.setupList.replaceChildren();
@@ -816,6 +888,13 @@ function renderSetups(state: DocumentState): void {
       const li = globalThis.document.createElement("li");
       li.textContent = operationText(op.operation);
       li.title = text.doubleClickToDelete;
+      if (state.stale_operations.includes(op.id)) {
+        const mark = globalThis.document.createElement("span");
+        mark.className = "stale";
+        mark.textContent = text.staleMarker;
+        mark.title = text.staleTitle;
+        li.append(" ", mark);
+      }
       li.addEventListener(
         "dblclick",
         guarded(async () => render(await execute("cam.remove_operation", { setup: id, operation: op.id }))),
@@ -924,7 +1003,9 @@ function renderSetups(state: DocumentState): void {
     vise.addEventListener("change", applyVise);
     along.addEventListener("change", applyVise);
     viseRow.append(text.viseLabel, vise, along);
-    item.append(head, ops, row, viseRow);
+    item.append(head, ops);
+    if (shownSetup === id && shownPath) item.append(scrubRow(shownPath));
+    item.append(row, viseRow);
     ui.setupList.append(item);
   }
 }
@@ -1401,6 +1482,26 @@ async function confirmDiscard(action: string): Promise<boolean> {
   });
 }
 
+/** After opening a project: offers the snapshot a crash left behind (decision 0026). */
+async function offerRecovery(path: string): Promise<void> {
+  const found = await request<{ available: boolean; modified: number | null }>({ method: "recovery", path });
+  if (!found.available) return;
+  const when = found.modified === null ? "earlier" : new Date(found.modified * 1000).toLocaleString();
+  const restore = await ask(text.recoveryQuestion(when), {
+    title: text.recoveryTitle,
+    kind: "warning",
+    okLabel: text.restoreRecovery,
+    cancelLabel: text.discardRecovery,
+  });
+  if (restore) render(await request<DocumentState>({ method: "open_recovery", path }));
+  else await request<unknown>({ method: "discard_recovery", path });
+}
+
+// Keep a snapshot of unsaved work, so a crash loses at most a minute.
+setInterval(() => {
+  if (current?.path && current.dirty) void request<DocumentState>({ method: "snapshot" }).catch(() => undefined);
+}, 60_000);
+
 async function saveAs(): Promise<boolean> {
   const path = await save({
     title: text.saveProject,
@@ -1460,6 +1561,37 @@ element("new").addEventListener(
   }),
 );
 
+/** Shows the picture saved in a project file and asks to go ahead. True to open it. */
+async function previewProject(path: string): Promise<boolean> {
+  const { png_base64: png } = await request<ProjectThumbnail>({ method: "project_thumbnail", path });
+  const panel = element("open-preview");
+  const image = element<HTMLImageElement>("open-preview-image");
+  image.hidden = !png;
+  if (png) image.src = `data:image/png;base64,${png}`;
+  element("open-preview-note").textContent = png ? text.previewShown : text.previewNone;
+  element("open-preview-name").textContent = path.split(/[\\/]/).pop() ?? path;
+  panel.hidden = false;
+  const okButton = element("open-preview-ok");
+  okButton.focus();
+  return new Promise<boolean>((resolve) => {
+    const finish = (answer: boolean): void => {
+      panel.hidden = true;
+      okButton.removeEventListener("click", onOk);
+      element("open-preview-cancel").removeEventListener("click", onCancel);
+      window.removeEventListener("keydown", onKey);
+      resolve(answer);
+    };
+    const onOk = (): void => finish(true);
+    const onCancel = (): void => finish(false);
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") finish(false);
+    };
+    okButton.addEventListener("click", onOk);
+    element("open-preview-cancel").addEventListener("click", onCancel);
+    window.addEventListener("keydown", onKey);
+  });
+}
+
 element("open").addEventListener(
   "click",
   guarded(async () => {
@@ -1470,8 +1602,10 @@ element("open").addEventListener(
       filters: [{ name: text.cndtProject, extensions: ["cndt"] }],
     });
     if (!path) return;
+    if (!(await previewProject(path))) return;
     if (!(await confirmDiscard(text.openAnotherProject))) return;
     render(await request<DocumentState>({ method: "open", path, discard_changes: true }));
+    await offerRecovery(path);
   }),
 );
 

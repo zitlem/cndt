@@ -35,6 +35,9 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0021](0021-revolve-feature.md) | Revolve as a solid feature | Accepted |
 | [0022](0022-circular-pattern.md) | Circular pattern | Accepted |
 | [0023](0023-mirror.md) | Mirror | Proposed |
+| [0024](0024-post-inheritance.md) | Post inheritance | Proposed |
+| [0025](0025-project-thumbnail.md) | Project thumbnail | Proposed |
+| [0026](0026-crash-recovery.md) | Crash recovery snapshots | Proposed |
 
 ## Open decisions
 

@@ -22,6 +22,8 @@ mod dxf_import;
 mod export;
 mod setup_sheet;
 mod simulate;
+mod stale;
+mod thumbnail;
 mod verify;
 
 use std::collections::BTreeMap;
@@ -61,6 +63,29 @@ pub enum Request {
     },
     /// Save to the file the document was opened from or last saved to.
     Save,
+    /// Write a crash-recovery snapshot of the unsaved document next to its
+    /// file (decision 0026). Does nothing when there are no unsaved changes
+    /// or the document has no file yet.
+    Snapshot,
+    /// Ask whether a crash-recovery snapshot exists for a project file.
+    Recovery {
+        /// The project file.
+        path: PathBuf,
+    },
+    /// Open the crash-recovery snapshot of a project file. The document keeps
+    /// the project's path and counts as having unsaved changes.
+    OpenRecovery {
+        /// The project file the snapshot belongs to.
+        path: PathBuf,
+        /// Throw away unsaved changes in the current document.
+        #[serde(default)]
+        discard_changes: bool,
+    },
+    /// Delete the crash-recovery snapshot of a project file.
+    DiscardRecovery {
+        /// The project file the snapshot belongs to.
+        path: PathBuf,
+    },
     /// Save to a new file, which becomes the document's file.
     SaveAs {
         /// The file to write.
@@ -82,6 +107,12 @@ pub enum Request {
     State,
     /// Describe every registered command and its arguments.
     Commands,
+    /// The thumbnail stored in a project file (decision 0025), without
+    /// opening it. Replies `{png_base64}`, null when the file has none.
+    ProjectThumbnail {
+        /// The project file.
+        path: PathBuf,
+    },
     /// Summarise a STEP file's topology and size without importing it.
     StepInfo {
         /// The STEP file.
@@ -423,6 +454,9 @@ struct StateView<'a> {
     /// Goes up by one on every rebuild; fetch `body_mesh` again when it
     /// changes.
     body_revision: u64,
+    /// Operations whose toolpath was planned and whose design has changed
+    /// since (architecture rule 9); plan the setup again to clear it.
+    stale_operations: Vec<u32>,
     /// How many timeline features are built, when the history is rolled
     /// back; `null` for all of them.
     rollback: Option<usize>,
@@ -486,6 +520,12 @@ pub struct Api {
     /// A view of the past, not part of the document; any change to the
     /// document brings it back to the end.
     rollback: Option<usize>,
+    /// What each operation's toolpath was last planned from, by operation id
+    /// (see [`stale`]); not part of the document.
+    planned: std::sync::Mutex<BTreeMap<u32, u64>>,
+    /// The part's geometry fingerprint, worked out when first needed after a
+    /// rebuild.
+    geometry: std::sync::Mutex<Option<Option<u64>>>,
 }
 
 impl Default for Api {
@@ -651,7 +691,7 @@ fn changed_lines(old: &str, new: &str) -> Option<Vec<usize>> {
 }
 
 /// The first bytes of a toolpath preview buffer.
-pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH1";
+pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH2";
 
 /// The first bytes of a `body_edges` buffer. Layout, little-endian: magic;
 /// u32 edge count `n`; `n` u32 point counts; then every edge's points as
@@ -679,6 +719,8 @@ impl Api {
             simulated: None,
             rollback: None,
             verified: None,
+            planned: std::sync::Mutex::new(BTreeMap::new()),
+            geometry: std::sync::Mutex::new(None),
         }
     }
 
@@ -686,6 +728,81 @@ impl Api {
     fn refresh(&mut self) {
         self.rebuilt = rebuild_to(self.session.document(), self.kernel.as_ref(), self.rollback);
         self.revision += 1;
+        if let Ok(mut geometry) = self.geometry.lock() {
+            *geometry = None;
+        }
+    }
+
+    /// Forgets what any toolpath was planned from (another document).
+    fn forget_plans(&self) {
+        if let Ok(mut planned) = self.planned.lock() {
+            planned.clear();
+        }
+    }
+
+    /// Fingerprint of the rebuilt part: its triangles and its face names.
+    fn geometry_fingerprint(&self) -> Option<u64> {
+        let mut cached = self.geometry.lock().ok()?;
+        if let Some(value) = *cached {
+            return value;
+        }
+        let value = self.rebuilt.body.as_ref().and_then(|body| {
+            let mesh = self.kernel.mesh(body, self.deflection()).ok()?;
+            let mut hash = stale::Fingerprint::new();
+            hash.bytes(&stale::mesh_fingerprint(&mesh).to_le_bytes());
+            hash.value(&self.rebuilt.faces);
+            Some(hash.finish())
+        });
+        *cached = Some(value);
+        value
+    }
+
+    /// The fingerprint of each operation of `setup` as the design stands.
+    fn operation_fingerprints(&self, setup: &cndt_model::cam::SetupEntry) -> Vec<(u32, u64)> {
+        let geometry = self.geometry_fingerprint();
+        let document = self.session.document();
+        setup
+            .setup
+            .operations
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id,
+                    stale::operation_fingerprint(document, geometry, setup, entry),
+                )
+            })
+            .collect()
+    }
+
+    /// Stamps the operations of a setup just planned.
+    fn note_planned(&self, setup: Option<u32>) {
+        let cam = self.session.document().cam();
+        let entry = match setup {
+            Some(id) => cam.setups.iter().find(|e| e.id == id),
+            None => cam.setups.first(),
+        };
+        let Some(entry) = entry else { return };
+        let stamps = self.operation_fingerprints(entry);
+        if let Ok(mut planned) = self.planned.lock() {
+            planned.extend(stamps);
+        }
+    }
+
+    /// The operations planned earlier whose design has changed since.
+    fn stale_operations(&self) -> Vec<u32> {
+        let stamped = match self.planned.lock() {
+            Ok(planned) if !planned.is_empty() => planned.clone(),
+            _ => return Vec::new(),
+        };
+        let mut stale = Vec::new();
+        for entry in &self.session.document().cam().setups {
+            for (id, now) in self.operation_fingerprints(entry) {
+                if stamped.get(&id).is_some_and(|then| *then != now) {
+                    stale.push(id);
+                }
+            }
+        }
+        stale
     }
 
     /// The rebuilt part's edges as polylines, in the layout documented on
@@ -1067,8 +1184,12 @@ impl Api {
     }
 
     /// A setup's toolpath for drawing, in model coordinates. Layout,
-    /// little-endian: [`TOOLPATH_MAGIC`]; u32 segment count; then per
-    /// segment u8 kind (0 rapid, 1 cut) and f32 x, y, z from, x, y, z to.
+    /// little-endian: [`TOOLPATH_MAGIC`]; u32 segment count `n`; u32
+    /// operation count `m`; per operation u32 index of its first segment,
+    /// u32 name length in bytes and the name as UTF-8; then `n` segments,
+    /// each u8 kind (0 rapid, 1 cut) and f32 x, y, z from, x, y, z to
+    /// (25 bytes). Operations are in program order, so a segment belongs to
+    /// the last operation that starts at or before it.
     ///
     /// # Errors
     ///
@@ -1084,14 +1205,30 @@ impl Api {
         let Some(placed) = planned.setup else {
             return Err(ApiError::new("cam", "the setup has no placement"));
         };
-        let segments = cndt_process_mill::preview(&planned.program, &placed);
-        let mut out = Vec::with_capacity(12 + segments.len() * 25);
+        self.note_planned(setup);
+        let (segments, starts) = cndt_process_mill::preview_operations(&planned.program, &placed);
+        let too_long = || ApiError::new("internal", "toolpath too long");
+        let mut out = Vec::with_capacity(16 + segments.len() * 25);
         out.extend_from_slice(TOOLPATH_MAGIC);
         out.extend_from_slice(
             &u32::try_from(segments.len())
-                .map_err(|_| ApiError::new("internal", "toolpath too long"))?
+                .map_err(|_| too_long())?
                 .to_le_bytes(),
         );
+        out.extend_from_slice(
+            &u32::try_from(starts.len())
+                .map_err(|_| too_long())?
+                .to_le_bytes(),
+        );
+        for (name, first) in &starts {
+            out.extend_from_slice(&u32::try_from(*first).map_err(|_| too_long())?.to_le_bytes());
+            out.extend_from_slice(
+                &u32::try_from(name.len())
+                    .map_err(|_| too_long())?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(name.as_bytes());
+        }
         for s in segments {
             out.push(u8::from(!s.rapid));
             for v in [s.from.x, s.from.y, s.from.z, s.to.x, s.to.y, s.to.z] {
@@ -1200,6 +1337,7 @@ impl Api {
             request,
             Request::NewDocument { .. }
                 | Request::Open { .. }
+                | Request::OpenRecovery { .. }
                 | Request::Execute { .. }
                 | Request::Undo
                 | Request::Redo
@@ -1223,6 +1361,28 @@ impl Api {
                 discard_changes,
             } => self.open(path, discard_changes),
             Request::Save => self.save(),
+            Request::Snapshot => self.snapshot(),
+            Request::Recovery { path } => {
+                let snapshot = cndt_format::recovery_path(&path);
+                let modified = std::fs::metadata(&snapshot)
+                    .and_then(|meta| meta.modified())
+                    .ok();
+                let seconds = modified
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|elapsed| elapsed.as_secs());
+                return success(serde_json::json!({
+                    "available": modified.is_some(),
+                    "modified": seconds,
+                }));
+            }
+            Request::OpenRecovery {
+                path,
+                discard_changes,
+            } => self.open_recovery(path, discard_changes),
+            Request::DiscardRecovery { path } => {
+                remove_snapshot(&path);
+                Ok(())
+            }
             Request::SaveAs { path } => {
                 // Adopt the new path only once saving to it has worked.
                 let previous = self.path.replace(path);
@@ -1464,6 +1624,17 @@ impl Api {
                     Err(e) => failure(ApiError::new("cam", e.to_string())),
                 };
             }
+            Request::ProjectThumbnail { path } => {
+                return match cndt_format::open(&path) {
+                    Ok(project) => success(serde_json::json!({
+                        "png_base64": project
+                            .extensions()
+                            .get(thumbnail::ENTRY)
+                            .map(|png| thumbnail::base64(png)),
+                    })),
+                    Err(error) => failure(error.into()),
+                };
+            }
             Request::StepInfo { path } => {
                 return match self.kernel.import_step(&path) {
                     Ok(summary) => match serde_json::to_value(summary) {
@@ -1524,6 +1695,7 @@ impl Api {
                     .unwrap_or_default(),
             }),
             body_revision: self.revision,
+            stale_operations: self.stale_operations(),
             rollback: self.rollback,
             tool_assemblies: self
                 .session
@@ -1577,19 +1749,77 @@ impl Api {
         document
             .set_name(name)
             .map_err(|error| ApiError::new("rejected", error.to_string()))?;
+        self.forget_snapshot();
         self.session = Session::new(document);
         self.path = None;
         self.extensions.clear();
+        self.forget_plans();
         Ok(())
+    }
+
+    /// The document's snapshot is deleted when its unsaved changes are
+    /// thrown away on purpose.
+    fn forget_snapshot(&self) {
+        if self.session.is_dirty()
+            && let Some(path) = &self.path
+        {
+            remove_snapshot(path);
+        }
     }
 
     fn open(&mut self, path: PathBuf, discard_changes: bool) -> Result<(), ApiError> {
         self.guard_unsaved(discard_changes)?;
         let project = cndt_format::open(&path)?;
+        self.forget_snapshot();
         self.extensions = project.extensions().clone();
         self.session = Session::new(project.document);
         self.path = Some(path);
+        self.forget_plans();
         Ok(())
+    }
+
+    fn open_recovery(&mut self, path: PathBuf, discard_changes: bool) -> Result<(), ApiError> {
+        self.guard_unsaved(discard_changes)?;
+        let snapshot = cndt_format::recovery_path(&path);
+        if !snapshot.exists() {
+            return Err(ApiError::new(
+                "no_recovery",
+                "there is no recovery snapshot for this project",
+            ));
+        }
+        let project = cndt_format::open(&snapshot)?;
+        // The snapshot being opened belongs to `path`; only a different
+        // current document's snapshot is forgotten.
+        if self.path.as_deref() != Some(path.as_path()) {
+            self.forget_snapshot();
+        }
+        self.extensions = project.extensions().clone();
+        self.session = Session::new_unsaved(project.document);
+        self.path = Some(path);
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Result<(), ApiError> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        if !self.session.is_dirty() {
+            return Ok(());
+        }
+        let mut project = Project::new(self.session.document().clone());
+        for (name, data) in &self.extensions {
+            project.set_extension(name, data.clone())?;
+        }
+        cndt_format::save(&project, &cndt_format::recovery_path(path))?;
+        Ok(())
+    }
+
+    /// The part's thumbnail (decision 0025), or `None` without a solid or
+    /// when it cannot be drawn: a picture is never worth failing a save for.
+    fn thumbnail_png(&self) -> Option<Vec<u8>> {
+        let body = self.rebuilt.body.as_ref()?;
+        let mesh = self.kernel.mesh(body, self.deflection()).ok()?;
+        thumbnail::render(&mesh)
     }
 
     fn save(&mut self) -> Result<(), ApiError> {
@@ -1599,12 +1829,25 @@ impl Api {
             .ok_or_else(|| ApiError::new("no_path", "the document has no file yet; use save_as"))?;
         let mut project = Project::new(self.session.document().clone());
         for (name, data) in &self.extensions {
-            project.set_extension(name, data.clone())?;
+            // The picture is made again from the part on every save.
+            if name != thumbnail::ENTRY {
+                project.set_extension(name, data.clone())?;
+            }
+        }
+        if let Some(png) = self.thumbnail_png() {
+            project.set_extension(thumbnail::ENTRY, png)?;
         }
         cndt_format::save(&project, &path)?;
         self.session.mark_saved();
+        remove_snapshot(&path);
         Ok(())
     }
+}
+
+/// Deletes a project's recovery snapshot. Best effort: a snapshot that cannot
+/// be removed is offered again, which is harmless.
+fn remove_snapshot(path: &Path) {
+    let _ignored = std::fs::remove_file(cndt_format::recovery_path(path));
 }
 
 /// The fields each method accepts, besides `method` itself.
@@ -1612,12 +1855,17 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("new_document", &["name", "discard_changes"]),
     ("open", &["path", "discard_changes"]),
     ("save", &[]),
+    ("snapshot", &[]),
+    ("recovery", &["path"]),
+    ("open_recovery", &["path", "discard_changes"]),
+    ("discard_recovery", &["path"]),
     ("save_as", &["path"]),
     ("execute", &["command", "args"]),
     ("undo", &[]),
     ("redo", &[]),
     ("state", &[]),
     ("commands", &[]),
+    ("project_thumbnail", &["path"]),
     ("step_info", &["path"]),
     (
         "post",
@@ -2342,6 +2590,68 @@ mod tests {
     }
 
     #[test]
+    fn saving_writes_a_thumbnail_that_can_be_read_without_opening() {
+        let path = temp_file("thumbnail.cndt");
+        let mut api = Api::new();
+        // No solid yet: nothing is stored.
+        call(&mut api, json!({"method": "save_as", "path": path}));
+        let none = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": path}),
+        );
+        assert_eq!(none["ok"], true, "{none}");
+        assert!(none["result"]["png_base64"].is_null());
+
+        let exec = |api: &mut Api, command: &str, args: Value| {
+            let reply = call(
+                api,
+                json!({"method": "execute", "command": command, "args": args}),
+            );
+            assert_eq!(reply["ok"], true, "{reply}");
+        };
+        exec(&mut api, "sketch.create", json!({"plane": "xy"}));
+        exec(
+            &mut api,
+            "sketch.add_rectangle",
+            json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 40, "y": 20}}),
+        );
+        exec(
+            &mut api,
+            "feature.extrude",
+            json!({"sketch": 0, "distance": 10}),
+        );
+        call(&mut api, json!({"method": "save"}));
+
+        let reply = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": path}),
+        );
+        let encoded = reply["result"]["png_base64"].as_str().unwrap().to_owned();
+        assert!(
+            encoded.starts_with("iVBORw0KGgo"),
+            "a PNG signature: {encoded:.20}"
+        );
+        let stored = cndt_format::open(&path).unwrap();
+        let png = stored.extensions().get(thumbnail::ENTRY).unwrap();
+        assert_eq!(thumbnail::base64(png), encoded);
+
+        // Saving again makes the same picture; opening and saving keeps one entry.
+        call(&mut api, json!({"method": "save"}));
+        let again = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": path}),
+        );
+        assert_eq!(again["result"]["png_base64"], encoded);
+        // A file that is not a project is refused with a readable error.
+        let bad = call(
+            &mut api,
+            json!({"method": "project_thumbnail", "path": "missing.cndt"}),
+        );
+        assert_eq!(bad["ok"], false);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn extension_data_survives_open_and_save() {
         let path = temp_file("extensions.cndt");
         let mut project = Project::new(Document::new("Ext"));
@@ -2431,7 +2741,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 44, "{names:?}");
+        assert_eq!(names.len(), 46, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",
