@@ -15,6 +15,7 @@ import {
   type DocumentState,
   planeLabel,
   toolpathPreview,
+  postedPreview,
   type CamOperation,
   execute,
   type Parameter,
@@ -685,7 +686,11 @@ async function showToolpath(setup: number | null): Promise<void> {
     viewer.setToolpath(null);
   } else {
     try {
-      shownPath = await toolpathPreview(setup);
+      // The plan, or the posted G-code read back and drawn (a backplot).
+      const posted = element<HTMLSelectElement>("draw-what").value === "posted";
+      shownPath = posted
+        ? await postedPreview(setup, chosenTarget.post, chosenTarget.definition)
+        : await toolpathPreview(setup);
       // Keep the scrub position across a refresh of the same setup, if it still fits.
       if (!same || (scrubOperation !== null && scrubOperation >= shownPath.operations.length)) scrubOperation = null;
       if (!same) scrubMoves = null;
@@ -1917,6 +1922,12 @@ element("cam-add-side").addEventListener(
     const angle = side === "right" ? 90 : side === "left" ? 270 : null;
     const turn = table && angle !== null ? { index: angle } : {};
     render(await execute("cam.add_setup", { side, work_offset: Math.min(setups + 1, 6), ...turn }));
+  }),
+);
+element("draw-what").addEventListener(
+  "change",
+  guarded(async () => {
+    if (shownSetup !== null) await showToolpath(shownSetup);
   }),
 );
 element("cam-post-all").addEventListener(

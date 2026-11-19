@@ -259,6 +259,39 @@ fn a_hole_in_the_right_side_on_the_b_table() {
             deepest = deepest.min(to_x);
         }
     }
+    // The posted G-code drawn back (a backplot) goes to the same depth.
+    let posted = s
+        .api
+        .posted_preview(Some(0), "mazak-smoothg", None)
+        .unwrap();
+    let count = u32::from_le_bytes(posted[8..12].try_into().unwrap()) as usize;
+    let operations = u32::from_le_bytes(posted[12..16].try_into().unwrap());
+    assert!(
+        operations >= 2,
+        "one operation per tool: spot drill and drill"
+    );
+    let first_segment = posted.len() - count * 25;
+    let mut posted_deepest = f64::INFINITY;
+    for k in 0..count {
+        let at = first_segment + k * 25;
+        let f = |i: usize| {
+            f64::from(f32::from_le_bytes(
+                posted[at + 1 + 4 * i..at + 5 + 4 * i].try_into().unwrap(),
+            ))
+        };
+        if posted[at] == 1 && (f(4) - 20.0).abs() < 1e-3 && (f(5) - 15.0).abs() < 1e-3 {
+            posted_deepest = posted_deepest.min(f(3));
+        }
+        // Nothing drawn from the unknown height after homing.
+        assert!(f(2).abs() < 200.0 && f(5).abs() < 200.0, "segment {k}");
+    }
+    assert!(
+        (posted_deepest - deepest).abs() < 1e-3,
+        "{posted_deepest} vs {deepest}"
+    );
+    let grbl = s.api.posted_preview(Some(1), "grbl", None).unwrap_err();
+    assert_eq!(grbl.kind, "read_back", "{}", grbl.message);
+
     // 12 deep to the full diameter, plus the 118° point: 3.3 / tan 59°.
     let point = 3.3 / 59f64.to_radians().tan();
     assert!(
