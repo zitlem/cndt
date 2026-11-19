@@ -12,8 +12,9 @@ use serde_json::{Map, Value};
 use crate::{
     AddBlend, AddExtrude, AddHole, AddImport, AddRevolve, AddShell, BlendKind, Command,
     CommandError, CreateSketch, DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude,
-    EditHole, EditRevolve, EditShell, EditSketch, Grid, PointRef, RemoveParameter, RenameDocument,
-    SetCircularPattern, SetMirror, SetParameter, SetPattern, SketchEdit,
+    EditHole, EditRevolve, EditShell, EditSketch, Grid, MoveFeature, PointRef, RemoveParameter,
+    RenameDocument, SetCircularPattern, SetMirror, SetParameter, SetPattern, SketchEdit,
+    SuppressFeature,
 };
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, MirrorPlane, Thread};
@@ -1184,6 +1185,51 @@ impl Registry {
                     Ok(Box::new(DeleteFeature::new(FeatureId(id(
                         args, "feature",
                     )?))))
+                },
+            },
+            CommandSpec {
+                name: "feature.suppress",
+                description: "Leave a feature out of the part, or put it back. Features that repeat a suppressed one fail with the reason.",
+                args: &[
+                    FEATURE,
+                    ArgSpec {
+                        name: "suppressed",
+                        kind: ArgKind::Boolean,
+                        required: false,
+                        description: "true to suppress (the default), false to put it back.",
+                    },
+                ],
+                build: |args| {
+                    let suppressed = if args.contains_key("suppressed") {
+                        boolean(args, "suppressed")?
+                    } else {
+                        true
+                    };
+                    Ok(Box::new(SuppressFeature::new(
+                        FeatureId(id(args, "feature")?),
+                        suppressed,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.move",
+                description: "Move a feature to another position of the timeline. Refused when it would come before the feature it repeats or the face it is sketched on.",
+                args: &[
+                    FEATURE,
+                    ArgSpec {
+                        name: "position",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The new position in the timeline, counting from 0.",
+                    },
+                ],
+                build: |args| {
+                    let to = usize::try_from(id(args, "position")?)
+                        .map_err(|_| String::from("position is too large"))?;
+                    Ok(Box::new(MoveFeature::new(
+                        FeatureId(id(args, "feature")?),
+                        to,
+                    )))
                 },
             },
             CommandSpec {
@@ -2504,6 +2550,8 @@ mod tests {
                 json!({"feature": 0, "angle": "sweep / 2", "axis_line": 3, "profiles": [[4, 5, 6, 7]]}),
             ),
             ("feature.delete", json!({"feature": 0})),
+            ("feature.suppress", json!({"feature": 0})),
+            ("feature.move", json!({"feature": 0, "position": 1})),
             ("cam.set_stock", json!({"side": 2, "top": 2, "bottom": 3})),
             ("cam.add_setup", json!({"side": "top"})),
             ("cam.remove_setup", json!({"setup": 0})),

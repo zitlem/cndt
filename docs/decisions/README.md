@@ -39,6 +39,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0025](0025-project-thumbnail.md) | Project thumbnail | Proposed |
 | [0026](0026-crash-recovery.md) | Crash recovery snapshots | Proposed |
 | [0027](0027-shell.md) | Shell | Proposed |
+| [0028](0028-suppress-and-reorder.md) | Suppress and reorder features | Proposed |
 
 ## Open decisions
 

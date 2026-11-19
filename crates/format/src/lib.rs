@@ -59,7 +59,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 23: circular pattern features (decision 0022).
 /// - 24: mirror features (decision 0023).
 /// - 25: shell features (decision 0027).
-pub const SCHEMA_VERSION: u32 = 25;
+/// - 26: suppressed features (decision 0028).
+pub const SCHEMA_VERSION: u32 = 26;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -304,6 +305,13 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 25 knew nothing of suppressed features.
+    if manifest.schema_version < 26 && document.features().iter().any(|e| e.suppressed) {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain suppressed features",
+            manifest.schema_version
+        )));
+    }
     // Version 24 knew nothing of shells.
     if manifest.schema_version < 25
         && document
@@ -1012,6 +1020,46 @@ mod tests {
         let v15 = raw_zip(&[(MANIFEST, &manifest(15)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v15)).unwrap_err();
         assert!(error.to_string().contains("tool assemblies"), "{error}");
+    }
+
+    #[test]
+    fn suppressed_features_need_version_26() {
+        use cndt_model::sketch::Point2;
+        use cndt_model::{Feature, Operation, Plane, default_profiles};
+        let mut document = Document::new("Block");
+        let sketch = document.add_sketch("Base", Plane::Xy).unwrap();
+        document
+            .edit_sketch(sketch, |s| {
+                let p: Vec<_> = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+                    .iter()
+                    .map(|&(x, y)| s.add_point(Point2::new(x, y)))
+                    .collect::<Result<_, _>>()?;
+                for i in 0..4 {
+                    s.add_line(p[i], p[(i + 1) % 4])?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let profiles = default_profiles(&document.sketch(sketch).unwrap().sketch);
+        let id = document
+            .add_feature(Feature::Extrude {
+                name: String::from("Extrude1"),
+                sketch,
+                profiles,
+                distance: 5.0,
+                distance_expression: None,
+                operation: Operation::Join,
+            })
+            .unwrap();
+        document.set_suppressed(id, true).unwrap();
+        let project = Project::new(document.clone());
+        let back = read(Cursor::new(to_bytes(&project))).unwrap();
+        assert_eq!(back, project);
+        assert!(back.document.features()[0].suppressed);
+        let json = serde_json::to_string(&document).unwrap();
+        let v25 = raw_zip(&[(MANIFEST, &manifest(25)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v25)).unwrap_err();
+        assert!(error.to_string().contains("suppressed"), "{error}");
     }
 
     #[test]

@@ -652,7 +652,11 @@ impl Document {
         self.check_feature(&feature)?;
         let id = FeatureId(self.next_feature);
         self.next_feature = self.next_feature.saturating_add(1);
-        self.features.push(FeatureEntry { id, feature });
+        self.features.push(FeatureEntry {
+            id,
+            feature,
+            suppressed: false,
+        });
         Ok(id)
     }
 
@@ -674,6 +678,89 @@ impl Document {
             .find(|e| e.id == id)
             .ok_or(ModelError::UnknownFeature(id))?;
         Ok(std::mem::replace(&mut entry.feature, feature))
+    }
+
+    /// Suppresses or unsuppresses a feature and returns whether it was
+    /// suppressed before (decision 0028).
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::UnknownFeature`].
+    pub fn set_suppressed(&mut self, id: FeatureId, suppressed: bool) -> Result<bool, ModelError> {
+        let entry = self
+            .features
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or(ModelError::UnknownFeature(id))?;
+        Ok(std::mem::replace(&mut entry.suppressed, suppressed))
+    }
+
+    /// Moves a feature to position `to` of the timeline (counting from 0
+    /// in the timeline as it is now) and returns where it was. Refused,
+    /// with nothing changed, when the order would put a feature before
+    /// the earlier feature it repeats or mirrors, or before the feature
+    /// that makes the face its sketch lies on (decision 0028).
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::UnknownFeature`], or [`ModelError::InvalidFeature`]
+    /// with the reason for a refused order.
+    pub fn move_feature(&mut self, id: FeatureId, to: usize) -> Result<usize, ModelError> {
+        let from = self
+            .features
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or(ModelError::UnknownFeature(id))?;
+        if to >= self.features.len() {
+            return Err(ModelError::InvalidFeature(format!(
+                "there is no position {to}; the timeline has {} features",
+                self.features.len()
+            )));
+        }
+        let mut order: Vec<&FeatureEntry> = self.features.iter().collect();
+        let moved = order.remove(from);
+        order.insert(to, moved);
+        self.check_order(&order)?;
+        let entry = self.features.remove(from);
+        self.features.insert(to, entry);
+        Ok(from)
+    }
+
+    fn check_order(&self, order: &[&FeatureEntry]) -> Result<(), ModelError> {
+        let position = |id: FeatureId| order.iter().position(|e| e.id == id);
+        for (at, entry) in order.iter().enumerate() {
+            let name = entry.feature.name();
+            if let Some(source) = entry.feature.source()
+                && let Some(source_at) = position(source).filter(|&p| p >= at)
+            {
+                let source_name = order[source_at].feature.name();
+                return Err(ModelError::InvalidFeature(format!(
+                    "{name} repeats {source_name}, so {source_name} must stay before it"
+                )));
+            }
+            let face = entry
+                .feature
+                .sketch()
+                .and_then(|sketch| self.sketches.get(&sketch))
+                .and_then(|record| match &record.plane {
+                    Plane::Face(face) => Some(face.as_str()),
+                    _ => None,
+                });
+            let maker = face
+                .and_then(|face| face.strip_prefix('f'))
+                .and_then(|rest| rest.split('/').next())
+                .and_then(|digits| digits.parse::<u32>().ok())
+                .map(FeatureId);
+            if let Some(maker) = maker
+                && let Some(maker_at) = position(maker).filter(|&p| p >= at)
+            {
+                let maker_name = order[maker_at].feature.name();
+                return Err(ModelError::InvalidFeature(format!(
+                    "{name} is sketched on a face of {maker_name}, so {maker_name} must stay before it"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Removes a feature, returning its timeline position and entry.

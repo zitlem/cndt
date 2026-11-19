@@ -1396,6 +1396,88 @@ impl Command for DeleteFeature {
     }
 }
 
+/// Suppresses or unsuppresses a feature (decision 0028).
+#[derive(Debug, Clone)]
+pub struct SuppressFeature {
+    id: FeatureId,
+    suppressed: bool,
+    before: Option<bool>,
+}
+
+impl SuppressFeature {
+    /// Sets whether feature `id` is suppressed.
+    #[must_use]
+    pub const fn new(id: FeatureId, suppressed: bool) -> Self {
+        Self {
+            id,
+            suppressed,
+            before: None,
+        }
+    }
+}
+
+impl Command for SuppressFeature {
+    fn name(&self) -> &'static str {
+        "feature.suppress"
+    }
+
+    fn label(&self) -> String {
+        String::from(if self.suppressed {
+            "Suppress feature"
+        } else {
+            "Unsuppress feature"
+        })
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        self.before = Some(document.set_suppressed(self.id, self.suppressed)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let before = self.before.take().ok_or(CommandError::NotApplied)?;
+        document.set_suppressed(self.id, before)?;
+        Ok(())
+    }
+}
+
+/// Moves a feature to another place in the timeline (decision 0028).
+#[derive(Debug, Clone)]
+pub struct MoveFeature {
+    id: FeatureId,
+    to: usize,
+    from: Option<usize>,
+}
+
+impl MoveFeature {
+    /// Moves feature `id` to position `to`, counting from 0.
+    #[must_use]
+    pub const fn new(id: FeatureId, to: usize) -> Self {
+        Self { id, to, from: None }
+    }
+}
+
+impl Command for MoveFeature {
+    fn name(&self) -> &'static str {
+        "feature.move"
+    }
+
+    fn label(&self) -> String {
+        String::from("Reorder feature")
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        self.from = Some(document.move_feature(self.id, self.to)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let from = self.from.take().ok_or(CommandError::NotApplied)?;
+        document.move_feature(self.id, from)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

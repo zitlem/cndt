@@ -166,3 +166,10 @@ A feature may be `{"type": "shell", "name", "faces", "thickness"}` where `faces`
 
 - **Why a version bump:** a version 24 build refuses the unknown feature type as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 24 or older file with a shell is refused as damaged.
+
+## Version 26 (2026-11-18)
+
+A timeline entry may carry `"suppressed": true`; it is left out when `false`. A suppressed feature stays in the timeline and keeps its id, but the part is built without it (decision 0028).
+
+- **Why a version bump:** a version 25 build refuses the unknown field as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 25 or older file with a suppressed entry is refused as damaged.
