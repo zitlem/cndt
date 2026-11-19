@@ -40,6 +40,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0026](0026-crash-recovery.md) | Crash recovery snapshots | Proposed |
 | [0027](0027-shell.md) | Shell | Proposed |
 | [0028](0028-suppress-and-reorder.md) | Suppress and reorder features | Proposed |
+| [0030](0030-bore-large-holes.md) | Holes larger than every drill are bored | Proposed |
 
 ## Open decisions
 
@@ -55,4 +56,3 @@ These have no record yet. Each needs one before the work that depends on it star
 ## Adding a record
 
 Copy [template.md](template.md), take the next number, and add it to the index.
-| [0030](0030-bore-large-holes.md) | Holes larger than every drill are bored | Proposed |
