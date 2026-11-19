@@ -187,3 +187,10 @@ A setup's `side` may be `turned`, with `angle` in degrees about model Y (decisio
 
 - **Why a version bump:** a version 27 build refuses the unknown side as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 27 or older file with a turned setup is refused as damaged.
+
+## Version 29 (2026-11-19)
+
+A sketch record may carry `"projections"`, a list of `{"first", "second", "entity"}`: the two face names of a projected model edge and the id of the line, arc or circle it made (decision 0033). It is left out when empty.
+
+- **Why a version bump:** a version 28 build refuses the unknown field as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 28 or older file with projections is refused as damaged.

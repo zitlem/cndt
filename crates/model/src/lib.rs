@@ -15,6 +15,7 @@ use std::fmt;
 pub mod cam;
 pub mod expr;
 mod features;
+mod projection;
 mod reference;
 pub mod threads;
 
@@ -23,8 +24,9 @@ pub use features::{
     Counterbore, EdgeTarget, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus,
     Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, ImportData, ImportFormat,
     MAX_IMPORT_BYTES, MirrorPlane, Operation, Rebuilt, ReferenceMesh, RevolveAxis, Thread,
-    default_profiles, rebuild, rebuild_to,
+    default_profiles, project_edge, rebuild, rebuild_to,
 };
+pub use projection::{ProjectedShape, Projection};
 pub use reference::{OriginPlane, Reference, ReferenceId};
 use serde::{Deserialize, Serialize};
 
@@ -154,6 +156,9 @@ pub struct SketchRecord {
     /// constraint holds the evaluated value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expressions: BTreeMap<sketch::ConstraintId, String>,
+    /// Model edges projected into the sketch (decision 0033).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projections: Vec<Projection>,
 }
 
 /// Why a change to the model was refused.
@@ -538,6 +543,36 @@ impl Document {
         self.sketches.get(&id)
     }
 
+    /// Records that a sketch entity was projected from a model edge.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::UnknownSketch`] without that sketch;
+    /// [`ModelError::InvalidFeature`] if the same edge is already projected
+    /// into it.
+    pub fn add_projection(
+        &mut self,
+        sketch: SketchId,
+        projection: Projection,
+    ) -> Result<(), ModelError> {
+        let record = self
+            .sketches
+            .get_mut(&sketch)
+            .ok_or(ModelError::UnknownSketch(sketch))?;
+        let same = |p: &Projection| {
+            (p.first == projection.first && p.second == projection.second)
+                || (p.first == projection.second && p.second == projection.first)
+        };
+        if record.projections.iter().any(same) {
+            return Err(ModelError::InvalidFeature(format!(
+                "the edge between {} and {} is already projected into {}",
+                projection.first, projection.second, record.name
+            )));
+        }
+        record.projections.push(projection);
+        Ok(())
+    }
+
     /// Adds an empty sketch. An empty name gets the next free `SketchN`.
     /// A face plane is checked for form only; whether the face exists is
     /// known at rebuild.
@@ -563,6 +598,7 @@ impl Document {
             id,
             SketchRecord {
                 expressions: BTreeMap::new(),
+                projections: Vec::new(),
                 name,
                 plane,
                 sketch: Sketch::new(),

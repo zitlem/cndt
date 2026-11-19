@@ -76,7 +76,7 @@ named below exist and pass · the page still loads headless with no `[[` marker 
       reason, undo, reorder refuses an order that puts a feature before its sketch or source.
 - [x] **B6 Reference geometry: work planes, axes, points** (PR #78; format change, not self-merged) (approved; decision first, format +1). Sketch
       on a work plane; revolve and circular pattern about a work axis. Tests.
-- [ ] **B7 Projected edges into a sketch** (approved; decision first, format +1). Project a model edge by
+- [~] **B7 Projected edges into a sketch** (PR #84) (approved; decision first, format +1). Project a model edge by
       its two-face name; a lost edge says so.
 - [ ] **B8 Splines** (approved; decision first, format +1: a new entity type, solver support, profile
       detection, kernel curve). The largest sketch item; do it last in B. Tests: closed spline profile,

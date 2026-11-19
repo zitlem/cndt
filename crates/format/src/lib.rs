@@ -62,7 +62,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 26: suppressed features (decision 0028).
 /// - 27: reference geometry (decision 0029).
 /// - 28: setups turned to any angle about model Y (decision 0032).
-pub const SCHEMA_VERSION: u32 = 28;
+/// - 29: model edges projected into sketches (decision 0033).
+pub const SCHEMA_VERSION: u32 = 29;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -366,6 +367,18 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     {
         return Err(FormatError::Corrupt(format!(
             "a version {} file cannot contain revolve features",
+            manifest.schema_version
+        )));
+    }
+    // Version 28 knew nothing of projected edges.
+    if manifest.schema_version < 29
+        && document
+            .sketches()
+            .values()
+            .any(|record| !record.projections.is_empty())
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain projected edges",
             manifest.schema_version
         )));
     }
@@ -1291,6 +1304,40 @@ mod tests {
         let v21 = raw_zip(&[(MANIFEST, &manifest(21)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v21)).unwrap_err();
         assert!(error.to_string().contains("revolve"), "{error}");
+    }
+
+    #[test]
+    fn projected_edges_need_version_29() {
+        use cndt_model::{Plane, Projection};
+        let mut document = Document::new("Projected");
+        let sketch = document.add_sketch("", Plane::Xy).unwrap();
+        let entity = document
+            .edit_sketch(sketch, |s| {
+                let a = s.add_point(cndt_model::sketch::Point2::new(0.0, 0.0))?;
+                let b = s.add_point(cndt_model::sketch::Point2::new(10.0, 0.0))?;
+                s.add_line(a, b)
+            })
+            .unwrap();
+        document
+            .add_projection(
+                sketch,
+                Projection {
+                    first: String::from("f0/end/1-2-3-4"),
+                    second: String::from("f0/side/e1"),
+                    entity,
+                },
+            )
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        assert!(json.contains("\"projections\""), "{json}");
+        let v28 = raw_zip(&[(MANIFEST, &manifest(28)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v28)).unwrap_err();
+        assert!(error.to_string().contains("projected edges"), "{error}");
+        // A sketch without projections writes none, so version 28 builds read it.
+        let plain = serde_json::to_string(&Document::new("Plain")).unwrap();
+        assert!(!plain.contains("projections"));
     }
 
     #[test]
