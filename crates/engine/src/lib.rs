@@ -13,6 +13,7 @@ mod registry;
 mod session;
 mod sketch_commands;
 mod sketch_offset;
+mod sketch_pattern;
 mod sketch_trim;
 
 use std::fmt;

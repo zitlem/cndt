@@ -1494,6 +1494,111 @@ impl Registry {
                 },
             },
             CommandSpec {
+                name: "sketch.mirror",
+                description: "Copy lines, arcs, circles and points to the other side of a line. Each copied point is held symmetric to its original about the line, so editing one moves the other. Points on the line are shared. The originals stay.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entities",
+                        kind: ArgKind::Ids,
+                        required: true,
+                        description: "The entities to copy.",
+                    },
+                    ArgSpec {
+                        name: "axis",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "The line to mirror about.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::Mirror {
+                            entities: ids(args, "entities")?,
+                            axis: EntityId(id(args, "axis")?),
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.pattern_linear",
+                description: "Repeat entities along a straight step. The count includes the original. Each copy is held equal to its original in length or radius.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entities",
+                        kind: ArgKind::Ids,
+                        required: true,
+                        description: "The entities to repeat.",
+                    },
+                    ArgSpec {
+                        name: "count",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "How many in all, the original included; 2 to 200.",
+                    },
+                    ArgSpec {
+                        name: "step",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "The offset from one copy to the next, in millimetres.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::PatternLinear {
+                            entities: ids(args, "entities")?,
+                            count: id(args, "count")?,
+                            step: position(args, "step")?,
+                        },
+                    )
+                },
+            },
+            CommandSpec {
+                name: "sketch.pattern_circular",
+                description: "Repeat entities round a centre. The count includes the original. At 360 degrees the copies are spread round the full circle; less is the turn to the last copy. Each copy is held equal to its original in length or radius.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "entities",
+                        kind: ArgKind::Ids,
+                        required: true,
+                        description: "The entities to repeat.",
+                    },
+                    ArgSpec {
+                        name: "count",
+                        kind: ArgKind::Id,
+                        required: true,
+                        description: "How many in all, the original included; 2 to 200.",
+                    },
+                    ArgSpec {
+                        name: "center",
+                        kind: ArgKind::Point,
+                        required: true,
+                        description: "The centre to turn about, in millimetres.",
+                    },
+                    ArgSpec {
+                        name: "angle",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "The turn in degrees, more than 0 and at most 360. Default 360.",
+                    },
+                ],
+                build: |args| {
+                    edit(
+                        args,
+                        SketchEdit::PatternCircular {
+                            entities: ids(args, "entities")?,
+                            count: id(args, "count")?,
+                            center: position(args, "center")?,
+                            angle: optional_number(args, "angle")?.unwrap_or(360.0),
+                        },
+                    )
+                },
+            },
+            CommandSpec {
                 name: "sketch.constrain",
                 description: "Add a constraint or dimension. Refused if it conflicts with or repeats the existing ones.",
                 args: &[
@@ -2504,6 +2609,18 @@ mod tests {
             (
                 "sketch.offset",
                 json!({"sketch": 0, "entities": [1], "distance": 2, "toward": {"x": 0, "y": 5}}),
+            ),
+            (
+                "sketch.mirror",
+                json!({"sketch": 0, "entities": [1], "axis": 4}),
+            ),
+            (
+                "sketch.pattern_linear",
+                json!({"sketch": 0, "entities": [1], "count": 3, "step": {"x": 5, "y": 0}}),
+            ),
+            (
+                "sketch.pattern_circular",
+                json!({"sketch": 0, "entities": [1], "count": 3, "center": {"x": 0, "y": 0}}),
             ),
             (
                 "sketch.constrain",
