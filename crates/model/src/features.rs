@@ -15,7 +15,7 @@ use cndt_kernel::{Blend, Body, BodyProperties, BooleanOp, Curve, Kernel, Made};
 use cndt_sketch::{EntityId, Geometry, Loop, ProfileKey, Sketch};
 use serde::{Deserialize, Serialize};
 
-use crate::{Document, Plane, SketchId};
+use crate::{Document, OriginPlane, Plane, Reference, ReferenceId, SketchId};
 
 /// Identifies a feature. Never reused after deletion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -52,6 +52,11 @@ pub enum RevolveAxis {
     SketchX,
     /// The sketch plane's Y axis through its origin.
     SketchY,
+    /// A work axis (decision 0029); it must lie in the sketch's plane.
+    Work {
+        /// The work axis.
+        reference: ReferenceId,
+    },
 }
 
 /// A solid feature.
@@ -146,6 +151,10 @@ pub enum Feature {
         /// sketch origin when left out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         center: Option<EntityId>,
+        /// A work axis to turn about instead of the sketch normal through
+        /// the centre (decision 0029). Not with a centre.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axis: Option<ReferenceId>,
     },
     /// Adds the mirror image of an earlier extrude, hole or revolve (decision
     /// 0023). The copy joins or cuts as the original does.
@@ -440,6 +449,19 @@ impl Feature {
         }
     }
 
+    /// The work axis it uses, if any (decision 0029).
+    #[must_use]
+    pub const fn reference(&self) -> Option<ReferenceId> {
+        match self {
+            Self::Revolve {
+                axis: RevolveAxis::Work { reference },
+                ..
+            } => Some(*reference),
+            Self::CircularPattern { axis, .. } => *axis,
+            _ => None,
+        }
+    }
+
     /// The sketch it uses, if any.
     #[must_use]
     pub const fn sketch(&self) -> Option<SketchId> {
@@ -551,7 +573,18 @@ impl Feature {
                 }
                 Ok(())
             }
-            Self::CircularPattern { count, angle, .. } => {
+            Self::CircularPattern {
+                count,
+                angle,
+                center,
+                axis,
+                ..
+            } => {
+                if center.is_some() && axis.is_some() {
+                    return Err(String::from(
+                        "give a centre point or a work axis to turn about, not both",
+                    ));
+                }
                 if *count < 2 {
                     return Err(String::from("a circular pattern needs at least 2 copies"));
                 }
@@ -910,7 +943,7 @@ impl Frame {
             Plane::Xy => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             Plane::Xz => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
             Plane::Yz => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
-            Plane::Face(_) => return None,
+            Plane::Face(_) | Plane::Work(_) => return None,
         };
         Some(Self {
             origin: o,
@@ -975,11 +1008,30 @@ pub enum FrameStatus {
 /// timeline. A face name must match exactly one flat face: none or several
 /// is reported, never guessed (decision 0012).
 fn resolve(
+    document: &Document,
     plane: &Plane,
     part: Option<&(Body, Names)>,
     kernel: &dyn Kernel,
 ) -> Result<Frame, String> {
     if let Some(frame) = Frame::of_origin_plane(plane) {
+        return Ok(frame);
+    }
+    if let Plane::Work(id) = plane {
+        let Some(Reference::WorkPlane { base, offset, .. }) = document.reference(*id) else {
+            return Err(format!("its work plane ({id}) does not exist"));
+        };
+        let origin_plane = match base {
+            OriginPlane::Xy => Plane::Xy,
+            OriginPlane::Xz => Plane::Xz,
+            OriginPlane::Yz => Plane::Yz,
+        };
+        let mut frame =
+            Frame::of_origin_plane(&origin_plane).ok_or_else(|| String::from("unknown plane"))?;
+        frame.origin = Point3::new(
+            frame.normal[0] * offset,
+            frame.normal[1] * offset,
+            frame.normal[2] * offset,
+        );
         return Ok(frame);
     }
     let Plane::Face(token) = plane else {
@@ -1138,8 +1190,41 @@ fn extrude_tool(
 }
 
 /// The axis in sketch coordinates: a point on it and its direction.
-fn axis_in_sketch(sketch: &Sketch, axis: RevolveAxis) -> Result<([f64; 2], [f64; 2]), String> {
+fn axis_in_sketch(
+    document: &Document,
+    sketch: &Sketch,
+    frame: &Frame,
+    axis: RevolveAxis,
+) -> Result<([f64; 2], [f64; 2]), String> {
     match axis {
+        RevolveAxis::Work { reference } => {
+            let Some(Reference::WorkAxis {
+                name,
+                through,
+                direction,
+            }) = document.reference(reference)
+            else {
+                return Err(format!("the work axis ({reference}) does not exist"));
+            };
+            let length = dot(*direction, *direction).sqrt();
+            let d = [
+                direction[0] / length,
+                direction[1] / length,
+                direction[2] / length,
+            ];
+            let o = frame.origin;
+            let from_origin = [through[0] - o.x, through[1] - o.y, through[2] - o.z];
+            if dot(d, frame.normal).abs() > 1e-9 || dot(from_origin, frame.normal).abs() > 1e-6 {
+                return Err(format!(
+                    "the work axis {name} does not lie in the sketch's plane, so a profile there cannot turn about it; \
+                     move the axis into the plane or sketch on a plane that holds it"
+                ));
+            }
+            Ok((
+                [dot(from_origin, frame.x), dot(from_origin, frame.y)],
+                [dot(d, frame.x), dot(d, frame.y)],
+            ))
+        }
         RevolveAxis::SketchX => Ok(([0.0, 0.0], [1.0, 0.0])),
         RevolveAxis::SketchY => Ok(([0.0, 0.0], [0.0, 1.0])),
         RevolveAxis::Line { entity } => {
@@ -1225,7 +1310,7 @@ fn revolve_tool(
     let record = document
         .sketch(*sketch)
         .ok_or_else(|| format!("its sketch ({sketch}) has been deleted"))?;
-    let (through, direction) = axis_in_sketch(&record.sketch, *axis)?;
+    let (through, direction) = axis_in_sketch(document, &record.sketch, frame, *axis)?;
     let length = direction[0].hypot(direction[1]);
     let side = |p: [f64; 2]| {
         (direction[0] * (p[1] - through[1]) - direction[1] * (p[0] - through[0])) / length
@@ -1684,6 +1769,7 @@ fn circular_pattern_tool(
         count,
         angle,
         center,
+        axis,
         ..
     } = feature
     else {
@@ -1708,7 +1794,18 @@ fn circular_pattern_tool(
         }
     };
     let c = original.frame.at(cx, cy);
-    let c = [c.x, c.y, c.z];
+    let mut c = [c.x, c.y, c.z];
+    let mut turn_about = original.frame.normal;
+    if let Some(reference) = axis {
+        let Some(Reference::WorkAxis {
+            through, direction, ..
+        }) = document.reference(*reference)
+        else {
+            return Err(format!("the work axis ({reference}) does not exist"));
+        };
+        c = *through;
+        turn_about = unit(*direction).ok_or_else(|| String::from("the work axis has no length"))?;
+    }
     let step = if *angle >= 360.0 - 1e-9 {
         angle / f64::from(*count)
     } else {
@@ -1716,7 +1813,7 @@ fn circular_pattern_tool(
     };
     let mut tool: Option<(Body, Names)> = None;
     for i in 1..*count {
-        let rows = axis_angle_rows(original.frame.normal, f64::from(i) * step);
+        let rows = axis_angle_rows(turn_about, f64::from(i) * step);
         let moved = kernel
             .translate(&original.body, [-c[0], -c[1], -c[2]])
             .map_err(|e| e.to_string())?;
@@ -1970,7 +2067,7 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
             let record = document
                 .sketch(sketch)
                 .ok_or_else(|| format!("its sketch ({sketch}) has been deleted"))?;
-            let placed = resolve(&record.plane, part.as_ref(), kernel);
+            let placed = resolve(document, &record.plane, part.as_ref(), kernel);
             frames.entry(sketch).or_insert_with(|| match &placed {
                 Ok(frame) => FrameStatus::Ok { frame: *frame },
                 Err(reason) => FrameStatus::Failed {
@@ -2033,12 +2130,12 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
     }
     // Sketches no feature uses yet sit on the finished part.
     for (id, record) in document.sketches() {
-        frames
-            .entry(*id)
-            .or_insert_with(|| match resolve(&record.plane, part.as_ref(), kernel) {
+        frames.entry(*id).or_insert_with(|| {
+            match resolve(document, &record.plane, part.as_ref(), kernel) {
                 Ok(frame) => FrameStatus::Ok { frame },
                 Err(reason) => FrameStatus::Failed { reason },
-            });
+            }
+        });
     }
     let properties = part
         .as_ref()
