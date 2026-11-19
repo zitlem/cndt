@@ -1,6 +1,6 @@
 # 0032: Setups turned to any angle about the upright axis
 
-- **Status:** Proposed (the owner said "continue" when offered this or Phase 4 on 2026-11-19; the owner accepts each decision in the PR review)
+- **Status:** Accepted (by agent, 2026-11-19: 3+2 positioning of the existing milling process, conservative stock; no new process or dependency; B direction still flagged for review)
 - **Date:** 2026-11-19
 
 ## Context

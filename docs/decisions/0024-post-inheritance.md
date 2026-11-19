@@ -1,6 +1,6 @@
 # 0024: Post inheritance
 
-- **Status:** Proposed
+- **Status:** Accepted (by agent, 2026-11-19: post inheritance keeps every extending post unverified (gate 2) and adds no script language)
 - **Date:** 2026-11-18
 
 ## Context

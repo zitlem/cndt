@@ -13,16 +13,14 @@ compared with `cndt commands`, the code, and `docs/`. Re-check a line against th
 
 ## How every task is done (the loop follows this)
 
-1. Work only in the worktree `/Users/ai/Desktop/CNDT-4e`. Never touch `/Users/ai/Desktop/CNDT` (another
-   session's checkout), never switch its branch.
-2. One task per iteration. New branch `v1/<slug>` from a fresh `origin/main`. Read `docs/architecture.md`
+1. Work in your own fresh worktree off `origin/main`, never in another session's checkout.
+2. One task per iteration. New branch `loop/<task-id>-<slug>` from a fresh `origin/main`. Read `docs/architecture.md`
    and the decisions the task touches first.
 3. A decision record `docs/decisions/00NN-*.md` first when the task adds a feature type or changes the
-   file format (the next free number; check `origin/main` and open PRs). The owner approved the tasks
-   marked "approved" below, but wants to accept each decision in the PR review: write every new record
-   as **Proposed** and say so in the PR body. Build on it in the same PR anyway (the owner's instruction
-   of 2026-11-18). Only decision 0022 (circular pattern) is **Accepted**, by the owner on 2026-11-18.
-   Tasks marked `[!]` get no record and no code.
+   file format (the next free number; check `origin/main` and open PRs). Unless it touches an owner-only
+   area (see "Delegation" in `docs/decisions/README.md`), mark it **Accepted (by agent, with a one-line
+   reason)** and build on it. If it is owner-only, mark it Proposed, move the task under `[!] Needs owner`
+   and pick another. Tasks marked `[!]` get no record and no code.
 4. File format changes take the next version after the highest on `origin/main` **and** in open PRs,
    add a section to `docs/decisions/0009-project-file-format.md`, and refuse older builds' files with
    the update message (see how version 22 was done).

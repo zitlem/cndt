@@ -1,6 +1,6 @@
 # 0027: Shell
 
-- **Status:** Proposed
+- **Status:** Accepted (by agent, 2026-11-19: adds a feature type on the existing kernel trait; failures explain themselves)
 - **Date:** 2026-11-18
 
 ## Context
