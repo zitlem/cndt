@@ -10,10 +10,10 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    AddBlend, AddExtrude, AddHole, AddImport, AddRevolve, BlendKind, Command, CommandError,
-    CreateSketch, DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude, EditHole,
-    EditRevolve, EditSketch, Grid, PointRef, RemoveParameter, RenameDocument, SetCircularPattern,
-    SetMirror, SetParameter, SetPattern, SketchEdit,
+    AddBlend, AddExtrude, AddHole, AddImport, AddRevolve, AddShell, BlendKind, Command,
+    CommandError, CreateSketch, DeleteFeature, DeleteSketch, EditBlend, EditCam, EditExtrude,
+    EditHole, EditRevolve, EditShell, EditSketch, Grid, PointRef, RemoveParameter, RenameDocument,
+    SetCircularPattern, SetMirror, SetParameter, SetPattern, SketchEdit,
 };
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, MirrorPlane, Thread};
@@ -484,6 +484,67 @@ impl Registry {
                     Ok(Box::new(EditBlend::new(
                         FeatureId(id(args, "feature")?),
                         number(args, "size")?,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.shell",
+                description: "Hollow the part inward, leaving the given faces open.",
+                args: &[
+                    ArgSpec {
+                        name: "faces",
+                        kind: ArgKind::Faces,
+                        required: true,
+                        description: "The faces left open, by name.",
+                    },
+                    ArgSpec {
+                        name: "thickness",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "The wall's thickness in millimetres.",
+                    },
+                    ArgSpec {
+                        name: "name",
+                        kind: ArgKind::Text,
+                        required: false,
+                        description: "Defaults to the next ShellN.",
+                    },
+                ],
+                build: |args| {
+                    let faces: Vec<String> =
+                        serde_json::from_value(args.get("faces").cloned().unwrap_or_default())
+                            .map_err(|_| String::from("\"faces\" must be a list of face names"))?;
+                    if faces.is_empty() {
+                        return Err(String::from("give the \"faces\" to leave open"));
+                    }
+                    let name = if args.contains_key("name") {
+                        Some(text(args, "name")?)
+                    } else {
+                        None
+                    };
+                    Ok(Box::new(AddShell::new(
+                        faces,
+                        number(args, "thickness")?,
+                        name,
+                    )))
+                },
+            },
+            CommandSpec {
+                name: "feature.edit_shell",
+                description: "Change a shell's wall thickness.",
+                args: &[
+                    FEATURE,
+                    ArgSpec {
+                        name: "thickness",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres.",
+                    },
+                ],
+                build: |args| {
+                    Ok(Box::new(EditShell::new(
+                        FeatureId(id(args, "feature")?),
+                        number(args, "thickness")?,
                     )))
                 },
             },
@@ -2486,6 +2547,11 @@ mod tests {
                 json!({"edges": [["f0/side/e4", "f0/side/e5"]], "radius": 3}),
             ),
             ("feature.edit_blend", json!({"feature": 3, "size": 1})),
+            (
+                "feature.shell",
+                json!({"faces": ["f0/end/4-5-6-7"], "thickness": 1.5}),
+            ),
+            ("feature.edit_shell", json!({"feature": 3, "thickness": 2})),
             (
                 "cam.set_vise",
                 json!({"setup": 0, "grip": 6, "along": "y", "jaw": 20}),

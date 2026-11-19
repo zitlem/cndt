@@ -33,6 +33,7 @@
 #include <TopoDS_Solid.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <GeomAbs_CurveType.hxx>
@@ -1158,6 +1159,120 @@ int cndt_occt_blend(
                 record->pairs.push_back(base + static_cast<std::uint32_t>(k));
                 record->pairs.push_back(f);
             }
+        }
+        auto made = std::make_unique<cndt_shape>();
+        made->shape = result;
+        *out = made.release();
+        *history = record.release();
+        return kOk;
+    } catch (const Standard_Failure& failure) {
+        set_error(err, err_len, failure.GetMessageString());
+        return kKernelError;
+    } catch (const std::exception& exception) {
+        set_error(err, err_len, exception.what());
+        return kKernelError;
+    } catch (...) {
+        set_error(err, err_len, "unknown C++ exception");
+        return kKernelError;
+    }
+}
+
+// Hollows `shape` inward to a wall of `thickness`, leaving the listed faces
+// (face-map numbers) open.
+//
+// History sources: face `i` of the input is `i`; the inner wall made from
+// face `i` is `faces + i`; the rim that closes the wall at open face `i` is
+// `2 * faces + i`.
+int cndt_occt_shell(
+    const cndt_shape* shape,
+    const std::uint32_t* open_list,
+    std::size_t open_count,
+    double thickness,
+    cndt_shape** out,
+    cndt_history** history,
+    char* err,
+    std::size_t err_len) {
+    if (shape == nullptr || open_list == nullptr || open_count == 0 || out == nullptr ||
+        history == nullptr || !(thickness > 0.0)) {
+        set_error(err, err_len, "bad argument");
+        return kBadArgument;
+    }
+    *out = nullptr;
+    *history = nullptr;
+    try {
+        silence_console_output();
+        TopTools_IndexedMapOfShape inputs;
+        TopExp::MapShapes(shape->shape, TopAbs_FACE, inputs);
+        TopTools_ListOfShape closing;
+        std::vector<TopoDS_Shape> opened;
+        for (std::size_t k = 0; k < open_count; ++k) {
+            const int f = static_cast<int>(open_list[k]) + 1;
+            if (f < 1 || f > inputs.Extent()) {
+                set_error(err, err_len, "no such face");
+                return kBadArgument;
+            }
+            closing.Append(inputs(f));
+            opened.push_back(inputs(f));
+        }
+        if (open_count >= static_cast<std::size_t>(inputs.Extent())) {
+            set_error(err, err_len, "at least one face must stay closed");
+            return kBadArgument;
+        }
+        BRepOffsetAPI_MakeThickSolid shell;
+        shell.MakeThickSolidByJoin(shape->shape, closing, -thickness, 1e-4, BRepOffset_Skin,
+                                   Standard_False, Standard_False, GeomAbs_Intersection);
+        if (!shell.IsDone()) {
+            set_error(err, err_len, "the wall could not be made; it may be thicker than the part allows");
+            return kModelFailed;
+        }
+        const TopoDS_Shape result = shell.Shape();
+        if (!is_valid_solid(result, err, err_len)) {
+            set_error(err, err_len, "the shell gave an invalid solid; try a thinner wall, or open a different face");
+            return kModelFailed;
+        }
+        TopTools_IndexedMapOfShape map;
+        TopExp::MapShapes(result, TopAbs_FACE, map);
+        auto record = std::make_unique<cndt_history>();
+        const auto base = static_cast<std::uint32_t>(inputs.Extent());
+        std::size_t inner_walls = 0;
+        for (int i = 1; i <= inputs.Extent(); ++i) {
+            const TopoDS_Shape& face = inputs(i);
+            const auto id = static_cast<std::uint32_t>(i - 1);
+            bool is_open = false;
+            for (const TopoDS_Shape& o : opened) {
+                is_open = is_open || o.IsSame(face);
+            }
+            // A kept face stays the outer wall; an open face stays as the rim
+            // round the opening.
+            std::vector<std::uint32_t> targets;
+            const int same = map.FindIndex(face);
+            if (same > 0) {
+                targets.push_back(static_cast<std::uint32_t>(same - 1));
+            } else if (!shell.IsDeleted(face)) {
+                targets = faces_of(shell.Modified(face), map);
+            }
+            for (const std::uint32_t f : targets) {
+                record->pairs.push_back((is_open ? 2 * base : 0) + id);
+                record->pairs.push_back(f);
+            }
+            if (!is_open) {
+                // A face whose inner wall vanished (a small chamfer inside a
+                // thick wall) is fine; a part with no inner wall at all is not.
+                const std::vector<std::uint32_t> inner = faces_of(shell.Generated(face), map);
+                inner_walls += inner.size();
+                for (const std::uint32_t f : inner) {
+                    record->pairs.push_back(base + id);
+                    record->pairs.push_back(f);
+                }
+            }
+        }
+        GProp_GProps before;
+        GProp_GProps after;
+        BRepGProp::VolumeProperties(shape->shape, before);
+        BRepGProp::VolumeProperties(result, after);
+        if (inner_walls == 0 || !(after.Mass() > 0.0) || !(after.Mass() < before.Mass())) {
+            set_error(err, err_len, "the wall is thicker than the part allows");
+            return kModelFailed;
         }
         auto made = std::make_unique<cndt_shape>();
         made->shape = result;

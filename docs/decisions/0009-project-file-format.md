@@ -159,3 +159,10 @@ A feature may be `{"type": "mirror", "name", "feature", "plane"}` where `plane` 
 
 - **Why a version bump:** a version 23 build refuses the unknown feature type as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 23 or older file with a mirror is refused as damaged.
+
+## Version 25 (2026-11-18)
+
+A feature may be `{"type": "shell", "name", "faces", "thickness"}` where `faces` is a list of face names left open and `thickness` the wall in millimetres (decision 0027).
+
+- **Why a version bump:** a version 24 build refuses the unknown feature type as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 24 or older file with a shell is refused as damaged.

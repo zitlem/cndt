@@ -144,6 +144,16 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn cndt_occt_shell(
+        shape: *const ShapeHandle,
+        open_faces: *const u32,
+        open_count: usize,
+        thickness: f64,
+        out: *mut *mut ShapeHandle,
+        history: *mut *mut HistoryHandle,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn cndt_occt_translate(
         shape: *const ShapeHandle,
         dx: f64,
@@ -636,6 +646,44 @@ pub fn blend(shape: &Shape, edges: &[u32], blend: Blend) -> Result<Made, OcctErr
             edges.len(),
             kind,
             size,
+            &mut out,
+            &mut history,
+            err.as_mut_ptr().cast::<c_char>(),
+            err.len(),
+        )
+    };
+    if code != status::OK {
+        return Err(status_error(code, &err));
+    }
+    // SAFETY: the call succeeded, so both handles are ours; the lock is held.
+    unsafe { take(out, history) }
+}
+
+/// Hollows a solid inward to a wall of `thickness`, leaving the faces in
+/// `open_faces` (face numbers) open.
+///
+/// History sources: face `i` of the input is `i`; the inner wall made from
+/// face `i` is `faces + i`; the rim closing the wall at open face `i` is
+/// `2 * faces + i`.
+///
+/// # Errors
+///
+/// [`OcctError::BadArgument`] for no open face, every face open, or an
+/// unknown face; [`OcctError::ModelFailed`] if the wall cannot be made.
+pub fn shell(shape: &Shape, open_faces: &[u32], thickness: f64) -> Result<Made, OcctError> {
+    let mut out: *mut ShapeHandle = std::ptr::null_mut();
+    let mut history: *mut HistoryHandle = std::ptr::null_mut();
+    let mut err = [0_u8; ERROR_BUFFER];
+    let _guard = lock();
+    // SAFETY: `shape` is live; `open_faces` holds `open_faces.len()` values;
+    // the out-pointers are valid locals; `err` is writable for `err.len()`
+    // bytes; the shim catches exceptions.
+    let code = unsafe {
+        cndt_occt_shell(
+            shape.ptr.as_ptr(),
+            open_faces.as_ptr(),
+            open_faces.len(),
+            thickness,
             &mut out,
             &mut history,
             err.as_mut_ptr().cast::<c_char>(),
@@ -1524,6 +1572,33 @@ mod tests {
         sources.sort_unstable();
         assert_eq!(sources, [0, 1, 2], "{:?}", made.history);
         assert_eq!(props.faces, 3);
+    }
+
+    #[test]
+    fn shell_a_block_open_at_the_top() {
+        let block = extrude(&[rectangle(20.0, 10.0)], Z, 5.0).unwrap();
+        let (_, top) = *block.history.iter().find(|p| p.0 == 5).unwrap();
+        let hollow = shell(&block.shape, &[top], 1.0).unwrap();
+        let p = properties(&hollow.shape).unwrap();
+        // A box 20 × 10 × 5 less the cavity 18 × 8 × 4 open at the top.
+        assert!(
+            (p.volume - (1000.0 - 18.0 * 8.0 * 4.0)).abs() < 1e-3,
+            "{}",
+            p.volume
+        );
+        // 5 outer faces, 5 inner faces and the rim round the opening.
+        assert_eq!(p.faces, 11, "{:?}", hollow.history);
+        assert_eq!(hollow.history.len(), 11);
+        println!("{:?}", hollow.history);
+        // Face `top` of 6 is the rim, traced as source `2 * 6 + top`.
+        assert!(
+            hollow.history.contains(&(12 + top, top)),
+            "{:?}",
+            hollow.history
+        );
+        let error = shell(&block.shape, &[top], 6.0).unwrap_err();
+        assert!(error.to_string().contains("thicker"), "{error}");
+        assert!(shell(&block.shape, &[], 1.0).is_err());
     }
 
     #[test]

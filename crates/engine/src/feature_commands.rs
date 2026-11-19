@@ -882,6 +882,118 @@ impl Command for EditBlend {
     }
 }
 
+/// Adds a shell at the end of the timeline (decision 0027).
+#[derive(Debug, Clone)]
+pub struct AddShell {
+    faces: Vec<String>,
+    thickness: f64,
+    name: Option<String>,
+    created: Option<FeatureId>,
+    undone: Option<(usize, FeatureEntry)>,
+}
+
+impl AddShell {
+    /// Hollows the part to a wall of `thickness` millimetres, leaving
+    /// `faces` open.
+    #[must_use]
+    pub const fn new(faces: Vec<String>, thickness: f64, name: Option<String>) -> Self {
+        Self {
+            faces,
+            thickness,
+            name,
+            created: None,
+            undone: None,
+        }
+    }
+}
+
+impl Command for AddShell {
+    fn name(&self) -> &'static str {
+        "feature.shell"
+    }
+
+    fn label(&self) -> String {
+        String::from("Shell")
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        if let Some((index, entry)) = self.undone.take() {
+            document.restore_feature(index, entry);
+            return Ok(());
+        }
+        let name = self
+            .name
+            .clone()
+            .unwrap_or_else(|| document.next_feature_name("Shell"));
+        self.created = Some(document.add_feature(Feature::Shell {
+            name,
+            faces: self.faces.clone(),
+            thickness: self.thickness,
+        })?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let id = self.created.ok_or(CommandError::NotApplied)?;
+        self.undone = Some(document.remove_feature(id)?);
+        Ok(())
+    }
+}
+
+/// Changes a shell's wall thickness.
+#[derive(Debug, Clone)]
+pub struct EditShell {
+    id: FeatureId,
+    thickness: f64,
+    previous: Option<Feature>,
+}
+
+impl EditShell {
+    /// Gives shell feature `id` a new wall thickness.
+    #[must_use]
+    pub const fn new(id: FeatureId, thickness: f64) -> Self {
+        Self {
+            id,
+            thickness,
+            previous: None,
+        }
+    }
+}
+
+impl Command for EditShell {
+    fn name(&self) -> &'static str {
+        "feature.edit_shell"
+    }
+
+    fn label(&self) -> String {
+        String::from("Edit shell")
+    }
+
+    fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let mut feature = document
+            .feature(self.id)
+            .cloned()
+            .ok_or(ModelError::UnknownFeature(self.id))?;
+        match &mut feature {
+            Feature::Shell { thickness, .. } => *thickness = self.thickness,
+            _ => {
+                return Err(ModelError::InvalidFeature(String::from(
+                    "that feature is not a shell",
+                ))
+                .into());
+            }
+        }
+        self.previous = Some(document.replace_feature(self.id, feature)?);
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let previous = self.previous.take().ok_or(CommandError::NotApplied)?;
+        document.replace_feature(self.id, previous)?;
+        Ok(())
+    }
+}
+
 /// A pattern's grid: copies and spacing along sketch X and Y.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Grid {
