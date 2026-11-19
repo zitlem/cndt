@@ -246,6 +246,10 @@ pub enum Side {
     Left,
     /// The right (model +X) faces the spindle, turned a quarter about Y.
     Right,
+    /// Turned about model Y by the setup's `angle` (decision 0032): a face
+    /// at any angle about the upright axis faces the spindle, as a B table
+    /// turns it. 0° is the top, 90° the right, 270° the left.
+    Turned,
 }
 
 impl Side {
@@ -259,6 +263,7 @@ impl Side {
             Self::Back => "back",
             Self::Left => "left",
             Self::Right => "right",
+            Self::Turned => "turned",
         }
     }
 
@@ -368,6 +373,10 @@ pub struct SetupDef {
     /// part is clamped by hand for this setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<f64>,
+    /// For a turned setup: the angle in degrees the part is turned about
+    /// model Y to bring its face to the spindle (decision 0032).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f64>,
     /// The vise holding the part, so the simulation can check that no tool
     /// touches its jaws (decision 0020). `None`: no fixture is checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -494,6 +503,8 @@ pub enum CamEdit {
         flip_about: FlipAxis,
         /// The B angle, when the table turns the part to the spindle.
         index: Option<f64>,
+        /// For a turned setup: the angle about model Y (decision 0032).
+        angle: Option<f64>,
     },
     /// Removes a setup and its operations.
     RemoveSetup(u32),
@@ -572,6 +583,7 @@ impl Cam {
                 work_offset,
                 flip_about,
                 index,
+                angle,
             } => {
                 if self.tools.is_empty() {
                     self.tools = default_tools();
@@ -591,6 +603,7 @@ impl Cam {
                         work_offset,
                         flip_about,
                         index,
+                        angle,
                         vise: None,
                         operations: Vec::new(),
                     },
@@ -691,6 +704,27 @@ impl Cam {
             }
         }
         for entry in &self.setups {
+            let def = &entry.setup;
+            match (def.side, def.angle) {
+                (Side::Turned, Some(a)) if a.is_finite() && (-360.0..=360.0).contains(&a) => {}
+                (Side::Turned, Some(a)) => {
+                    return Err(format!(
+                        "{}: the turn must be a number of degrees from -360 to 360, not {a}",
+                        def.name
+                    ));
+                }
+                (Side::Turned, None) => {
+                    return Err(format!("{}: a turned setup needs its angle", def.name));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "{}: only a turned setup has an angle; this one is on the {}",
+                        def.name,
+                        def.side.name()
+                    ));
+                }
+                (_, None) => {}
+            }
             if let Some(vise) = &entry.setup.vise {
                 vise.check()
                     .map_err(|e| format!("{}: {e}", entry.setup.name))?;
@@ -788,6 +822,7 @@ mod tests {
                 work_offset: 1,
                 flip_about: FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -819,6 +854,7 @@ mod tests {
                     work_offset: 7,
                     flip_about: FlipAxis::X,
                     index: None,
+                    angle: None,
                 },
                 "work offset",
             ),
@@ -829,6 +865,7 @@ mod tests {
                     work_offset: 2,
                     flip_about: FlipAxis::Y,
                     index: Some(360.0),
+                    angle: None,
                 },
                 "B angle",
             ),

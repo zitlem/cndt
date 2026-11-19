@@ -152,7 +152,7 @@ impl Api {
         // A side setup is simulated on the part turned so that side is on
         // top (decision 0019).
         let world =
-            cndt_process_mill::world(document, &self.rebuilt, self.kernel.as_ref(), placed.side)
+            cndt_process_mill::world(document, &self.rebuilt, self.kernel.as_ref(), placed.turn)
                 .map_err(cam_error)?;
         let stock = cndt_process_mill::stock_box(&world.document, &world.rebuilt, &placed)
             .map_err(cam_error)?;
@@ -198,12 +198,15 @@ impl Api {
         let to_program = |z: f64| placed.program_point(Point3::new(0.0, 0.0, z)).z;
         let to_model = |z: f64| placed.model_point(Point3::new(0.0, 0.0, z)).z;
         let from_above = placed.side != Side::Bottom;
-        let placement = placement_of(&placed)
-            .ok_or_else(|| ApiError::new("internal", "the setup is not a quarter turn"))?;
+        // A setup at an angle that is not a quarter turn (decision 0032)
+        // has no placement on the carried columns: it starts from the box
+        // round the turned raw stock, and leaves the carried stock as it
+        // was. It can show more material than there is, never less.
+        let placement = placement_of(&placed);
         // The real stock in program coordinates (a side setup's planning
         // box is larger, conservatively): where the jaws grip it, and where
         // the grid's margin holds no stock.
-        let exact = {
+        let exact = if let Some(placement) = &placement {
             let (min, max) = self.model_stock()?;
             let corners = (0..8).map(|k| {
                 placement.program([
@@ -220,6 +223,11 @@ impl Api {
                         [0, 1, 2].map(|a| hi[a].max(p[a])),
                     )
                 },
+            )
+        } else {
+            (
+                [stock.min.x, stock.min.y, stock.min.z],
+                [stock.max.x, stock.max.y, stock.max.z],
             )
         };
         let on_stock = |c: usize| {
@@ -262,8 +270,17 @@ impl Api {
                     .collect()
             }
         };
-        let (heights, floors): (Vec<f64>, Vec<f64>) = match carry {
-            Carry::Dexels(dexels) => {
+        let (heights, floors): (Vec<f64>, Vec<f64>) = match (&placement, &mut *carry) {
+            (None, _) => (0..grid.len())
+                .map(|c| {
+                    if on_stock(c) {
+                        (stock.max.z, stock.min.z)
+                    } else {
+                        (stock.min.z, stock.min.z)
+                    }
+                })
+                .unzip(),
+            (Some(placement), Carry::Dexels(dexels)) => {
                 if dexels.is_none() {
                     let (min, max) = self.model_stock()?;
                     *dexels = Some(cndt_sim::Dexels::block(min, max, cell));
@@ -271,9 +288,9 @@ impl Api {
                 let Some(dexels) = dexels.as_ref() else {
                     return Err(ApiError::new("internal", "no stock to simulate"));
                 };
-                dexels.height_map(&placement, &grid, stock.min.z)
+                dexels.height_map(placement, &grid, stock.min.z)
             }
-            Carry::Columns(columns) => {
+            (Some(_), Carry::Columns(columns)) => {
                 if columns.as_ref().is_none_or(|(g, _)| *g != grid) {
                     let (low, high) = if from_above {
                         (to_model(stock.min.z), to_model(stock.max.z))
@@ -345,10 +362,12 @@ impl Api {
         let report = cndt_sim::simulate(&planned.program, &tools, &input)
             .map_err(|e| ApiError::new("simulation", e.to_string()))?;
         // What this setup left, back into the carried stock.
-        match carry {
-            Carry::Dexels(Some(dexels)) => dexels.cut(&placement, &grid, &report.heights),
-            Carry::Dexels(None) => {}
-            Carry::Columns(columns) => {
+        match (&placement, carry) {
+            (None, _) | (Some(_), Carry::Dexels(None)) => {}
+            (Some(placement), Carry::Dexels(Some(dexels))) => {
+                dexels.cut(placement, &grid, &report.heights);
+            }
+            (Some(_), Carry::Columns(columns)) => {
                 if let Some((_, carried)) = columns.as_mut() {
                     for (c, h) in report.heights.iter().enumerate() {
                         let column = &mut carried[column_of(c)];

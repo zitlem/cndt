@@ -180,3 +180,10 @@ The document may carry `"references"`, a map from id to reference geometry (`{"t
 
 - **Why a version bump:** a version 26 build refuses the unknown fields and values as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 26 or older file with reference geometry is refused as damaged.
+
+## Version 28 (2026-11-19)
+
+A setup's `side` may be `turned`, with `angle` in degrees about model Y (decision 0032). Only a turned setup has an angle, and it must have one, from -360 to 360.
+
+- **Why a version bump:** a version 27 build refuses the unknown side as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 27 or older file with a turned setup is refused as damaged.

@@ -5,6 +5,7 @@
 //! and post-output setting. See `docs/architecture.md`, rules 10 and 11.
 
 pub mod stl;
+pub mod trig;
 
 use serde::{Deserialize, Serialize};
 

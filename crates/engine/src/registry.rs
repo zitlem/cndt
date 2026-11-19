@@ -756,6 +756,12 @@ impl Registry {
                         description: "B angle in degrees (0 to under 360) when the rotary table, not the operator, turns this side to the spindle.",
                     },
                     ArgSpec {
+                        name: "angle",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "For side turned: degrees the part is turned about model Y to bring the face to the spindle (0 the top, 90 the right).",
+                    },
+                    ArgSpec {
                         name: "work_offset",
                         kind: ArgKind::Id,
                         required: false,
@@ -800,6 +806,7 @@ impl Registry {
                                 cndt_model::cam::FlipAxis::X
                             },
                             index: optional_number(args, "index")?,
+                            angle: optional_number(args, "angle")?,
                         },
                     )
                 },
@@ -2329,8 +2336,9 @@ fn side(args: &Map<String, Value>) -> Result<cndt_model::cam::Side, String> {
         "back" => Ok(cndt_model::cam::Side::Back),
         "left" => Ok(cndt_model::cam::Side::Left),
         "right" => Ok(cndt_model::cam::Side::Right),
+        "turned" => Ok(cndt_model::cam::Side::Turned),
         other => Err(format!(
-            "unknown side {other:?}; use top, bottom, front, back, left or right"
+            "unknown side {other:?}; use top, bottom, front, back, left, right or turned"
         )),
     }
 }

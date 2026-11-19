@@ -1917,11 +1917,20 @@ element("cam-add-side").addEventListener(
     const table = element<HTMLSelectElement>("cam-turn").value === "table";
     const side = element<HTMLSelectElement>("cam-side").value;
     // The B table turns the part about its upright axis, model Y, so it
-    // reaches the left and right sides; the front and back are turned by
-    // hand. B90 for the right is assumed, and every program says to check it.
-    const angle = side === "right" ? 90 : side === "left" ? 270 : null;
-    const turn = table && angle !== null ? { index: angle } : {};
-    render(await execute("cam.add_setup", { side, work_offset: Math.min(setups + 1, 6), ...turn }));
+    // reaches the left and right sides, and a face at any angle about Y
+    // (decision 0032); the front and back are turned by hand. B90 for the
+    // right is assumed, and every program says to check it.
+    const turned = side === "turned" ? Number(element<HTMLInputElement>("cam-angle").value) : null;
+    const angle = side === "right" ? 90 : side === "left" ? 270 : turned;
+    const turn = table && angle !== null ? { index: ((angle % 360) + 360) % 360 } : {};
+    render(
+      await execute("cam.add_setup", {
+        side,
+        work_offset: Math.min(setups + 1, 6),
+        ...turn,
+        ...(turned === null ? {} : { angle: turned }),
+      }),
+    );
   }),
 );
 element("draw-what").addEventListener(
@@ -1930,6 +1939,9 @@ element("draw-what").addEventListener(
     if (shownSetup !== null) await showToolpath(shownSetup);
   }),
 );
+element("cam-side").addEventListener("change", () => {
+  element("cam-angle-field").hidden = element<HTMLSelectElement>("cam-side").value !== "turned";
+});
 element("cam-post-all").addEventListener(
   "click",
   guarded(async () => {
