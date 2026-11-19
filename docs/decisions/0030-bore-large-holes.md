@@ -1,6 +1,6 @@
 # 0030: Holes larger than every drill are bored
 
-- **Status:** Proposed (TODO item C2, approved by the owner; the owner accepts each decision in the PR review)
+- **Status:** Accepted (by agent, 2026-11-19: adds safety fixes found by the simulation and weakens no check; its G-code needs golden-file review)
 - **Date:** 2026-11-19
 
 ## Context

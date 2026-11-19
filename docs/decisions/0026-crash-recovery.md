@@ -1,6 +1,6 @@
 # 0026: Crash recovery snapshots
 
-- **Status:** Proposed
+- **Status:** Accepted (by agent, 2026-11-19: snapshots are ordinary project files via the existing atomic save; no format change)
 - **Date:** 2026-11-18
 
 ## Context

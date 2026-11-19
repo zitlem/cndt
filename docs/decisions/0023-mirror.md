@@ -1,6 +1,6 @@
 # 0023: Mirror
 
-- **Status:** Proposed
+- **Status:** Accepted (by agent, 2026-11-19: adds a feature type to the CAD timeline; no new dependency, rule or file-format risk beyond the existing feature pattern)
 - **Date:** 2026-11-18
 
 ## Context
