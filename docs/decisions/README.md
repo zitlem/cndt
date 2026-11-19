@@ -55,3 +55,4 @@ These have no record yet. Each needs one before the work that depends on it star
 ## Adding a record
 
 Copy [template.md](template.md), take the next number, and add it to the index.
+| [0030](0030-bore-large-holes.md) | Holes larger than every drill are bored | Proposed |

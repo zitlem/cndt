@@ -415,7 +415,19 @@ pub fn hole_program(
     setup: &Setup,
     library: &ToolLibrary,
     name: &str,
+    faced: bool,
 ) -> Result<Planned, CamError> {
+    // Where milled holes (counterbores, bores) start: on their face when an
+    // earlier operation in the setup faced the stock, else above the raw
+    // stock, so the tool never rapids into it.
+    let raw_top = if faced {
+        None
+    } else {
+        document.cam().stock.map(|s| match setup.side {
+            Side::Bottom => s.bottom,
+            Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => s.top,
+        })
+    };
     let bounds = rebuilt.properties.ok_or(CamError::NoPart)?.bounds;
     // The far side of the part, in program Z.
     let bottom = round3(-(bounds.max.z - bounds.min.z));
@@ -484,6 +496,13 @@ pub fn hole_program(
     let mut operations = Vec::new();
 
     // Spot every hole: to a depth that leaves a small chamfer on the drill.
+    // The largest drill there is: holes beyond it are bored.
+    let largest_drill = library
+        .tools
+        .values()
+        .filter(|t| t.kind == ToolKind::Drill)
+        .map(|t| t.diameter)
+        .fold(0.0, f64::max);
     let spot = library
         .find(|t| t.kind == ToolKind::SpotDrill)
         .ok_or_else(|| CamError::NoTool(String::from("spot drill")))?;
@@ -494,7 +513,13 @@ pub fn hole_program(
         } else {
             hole.diameter
         };
-        let depth = round3(drill / 2.0 + 0.2);
+        // A hole too large for any drill is bored, and needs no spot.
+        if drill > largest_drill + 1e-6 {
+            continue;
+        }
+        // Never deeper than the spot drill's 90° point is long: past it,
+        // its full width would plunge.
+        let depth = round3((drill / 2.0 + 0.2).min(spot.1.diameter / 2.0));
         by_depth
             .entry((depth * 1000.0) as u64)
             .or_default()
@@ -503,8 +528,10 @@ pub fn hole_program(
     let cycles = by_depth
         .into_iter()
         .map(|(depth, at)| (CycleKind::Drill, at, -(depth as f64) / 1000.0, spot.1.feed))
-        .collect();
-    operations.push(operation("Spot drill", spot, setup, cycles));
+        .collect::<Vec<_>>();
+    if !cycles.is_empty() {
+        operations.push(operation("Spot drill", spot, setup, cycles));
+    }
 
     // Drill each size, deepest-first within a size never matters: one cycle
     // per depth.
@@ -522,6 +549,32 @@ pub fn hole_program(
     }
     for (size, group) in drills {
         let diameter = size as f64 / 1000.0;
+        if library.drill(diameter).is_none() && diameter > largest_drill + 1e-6 {
+            // Larger than any drill: bored with an end mill by helical
+            // interpolation (decision 0030), one depth at a time.
+            let tool = boring_mill(library, diameter)?;
+            let mut by_depth: BTreeMap<u64, Vec<&Hole>> = BTreeMap::new();
+            for hole in group {
+                // Through: 1 mm past the bottom; blind: to the full
+                // diameter's depth, flat (a drill point is not milled).
+                let depth = match hole.depth {
+                    Some(d) => d,
+                    None => hole.at.z - bottom + 1.0,
+                };
+                by_depth
+                    .entry((round3(depth) * 1000.0) as u64)
+                    .or_default()
+                    .push(hole);
+            }
+            for (depth, holes) in by_depth {
+                let depth = depth as f64 / 1000.0;
+                let mut op =
+                    counterbore_op(tool.0, tool.1, setup, &holes, diameter, depth, raw_top);
+                op.name = format!("Bore {diameter} mm x {depth} mm");
+                operations.push(op);
+            }
+            continue;
+        }
         let tool = library
             .drill(diameter)
             .ok_or_else(|| CamError::NoTool(format!("{diameter} mm drill")))?;
@@ -589,7 +642,9 @@ pub fn hole_program(
                     diameter - 0.2
                 ))
             })?;
-        operations.push(counterbore_op(number, tool, setup, &group, diameter, depth));
+        operations.push(counterbore_op(
+            number, tool, setup, &group, diameter, depth, raw_top,
+        ));
     }
 
     // Tap: rigid, feed = rpm × pitch.
@@ -1932,7 +1987,7 @@ pub fn detect(
         }
     }
 
-    match hole_program(document, rebuilt, &setup, &library, "detect") {
+    match hole_program(document, rebuilt, &setup, &library, "detect", false) {
         Ok(planned) if !planned.program.operations.is_empty() => {
             operations.push(OperationDef::Holes);
         }
@@ -2168,6 +2223,8 @@ fn plan_entry(
     };
     let mut notes = Vec::new();
     let mut taps = Vec::new();
+    // Whether an operation before the holes has faced the stock.
+    let mut faced = false;
     for op in &entry.setup.operations {
         match op.operation {
             OperationDef::Chamfer {
@@ -2207,9 +2264,11 @@ fn plan_entry(
                 program
                     .operations
                     .push(face(document, rebuilt, &setup, &library, tool)?);
+                faced = true;
             }
             OperationDef::Holes => {
-                let planned = hole_program(document, rebuilt, &setup, &library, &program.name)?;
+                let planned =
+                    hole_program(document, rebuilt, &setup, &library, &program.name, faced)?;
                 // Tapping waits until the end of the setup, after any
                 // chamfering, so burrs are not pushed into fresh threads.
                 for op in planned.program.operations {
@@ -2251,8 +2310,34 @@ fn plan_entry(
     })
 }
 
+/// The end mill that bores a hole of `diameter` larger than every drill:
+/// the largest that is at least half the hole (so one circle clears its
+/// middle) and leaves at least 0.2 mm to its wall.
+fn boring_mill(library: &ToolLibrary, diameter: f64) -> Result<(u32, &Tool), CamError> {
+    library
+        .tools
+        .iter()
+        .filter(|(_, t)| {
+            t.kind == ToolKind::EndMill
+                && t.diameter >= diameter / 2.0
+                && t.diameter < diameter - 0.2
+        })
+        .max_by(|a, b| a.1.diameter.total_cmp(&b.1.diameter).then(b.0.cmp(a.0)))
+        .map(|(n, t)| (*n, t))
+        .ok_or_else(|| {
+            CamError::NoTool(format!(
+                "end mill between {} and {} mm to bore the {diameter} mm holes, which no drill \
+                 is large enough for",
+                diameter / 2.0,
+                diameter - 0.2
+            ))
+        })
+}
+
 /// Mills counterbores: for each, a helix down at most 3° per turn to the
-/// floor, one flat circle to finish it, then to the centre and out.
+/// floor, one flat circle to finish it, then to the centre and out. The
+/// helix starts on the hole's face, or at `raw_top` (program Z) when the
+/// stock above it has not been faced yet.
 fn counterbore_op(
     number: u32,
     tool: &Tool,
@@ -2260,13 +2345,13 @@ fn counterbore_op(
     holes: &[&Hole],
     diameter: f64,
     depth: f64,
+    raw_top: Option<f64>,
 ) -> Operation {
     let r = tool.diameter / 2.0;
     let e = round3(diameter / 2.0 - r);
     let circumference = std::f64::consts::TAU * e;
     let pitch = (circumference * RAMP_DEGREES.to_radians().tan()).min(r);
-    let turns = (depth / pitch).ceil().max(1.0) as usize;
-    let safe = round3(setup.safe_z);
+    let safe = round3(setup.safe_z.max(raw_top.unwrap_or(0.0) + setup.clearance));
     let mut steps = vec![
         Step::Event(Event::ToolChange {
             number,
@@ -2289,16 +2374,19 @@ fn counterbore_op(
         let start = |z: f64| Point3::new(round3(c.x + e), round3(c.y), round3(z));
         let center = |z: f64| Point3::new(round3(c.x), round3(c.y), round3(z));
         let floor = c.z - depth;
+        let top = raw_top.map_or(c.z, |t| t.max(c.z));
+        let length = top - floor;
+        let turns = (length / pitch).ceil().max(1.0) as usize;
         steps.push(Step::Move(Move::Rapid { to: start(safe) }));
         steps.push(Step::Move(Move::Rapid {
-            to: start(c.z + 0.5),
+            to: start(top + 0.5),
         }));
         steps.push(Step::Move(Move::Linear {
-            to: start(c.z),
+            to: start(top),
             feed: tool.feed / 2.0,
         }));
         for turn in 1..=turns {
-            let z = c.z - depth * turn as f64 / turns as f64;
+            let z = top - length * turn as f64 / turns as f64;
             steps.push(Step::Move(Move::Arc {
                 to: start(z),
                 center: center(z),
