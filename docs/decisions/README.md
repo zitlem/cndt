@@ -47,19 +47,6 @@ The owner can overturn any agent-accepted record in review; the record is then s
 | [0020](0020-vise.md) | A vise per setup, checked in the simulation | Accepted |
 | [0021](0021-revolve-feature.md) | Revolve as a solid feature | Accepted |
 | [0022](0022-circular-pattern.md) | Circular pattern | Accepted |
-<<<<<<< HEAD
-| [0023](0023-mirror.md) | Mirror | Proposed |
-| [0024](0024-post-inheritance.md) | Post inheritance | Proposed |
-| [0025](0025-project-thumbnail.md) | Project thumbnail | Proposed |
-| [0026](0026-crash-recovery.md) | Crash recovery snapshots | Proposed |
-| [0027](0027-shell.md) | Shell | Proposed |
-| [0028](0028-suppress-and-reorder.md) | Suppress and reorder features | Proposed |
-| [0029](0029-reference-geometry.md) | Reference geometry: work planes, work axes, work points | Proposed |
-| [0030](0030-bore-large-holes.md) | Holes larger than every drill are bored | Proposed |
-| [0031](0031-slot-milling.md) | A slot as wide as an end mill is milled along its centreline | Proposed |
-| [0032](0032-turned-setups.md) | Setups turned to any angle about the upright axis | Proposed |
-| [0033](0033-projected-edges.md) | Model edges projected into a sketch, by the two faces that meet at them | Proposed |
-=======
 | [0023](0023-mirror.md) | Mirror | Accepted |
 | [0024](0024-post-inheritance.md) | Post inheritance | Accepted |
 | [0025](0025-project-thumbnail.md) | Project thumbnail | Accepted |
@@ -70,7 +57,7 @@ The owner can overturn any agent-accepted record in review; the record is then s
 | [0030](0030-bore-large-holes.md) | Holes larger than every drill are bored | Accepted |
 | [0031](0031-slot-milling.md) | A slot as wide as an end mill is milled along its centreline | Accepted |
 | [0032](0032-turned-setups.md) | Setups turned to any angle about the upright axis | Accepted |
->>>>>>> origin/main
+| [0033](0033-projected-edges.md) | Model edges projected into a sketch, by the two faces that meet at them | Accepted |
 
 ## Open decisions
 
