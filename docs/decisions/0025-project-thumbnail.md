@@ -1,6 +1,6 @@
 # 0025: Project thumbnail
 
-- **Status:** Proposed
+- **Status:** Accepted (by agent, 2026-11-19: no file format change, no dependency (uncompressed PNG), thumbnail never the source of truth)
 - **Date:** 2026-11-18
 
 ## Context

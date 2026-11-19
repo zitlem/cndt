@@ -1,6 +1,6 @@
 # 0031: A slot as wide as an end mill is milled along its centreline
 
-- **Status:** Proposed (TODO item C1, approved by the owner; the owner accepts each decision in the PR review)
+- **Status:** Accepted (by agent, 2026-11-19: milling inside the existing pocket operation; no new process; its G-code needs golden-file review)
 - **Date:** 2026-11-19
 
 ## Context

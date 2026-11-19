@@ -1,6 +1,6 @@
 # 0028: Suppress and reorder features
 
-- **Status:** Proposed
+- **Status:** Accepted (by agent, 2026-11-19: a flag and a command on the existing timeline; structural dependencies are checked)
 - **Date:** 2026-11-18
 
 ## Context

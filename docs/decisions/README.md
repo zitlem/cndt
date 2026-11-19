@@ -4,9 +4,22 @@ One short file per decision that would be expensive to reverse. A record states 
 
 ## Status values
 
-- **Accepted**: decided by the project owner. Build on it.
+- **Accepted**: decided by the project owner, or by the agent under the delegation rules below. Build on it. A record accepted by the agent says so in its status line, with a one-line reason.
 - **Proposed**: a working assumption. Confirm it before building on it.
 - **Superseded**: replaced by a later record, which it links to.
+
+## Delegation
+
+The loop (the agent) may accept its own decisions, except these, which stay with the owner. A record that touches any of them is written as **Proposed**, its task goes under `[!] Needs owner` in TODO.md, and nothing is built on it:
+
+- the license (decision 0001) and the no-CLA rule;
+- a new dependency of any kind;
+- the post script language;
+- safety checks and verified status: weakening a check, golden-file test or gate, or marking an operation or post verified;
+- new processes or scope: turning, wire EDM, 3D milling, anything outside the v1.0 column of the specification;
+- changes to the rules in docs/architecture.md.
+
+The owner can overturn any agent-accepted record in review; the record is then superseded.
 
 ## Index
 
@@ -34,6 +47,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0020](0020-vise.md) | A vise per setup, checked in the simulation | Accepted |
 | [0021](0021-revolve-feature.md) | Revolve as a solid feature | Accepted |
 | [0022](0022-circular-pattern.md) | Circular pattern | Accepted |
+<<<<<<< HEAD
 | [0023](0023-mirror.md) | Mirror | Proposed |
 | [0024](0024-post-inheritance.md) | Post inheritance | Proposed |
 | [0025](0025-project-thumbnail.md) | Project thumbnail | Proposed |
@@ -45,6 +59,18 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0031](0031-slot-milling.md) | A slot as wide as an end mill is milled along its centreline | Proposed |
 | [0032](0032-turned-setups.md) | Setups turned to any angle about the upright axis | Proposed |
 | [0033](0033-projected-edges.md) | Model edges projected into a sketch, by the two faces that meet at them | Proposed |
+=======
+| [0023](0023-mirror.md) | Mirror | Accepted |
+| [0024](0024-post-inheritance.md) | Post inheritance | Accepted |
+| [0025](0025-project-thumbnail.md) | Project thumbnail | Accepted |
+| [0026](0026-crash-recovery.md) | Crash recovery snapshots | Accepted |
+| [0027](0027-shell.md) | Shell | Accepted |
+| [0028](0028-suppress-and-reorder.md) | Suppress and reorder features | Accepted |
+| [0029](0029-reference-geometry.md) | Reference geometry: work planes, work axes, work points | Accepted |
+| [0030](0030-bore-large-holes.md) | Holes larger than every drill are bored | Accepted |
+| [0031](0031-slot-milling.md) | A slot as wide as an end mill is milled along its centreline | Accepted |
+| [0032](0032-turned-setups.md) | Setups turned to any angle about the upright axis | Accepted |
+>>>>>>> origin/main
 
 ## Open decisions
 

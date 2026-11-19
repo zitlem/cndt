@@ -1,6 +1,6 @@
 # 0033: Projected edges in a sketch
 
-- **Status:** Proposed (the owner approved the task; the owner accepts each decision in the PR review)
+- **Status:** Accepted (by agent, 2026-11-19: adds a command and a file format version on the existing sketch and kernel paths; no dependency, no rule change, no safety effect)
 - **Date:** 2026-11-19
 
 ## Context

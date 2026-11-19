@@ -1,6 +1,6 @@
 # 0029: Reference geometry: work planes, work axes and work points
 
-- **Status:** Proposed
+- **Status:** Accepted (by agent, 2026-11-19: reference geometry in the document, fixed in model space; no rule changes)
 - **Date:** 2026-11-19
 
 ## Context
