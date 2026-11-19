@@ -40,6 +40,7 @@ One short file per decision that would be expensive to reverse. A record states 
 | [0026](0026-crash-recovery.md) | Crash recovery snapshots | Proposed |
 | [0027](0027-shell.md) | Shell | Proposed |
 | [0028](0028-suppress-and-reorder.md) | Suppress and reorder features | Proposed |
+| [0029](0029-reference-geometry.md) | Reference geometry: work planes, work axes, work points | Proposed |
 
 ## Open decisions
 

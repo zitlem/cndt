@@ -16,9 +16,11 @@ use crate::{
     RenameDocument, SetCircularPattern, SetMirror, SetParameter, SetPattern, SketchEdit,
     SuppressFeature,
 };
+use crate::{AddWorkGeometry, DeleteWorkGeometry};
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, MirrorPlane, Thread};
 use cndt_model::{FeatureId, Operation, RevolveAxis};
+use cndt_model::{OriginPlane, Reference, ReferenceId};
 
 /// The type of a command argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -613,6 +615,7 @@ impl Registry {
                     CIRCULAR_ARGS[0],
                     CIRCULAR_ARGS[1],
                     CIRCULAR_ARGS[2],
+                    CIRCULAR_ARGS[3],
                     ArgSpec {
                         name: "name",
                         kind: ArgKind::Text,
@@ -631,6 +634,7 @@ impl Registry {
                         id(args, "count")?,
                         circular_angle(args)?,
                         circular_center(args)?,
+                        axis_work(args)?,
                         name,
                     )))
                 },
@@ -643,6 +647,7 @@ impl Registry {
                     CIRCULAR_ARGS[0],
                     CIRCULAR_ARGS[1],
                     CIRCULAR_ARGS[2],
+                    CIRCULAR_ARGS[3],
                 ],
                 build: |args| {
                     Ok(Box::new(SetCircularPattern::edit(
@@ -650,6 +655,7 @@ impl Registry {
                         id(args, "count")?,
                         circular_angle(args)?,
                         circular_center(args)?,
+                        axis_work(args)?,
                     )))
                 },
             },
@@ -1240,7 +1246,13 @@ impl Registry {
                         name: "plane",
                         kind: ArgKind::Plane,
                         required: false,
-                        description: "xy, xz or yz. Give this or face.",
+                        description: "xy, xz or yz. Give this, face or work_plane.",
+                    },
+                    ArgSpec {
+                        name: "work_plane",
+                        kind: ArgKind::Id,
+                        required: false,
+                        description: "The id of a work plane (reference.add_work_plane). Give this, plane or face.",
                     },
                     ArgSpec {
                         name: "face",
@@ -1261,12 +1273,112 @@ impl Registry {
                     } else {
                         String::new()
                     };
-                    let plane = match (args.contains_key("plane"), args.contains_key("face")) {
-                        (true, false) => plane(args, "plane")?,
-                        (false, true) => Plane::Face(text(args, "face")?),
-                        _ => return Err(String::from("give either \"plane\" or \"face\"")),
+                    let plane = match (
+                        args.contains_key("plane"),
+                        args.contains_key("face"),
+                        args.contains_key("work_plane"),
+                    ) {
+                        (true, false, false) => plane(args, "plane")?,
+                        (false, true, false) => Plane::Face(text(args, "face")?),
+                        (false, false, true) => Plane::Work(ReferenceId(id(args, "work_plane")?)),
+                        _ => {
+                            return Err(String::from(
+                                "give either \"plane\", \"face\" or \"work_plane\", and only one",
+                            ));
+                        }
                     };
                     Ok(Box::new(CreateSketch::new(&name, plane)))
+                },
+            },
+            CommandSpec {
+                name: "reference.add_work_plane",
+                description: "Add a work plane: an origin plane moved along its normal. Sketches can lie on it.",
+                args: &[
+                    ArgSpec {
+                        name: "plane",
+                        kind: ArgKind::Plane,
+                        required: true,
+                        description: "The origin plane to start from: xy, xz or yz.",
+                    },
+                    ArgSpec {
+                        name: "offset",
+                        kind: ArgKind::Number,
+                        required: true,
+                        description: "Millimetres along the plane's normal; negative goes the other way.",
+                    },
+                    WORK_NAME,
+                ],
+                build: |args| {
+                    let given = text(args, "plane")?;
+                    let base = OriginPlane::from_name(&given)
+                        .ok_or_else(|| format!("unknown plane {given:?}; use xy, xz or yz"))?;
+                    Ok(Box::new(AddWorkGeometry::new(Reference::WorkPlane {
+                        name: optional_text(args, "name")?,
+                        base,
+                        offset: number(args, "offset")?,
+                    })))
+                },
+            },
+            CommandSpec {
+                name: "reference.add_work_axis",
+                description: "Add a work axis: a line through a point in a direction, in model coordinates. A revolve or circular pattern can turn about it.",
+                args: &[
+                    WORK_X,
+                    WORK_Y,
+                    WORK_Z,
+                    ArgSpec {
+                        name: "dx",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "X of the direction. 0 by default; the direction must not be all zero.",
+                    },
+                    ArgSpec {
+                        name: "dy",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Y of the direction. 0 by default.",
+                    },
+                    ArgSpec {
+                        name: "dz",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "Z of the direction. 0 by default.",
+                    },
+                    WORK_NAME,
+                ],
+                build: |args| {
+                    Ok(Box::new(AddWorkGeometry::new(Reference::WorkAxis {
+                        name: optional_text(args, "name")?,
+                        through: triple(args, "")?,
+                        direction: triple(args, "d")?,
+                    })))
+                },
+            },
+            CommandSpec {
+                name: "reference.add_work_point",
+                description: "Add a work point at a position in model coordinates.",
+                args: &[WORK_X, WORK_Y, WORK_Z, WORK_NAME],
+                build: |args| {
+                    Ok(Box::new(AddWorkGeometry::new(Reference::WorkPoint {
+                        name: optional_text(args, "name")?,
+                        position: triple(args, "")?,
+                    })))
+                },
+            },
+            CommandSpec {
+                name: "reference.delete",
+                description: "Delete a work plane, axis or point that no sketch or feature uses.",
+                args: &[ArgSpec {
+                    name: "reference",
+                    kind: ArgKind::Id,
+                    required: true,
+                    description: "The reference geometry's id.",
+                }],
+                build: |args| {
+                    Ok(Box::new(DeleteWorkGeometry::new(ReferenceId(id(
+                        args,
+                        "reference",
+                    )?))))
                 },
             },
             CommandSpec {
@@ -2131,7 +2243,7 @@ const GRID_ARGS: [ArgSpec; 4] = [
     },
 ];
 
-const CIRCULAR_ARGS: [ArgSpec; 3] = [
+const CIRCULAR_ARGS: [ArgSpec; 4] = [
     ArgSpec {
         name: "count",
         kind: ArgKind::Id,
@@ -2150,7 +2262,23 @@ const CIRCULAR_ARGS: [ArgSpec; 3] = [
         required: false,
         description: "A point of the source's sketch to turn about; the sketch origin by default.",
     },
+    AXIS_WORK,
 ];
+
+const AXIS_WORK: ArgSpec = ArgSpec {
+    name: "axis_work",
+    kind: ArgKind::Id,
+    required: false,
+    description: "The id of a work axis to turn about (reference.add_work_axis). For a revolve the axis must lie in the sketch's plane; instead of axis and axis_line. For a circular pattern, instead of center.",
+};
+
+fn axis_work(args: &Map<String, Value>) -> Result<Option<ReferenceId>, String> {
+    if args.contains_key("axis_work") {
+        id(args, "axis_work").map(|value| Some(ReferenceId(value)))
+    } else {
+        Ok(None)
+    }
+}
 
 const MIRROR_PLANE: ArgSpec = ArgSpec {
     name: "plane",
@@ -2272,6 +2400,7 @@ const REVOLVE_ARGS: &[ArgSpec] = &[
         required: false,
         description: "Defaults to the next RevolveN.",
     },
+    AXIS_WORK,
 ];
 
 const EDIT_REVOLVE_ARGS: &[ArgSpec] = &[
@@ -2281,24 +2410,85 @@ const EDIT_REVOLVE_ARGS: &[ArgSpec] = &[
     REVOLVE_ARGS[3],
     REVOLVE_ARGS[4],
     REVOLVE_ARGS[5],
+    AXIS_WORK,
 ];
 
 /// The axis a revolve turns about, if the arguments name one.
 fn revolve_axis(args: &Map<String, Value>) -> Result<Option<RevolveAxis>, String> {
-    match (args.contains_key("axis"), args.contains_key("axis_line")) {
-        (true, true) => Err(String::from("give axis or axis_line, not both")),
-        (false, false) => Ok(None),
-        (false, true) => Ok(Some(RevolveAxis::Line {
-            entity: EntityId(id(args, "axis_line")?),
-        })),
-        (true, false) => match text(args, "axis")?.as_str() {
-            "x" => Ok(Some(RevolveAxis::SketchX)),
-            "y" => Ok(Some(RevolveAxis::SketchY)),
-            other => Err(format!(
-                "unknown axis {other:?}; use x or y, or give axis_line"
-            )),
-        },
+    let given = ["axis", "axis_line", "axis_work"]
+        .iter()
+        .filter(|key| args.contains_key(**key))
+        .count();
+    if args.contains_key("axis") && args.contains_key("axis_line") && given == 2 {
+        return Err(String::from("give axis or axis_line, not both"));
     }
+    if given > 1 {
+        return Err(String::from(
+            "give one of axis, axis_line or axis_work, not several",
+        ));
+    }
+    if let Some(reference) = axis_work(args)? {
+        return Ok(Some(RevolveAxis::Work { reference }));
+    }
+    if args.contains_key("axis_line") {
+        return Ok(Some(RevolveAxis::Line {
+            entity: EntityId(id(args, "axis_line")?),
+        }));
+    }
+    if !args.contains_key("axis") {
+        return Ok(None);
+    }
+    match text(args, "axis")?.as_str() {
+        "x" => Ok(Some(RevolveAxis::SketchX)),
+        "y" => Ok(Some(RevolveAxis::SketchY)),
+        other => Err(format!(
+            "unknown axis {other:?}; use x or y, or give axis_line or axis_work"
+        )),
+    }
+}
+
+const WORK_X: ArgSpec = ArgSpec {
+    name: "x",
+    kind: ArgKind::Number,
+    required: false,
+    description: "X in model coordinates, mm. 0 by default.",
+};
+const WORK_Y: ArgSpec = ArgSpec {
+    name: "y",
+    kind: ArgKind::Number,
+    required: false,
+    description: "Y in model coordinates, mm. 0 by default.",
+};
+const WORK_Z: ArgSpec = ArgSpec {
+    name: "z",
+    kind: ArgKind::Number,
+    required: false,
+    description: "Z in model coordinates, mm. 0 by default.",
+};
+
+const WORK_NAME: ArgSpec = ArgSpec {
+    name: "name",
+    kind: ArgKind::Text,
+    required: false,
+    description: "Defaults to the next PlaneN, AxisN or PointN.",
+};
+
+fn optional_text(args: &Map<String, Value>, key: &str) -> Result<String, String> {
+    if args.contains_key(key) {
+        text(args, key)
+    } else {
+        Ok(String::new())
+    }
+}
+
+/// The three-number argument pair of a work point or axis: `x`, `y`, `z`
+/// with a prefix (`d` for a direction), each 0 when left out.
+fn triple(args: &Map<String, Value>, prefix: &str) -> Result<[f64; 3], String> {
+    let mut out = [0.0; 3];
+    for (slot, axis) in out.iter_mut().zip(["x", "y", "z"]) {
+        *slot = optional_number(args, &format!("{prefix}{axis}"))?.unwrap_or(0.0);
+    }
+    Ok(out)
 }
 
 const FEATURE: ArgSpec = ArgSpec {
@@ -2582,6 +2772,16 @@ mod tests {
                 json!({"feature": 2, "count": 4, "angle": 90}),
             ),
             ("feature.mirror", json!({"feature": 1, "plane": "sketch_x"})),
+            (
+                "reference.add_work_plane",
+                json!({"plane": "xy", "offset": 5}),
+            ),
+            (
+                "reference.add_work_axis",
+                json!({"x": 1, "dz": 1, "name": "A"}),
+            ),
+            ("reference.add_work_point", json!({"x": 1, "y": 2})),
+            ("reference.delete", json!({"reference": 0})),
             (
                 "feature.edit_mirror",
                 json!({"feature": 2, "plane": "model_z"}),

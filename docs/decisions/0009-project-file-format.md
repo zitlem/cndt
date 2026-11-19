@@ -173,3 +173,10 @@ A timeline entry may carry `"suppressed": true`; it is left out when `false`. A 
 
 - **Why a version bump:** a version 25 build refuses the unknown field as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 25 or older file with a suppressed entry is refused as damaged.
+
+## Version 27 (2026-11-19)
+
+The document may carry `"references"`, a map from id to reference geometry (`{"type": "work_plane", "name", "base", "offset"}`, `{"type": "work_axis", "name", "through", "direction"}` or `{"type": "work_point", "name", "position"}`), and `"next_reference"`. A sketch's plane may be `{"work": id}`, a revolve's axis `{"type": "work", "reference": id}`, and a circular pattern may carry `"axis": id` (decision 0029).
+
+- **Why a version bump:** a version 26 build refuses the unknown fields and values as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 26 or older file with reference geometry is refused as damaged.

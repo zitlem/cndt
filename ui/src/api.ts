@@ -47,7 +47,7 @@ export interface Sketch {
   next_constraint: number;
 }
 
-export type Plane = "xy" | "xz" | "yz" | { face: string };
+export type Plane = "xy" | "xz" | "yz" | { face: string } | { work: number };
 
 /** Where a sketch sits in the model, in model coordinates. */
 export interface Frame {
@@ -59,9 +59,10 @@ export interface Frame {
 
 export type FrameStatus = { state: "ok"; frame: Frame } | { state: "failed"; reason: string };
 
-/** A short label for a plane: XY, XZ, YZ or Face. */
+/** A short label for a plane: XY, XZ, YZ, Face or Work plane. */
 export function planeLabel(plane: Plane): string {
-  return typeof plane === "string" ? plane.toUpperCase() : "Face";
+  if (typeof plane === "string") return plane.toUpperCase();
+  return "work" in plane ? "Work plane" : "Face";
 }
 
 export interface SketchRecord {
@@ -105,7 +106,7 @@ export type Feature =
       name: string;
       sketch: number;
       profiles: number[][];
-      axis: { type: "line"; entity: number } | { type: "sketch_x" } | { type: "sketch_y" };
+      axis: { type: "line"; entity: number } | { type: "sketch_x" } | { type: "sketch_y" } | { type: "work"; reference: number };
       angle: number;
       angle_expression?: string;
       operation: "join" | "cut";

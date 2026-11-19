@@ -60,7 +60,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 24: mirror features (decision 0023).
 /// - 25: shell features (decision 0027).
 /// - 26: suppressed features (decision 0028).
-pub const SCHEMA_VERSION: u32 = 26;
+/// - 27: reference geometry (decision 0029).
+pub const SCHEMA_VERSION: u32 = 27;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -305,6 +306,13 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
             .map_err(FormatError::InvalidContent)?;
     }
     document.validate().map_err(FormatError::InvalidContent)?;
+    // Version 26 knew nothing of reference geometry.
+    if manifest.schema_version < 27 && !document.references().is_empty() {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain reference geometry",
+            manifest.schema_version
+        )));
+    }
     // Version 25 knew nothing of suppressed features.
     if manifest.schema_version < 26 && document.features().iter().any(|e| e.suppressed) {
         return Err(FormatError::Corrupt(format!(
@@ -1023,6 +1031,42 @@ mod tests {
     }
 
     #[test]
+    fn reference_geometry_needs_version_27() {
+        use cndt_model::{OriginPlane, Plane, Reference};
+        let mut document = Document::new("Floating");
+        let plane = document
+            .add_reference(Reference::WorkPlane {
+                name: String::new(),
+                base: OriginPlane::Xy,
+                offset: 12.5,
+            })
+            .unwrap();
+        document
+            .add_reference(Reference::WorkAxis {
+                name: String::from("Spindle"),
+                through: [1.0, 2.0, 3.0],
+                direction: [0.0, 0.0, 1.0],
+            })
+            .unwrap();
+        document
+            .add_reference(Reference::WorkPoint {
+                name: String::new(),
+                position: [4.0, 5.0, 6.0],
+            })
+            .unwrap();
+        document.add_sketch("Top", Plane::Work(plane)).unwrap();
+        let project = Project::new(document.clone());
+        let back = read(Cursor::new(to_bytes(&project))).unwrap();
+        assert_eq!(back, project);
+        assert_eq!(back.document.references().len(), 3);
+        let json = serde_json::to_string(&document).unwrap();
+        assert!(json.contains("\"work\":0"), "{json}");
+        let v26 = raw_zip(&[(MANIFEST, &manifest(26)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v26)).unwrap_err();
+        assert!(error.to_string().contains("reference geometry"), "{error}");
+    }
+
+    #[test]
     fn suppressed_features_need_version_26() {
         use cndt_model::sketch::Point2;
         use cndt_model::{Feature, Operation, Plane, default_profiles};
@@ -1186,6 +1230,7 @@ mod tests {
                 count: 4,
                 angle: 360.0,
                 center: None,
+                axis: None,
             })
             .unwrap();
         let project = Project::new(document.clone());
