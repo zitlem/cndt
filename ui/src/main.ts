@@ -357,7 +357,7 @@ let bodyTriangles: { mesh: import("./api").Mesh } | null = null;
 function faceReference(id: number, state: DocumentState): import("./api").XY[] {
   const plane = state.document.sketches?.[String(id)]?.plane;
   const frame = state.sketch_frames[String(id)];
-  if (!plane || typeof plane === "string" || frame?.state !== "ok" || !bodyTriangles || !state.body) return [];
+  if (!plane || typeof plane === "string" || !("face" in plane) || frame?.state !== "ok" || !bodyTriangles || !state.body) return [];
   const face = state.body.faces.findIndex((names) => names.includes(plane.face));
   if (face < 0) return [];
   const { positions, indices, triangleFaces } = bodyTriangles.mesh;

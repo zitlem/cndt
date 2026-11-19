@@ -4,7 +4,7 @@
 use cndt_model::sketch::{EntityId, Geometry, ProfileKey};
 use cndt_model::{
     Document, EdgeTarget, Feature, FeatureEntry, FeatureId, HoleSpec, ImportData, ImportFormat,
-    MirrorPlane, ModelError, Operation, RevolveAxis, SketchId, default_profiles,
+    MirrorPlane, ModelError, Operation, ReferenceId, RevolveAxis, SketchId, default_profiles,
 };
 
 use crate::{Command, CommandError};
@@ -1133,6 +1133,7 @@ pub struct SetCircularPattern {
     count: u32,
     angle: f64,
     center: Option<EntityId>,
+    axis: Option<ReferenceId>,
     name: Option<String>,
     before: Option<Box<Document>>,
 }
@@ -1145,6 +1146,7 @@ impl SetCircularPattern {
         count: u32,
         angle: f64,
         center: Option<EntityId>,
+        axis: Option<ReferenceId>,
         name: Option<String>,
     ) -> Self {
         Self {
@@ -1153,6 +1155,7 @@ impl SetCircularPattern {
             count,
             angle,
             center,
+            axis,
             name,
             before: None,
         }
@@ -1160,13 +1163,20 @@ impl SetCircularPattern {
 
     /// New values for circular pattern `id`.
     #[must_use]
-    pub const fn edit(id: FeatureId, count: u32, angle: f64, center: Option<EntityId>) -> Self {
+    pub const fn edit(
+        id: FeatureId,
+        count: u32,
+        angle: f64,
+        center: Option<EntityId>,
+        axis: Option<ReferenceId>,
+    ) -> Self {
         Self {
             id: Some(id),
             source: FeatureId(0),
             count,
             angle,
             center,
+            axis,
             name: None,
             before: None,
         }
@@ -1192,7 +1202,7 @@ impl Command for SetCircularPattern {
 
     fn apply(&mut self, document: &mut Document) -> Result<(), CommandError> {
         let before = document.clone();
-        let (count, angle, center) = (self.count, self.angle, self.center);
+        let (count, angle, center, axis) = (self.count, self.angle, self.center, self.axis);
         match self.id {
             Some(id) => {
                 let Some(Feature::CircularPattern { name, feature, .. }) =
@@ -1209,6 +1219,7 @@ impl Command for SetCircularPattern {
                     count,
                     angle,
                     center,
+                    axis,
                 };
                 document.replace_feature(id, pattern)?;
             }
@@ -1235,6 +1246,7 @@ impl Command for SetCircularPattern {
                     count,
                     angle,
                     center,
+                    axis,
                 };
                 document.add_feature(pattern)?;
             }
