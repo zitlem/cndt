@@ -61,7 +61,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 25: shell features (decision 0027).
 /// - 26: suppressed features (decision 0028).
 /// - 27: reference geometry (decision 0029).
-pub const SCHEMA_VERSION: u32 = 27;
+/// - 28: setups turned to any angle about model Y (decision 0032).
+pub const SCHEMA_VERSION: u32 = 28;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -365,6 +366,19 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     {
         return Err(FormatError::Corrupt(format!(
             "a version {} file cannot contain revolve features",
+            manifest.schema_version
+        )));
+    }
+    // Version 27 knew nothing of setups turned to any angle.
+    if manifest.schema_version < 28
+        && document
+            .cam()
+            .setups
+            .iter()
+            .any(|s| s.setup.side == cndt_model::cam::Side::Turned)
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain setups turned to an angle",
             manifest.schema_version
         )));
     }
@@ -1280,6 +1294,50 @@ mod tests {
     }
 
     #[test]
+    fn turned_setups_need_version_28() {
+        use cndt_model::cam::{CamEdit, FlipAxis, Side};
+        let mut document = Document::new("Turned");
+        document
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Turned,
+                work_offset: 2,
+                flip_about: FlipAxis::X,
+                index: Some(45.0),
+                angle: Some(45.0),
+            })
+            .unwrap();
+        assert_eq!(document.cam().setups[0].setup.name, "Setup 1 (turned)");
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        assert!(json.contains("\"angle\":45.0"), "{json}");
+        let v27 = raw_zip(&[(MANIFEST, &manifest(27)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v27)).unwrap_err();
+        assert!(error.to_string().contains("turned to an angle"), "{error}");
+        // An angle on any other side, or none on a turned one, is refused.
+        let mut bad = Document::new("Bad");
+        let refused = bad.edit_cam(CamEdit::AddSetup {
+            name: String::new(),
+            side: Side::Top,
+            work_offset: 1,
+            flip_about: FlipAxis::X,
+            index: None,
+            angle: Some(30.0),
+        });
+        assert!(refused.is_err());
+        let refused = bad.edit_cam(CamEdit::AddSetup {
+            name: String::new(),
+            side: Side::Turned,
+            work_offset: 1,
+            flip_about: FlipAxis::X,
+            index: None,
+            angle: None,
+        });
+        assert!(refused.is_err());
+    }
+
+    #[test]
     fn vises_need_version_21() {
         use cndt_model::cam::{CamEdit, FlipAxis, JawAxis, Side, Vise};
         let mut document = Document::new("Vise");
@@ -1290,6 +1348,7 @@ mod tests {
                 work_offset: 1,
                 flip_about: FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -1322,6 +1381,7 @@ mod tests {
                 work_offset: 2,
                 flip_about: FlipAxis::X,
                 index: Some(90.0),
+                angle: None,
             })
             .unwrap();
         assert_eq!(document.cam().setups[0].setup.name, "Setup 1 (right)");
@@ -1345,6 +1405,7 @@ mod tests {
                 work_offset: 2,
                 flip_about: FlipAxis::Y,
                 index: Some(180.0),
+                angle: None,
             })
             .unwrap();
         let project = Project::new(document.clone());
@@ -1366,6 +1427,7 @@ mod tests {
                 work_offset: 1,
                 flip_about: cndt_model::cam::FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap();
         let setup = document.cam().setups[0].id;

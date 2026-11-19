@@ -84,11 +84,19 @@ pub type Rows = [[f64; 3]; 3];
 
 /// The rotation that turns `side` of the part to face the spindle, so the
 /// spindle looks down −Z onto it as onto the top. `None` for the top and
-/// the bottom, which keep their own mappings.
+/// the bottom, which keep their own mappings. A turned side (decision 0032)
+/// is turned by `angle` degrees about model Y: (x, y, z) to
+/// (x cos a − z sin a, y, x sin a + z cos a), so 90° is the right side and
+/// 270° the left, exactly; its sine and cosine are the same on every
+/// platform.
 #[must_use]
-pub const fn turn_of(side: Side) -> Option<Rows> {
+pub fn turn_of(side: Side, angle: Option<f64>) -> Option<Rows> {
     match side {
         Side::Top | Side::Bottom => None,
+        Side::Turned => {
+            let (s, c) = cndt_geom::trig::sin_cos_degrees(angle.unwrap_or(0.0));
+            Some([[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]])
+        }
         // About X: model (x, y, z) to (x, z, −y); the top towards +Y.
         Side::Front => Some([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]),
         Side::Back => Some([[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]),
@@ -119,6 +127,51 @@ pub struct World<'a> {
     pub turn: Option<Rows>,
 }
 
+/// The stock allowances round a part turned by `rows`: the axis-aligned box
+/// round the raw stock's eight corners turned, less the turned part's box.
+fn angled_stock(
+    rebuilt: &Rebuilt,
+    turned: &Rebuilt,
+    stock: &cndt_model::cam::Stock,
+    rows: &Rows,
+) -> Option<cndt_model::cam::Stock> {
+    let b = rebuilt.properties?.bounds;
+    let t = turned.properties?.bounds;
+    let min = [
+        b.min.x - stock.side,
+        b.min.y - stock.side,
+        b.min.z - stock.bottom,
+    ];
+    let max = [
+        b.max.x + stock.side,
+        b.max.y + stock.side,
+        b.max.z + stock.top,
+    ];
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for k in 0..8 {
+        let p = [0, 1, 2].map(|a| if k & (1 << a) == 0 { min[a] } else { max[a] });
+        let q = apply(rows, p);
+        for a in 0..3 {
+            lo[a] = lo[a].min(q[a]);
+            hi[a] = hi[a].max(q[a]);
+        }
+    }
+    let side = [
+        t.min.x - lo[0],
+        hi[0] - t.max.x,
+        t.min.y - lo[1],
+        hi[1] - t.max.y,
+    ]
+    .into_iter()
+    .fold(0.0, f64::max);
+    Some(cndt_model::cam::Stock {
+        side: round3(side + 0.0005),
+        top: round3((hi[2] - t.max.z).max(0.0) + 0.0005),
+        bottom: round3((t.min.z - lo[2]).max(0.0) + 0.0005),
+    })
+}
+
 /// Turns the part for a setup on `side` (decision 0019). Face names stay as
 /// they are; the body, its size and the sketch frames are turned. The
 /// stock's allowances are turned conservatively: one allowance stands for
@@ -132,9 +185,9 @@ pub fn world<'a>(
     document: &'a Document,
     rebuilt: &'a Rebuilt,
     kernel: &dyn cndt_kernel::Kernel,
-    side: Side,
+    turn: Option<Rows>,
 ) -> Result<World<'a>, CamError> {
-    let Some(rows) = turn_of(side) else {
+    let Some(rows) = turn else {
         return Ok(World {
             document: std::borrow::Cow::Borrowed(document),
             rebuilt: std::borrow::Cow::Borrowed(rebuilt),
@@ -176,13 +229,25 @@ pub fn world<'a>(
     };
     let mut turned_document = document.clone();
     if let Some(stock) = document.cam().stock {
-        let across = stock.side.max(stock.top).max(stock.bottom);
-        turned_document
-            .edit_cam(cndt_model::cam::CamEdit::SetStock(cndt_model::cam::Stock {
+        let quarter = rows
+            .iter()
+            .flatten()
+            .all(|v| v.abs() < 1e-12 || (v.abs() - 1.0).abs() < 1e-12);
+        let turned_stock = if quarter {
+            let across = stock.side.max(stock.top).max(stock.bottom);
+            cndt_model::cam::Stock {
                 side: across,
                 top: stock.side,
                 bottom: stock.side,
-            }))
+            }
+        } else {
+            // At any other angle (decision 0032): the box round the raw
+            // stock turned, measured from the turned part's box. It holds
+            // more than the stock, never less.
+            angled_stock(rebuilt, &turned_rebuilt, &stock, &rows).ok_or(CamError::NoPart)?
+        };
+        turned_document
+            .edit_cam(cndt_model::cam::CamEdit::SetStock(turned_stock))
             .map_err(|_| CamError::NoStock)?;
     }
     Ok(World {
@@ -217,7 +282,7 @@ impl Setup {
         let bounds = rebuilt.properties?.bounds;
         let origin = match (def.side, def.flip_about) {
             // A side is planned on the part turned so it is on top.
-            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right, _) => {
+            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned, _) => {
                 Point3::new(bounds.min.x, bounds.min.y, bounds.max.z)
             }
             // Turned about X: the old back edge is now at the front.
@@ -233,7 +298,7 @@ impl Setup {
             work_offset: def.work_offset,
             safe_z: 10.0,
             clearance: 2.0,
-            turn: turn_of(def.side),
+            turn: turn_of(def.side, def.angle),
         })
     }
 
@@ -243,7 +308,7 @@ impl Setup {
     pub fn model_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
         match (self.side, self.flip_about) {
-            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right, _) => {
+            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned, _) => {
                 Point3::new(p.x + o.x, p.y + o.y, p.z + o.z)
             }
             (Side::Bottom, FlipAxis::X) => Point3::new(p.x + o.x, o.y - p.y, o.z - p.z),
@@ -255,7 +320,7 @@ impl Setup {
     pub fn program_point(&self, p: Point3) -> Point3 {
         let o = self.origin;
         match (self.side, self.flip_about) {
-            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right, _) => {
+            (Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned, _) => {
                 Point3::new(round3(p.x - o.x), round3(p.y - o.y), round3(p.z - o.z))
             }
             (Side::Bottom, FlipAxis::X) => {
@@ -272,7 +337,7 @@ impl Setup {
     const fn facing(&self) -> f64 {
         match self.side {
             Side::Bottom => -1.0,
-            Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => 1.0,
+            Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned => 1.0,
         }
     }
 
@@ -318,7 +383,7 @@ pub fn stock_box(
     let [length, width, height] = bounds.size();
     let (near, far) = match setup.side {
         Side::Bottom => (stock.bottom, stock.top),
-        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => {
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned => {
             (stock.top, stock.bottom)
         }
     };
@@ -769,7 +834,7 @@ fn face(
     };
     let allowance = match setup.side {
         Side::Bottom => stock.bottom,
-        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => stock.top,
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned => stock.top,
     };
     let [length, width, _] = bounds.size();
     // The stock outline in program coordinates (the same for both sides:
@@ -1091,7 +1156,7 @@ fn contour(
         .collect();
     let stock_top = document.cam().stock.map_or(0.0, |s| match setup.side {
         Side::Bottom => s.bottom,
-        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => s.top,
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned => s.top,
     });
     let safe = round3(setup.safe_z.max(stock_top + setup.clearance));
     let at = |p: Point3, z: f64| Point3::new(round3(p.x), round3(p.y), z);
@@ -2062,7 +2127,12 @@ pub fn detect(
         .setups
         .get(position)
         .ok_or(CamError::UnknownSetup(setup_id))?;
-    let world = world(document, rebuilt, kernel, entry.setup.side)?;
+    let world = world(
+        document,
+        rebuilt,
+        kernel,
+        turn_of(entry.setup.side, entry.setup.angle),
+    )?;
     let (document, rebuilt) = (world.document.as_ref(), world.rebuilt.as_ref());
     let cam = document.cam();
     let setup = Setup::from_def(&entry.setup, rebuilt).ok_or(CamError::NoPart)?;
@@ -2389,7 +2459,12 @@ fn plan_entry(
     entry: &cndt_model::cam::SetupEntry,
 ) -> Result<Planned, CamError> {
     // A side setup is planned on the part turned so that side is on top.
-    let world = world(document, rebuilt, kernel, entry.setup.side)?;
+    let world = world(
+        document,
+        rebuilt,
+        kernel,
+        turn_of(entry.setup.side, entry.setup.angle),
+    )?;
     let (document, rebuilt) = (world.document.as_ref(), world.rebuilt.as_ref());
     let cam = document.cam();
     let setup = Setup::from_def(&entry.setup, rebuilt).ok_or(CamError::NoPart)?;
@@ -2471,12 +2546,23 @@ fn plan_entry(
     if program.operations.is_empty() {
         return Err(CamError::Nothing);
     }
-    if let (Some(angle), Side::Left | Side::Right) = (entry.setup.index, entry.setup.side) {
+    if let (Some(angle), Side::Left | Side::Right | Side::Turned) =
+        (entry.setup.index, entry.setup.side)
+    {
         notes.push(format!(
             "{} is turned to by the table at B{}: check on the machine which way B \
              turns before running it, or the other side comes to the spindle.",
             entry.setup.name,
             round3(angle)
+        ));
+    }
+    if entry.setup.side == Side::Turned {
+        notes.push(format!(
+            "{} is turned {}° about model Y: its simulation starts from the box round the \
+             turned raw stock, not from what the other setups left, so it can show rapids \
+             into material that is no longer there.",
+            entry.setup.name,
+            round3(entry.setup.angle.unwrap_or(0.0))
         ));
     }
     if entry.setup.side.is_lateral() {
@@ -2503,7 +2589,7 @@ fn raw_top(document: &Document, setup: &Setup, faced: bool) -> Option<f64> {
     }
     document.cam().stock.map(|s| match setup.side {
         Side::Bottom => s.bottom,
-        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right => s.top,
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned => s.top,
     })
 }
 
@@ -2746,6 +2832,7 @@ mod tests {
                 work_offset: 1,
                 flip_about: cndt_model::cam::FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -2761,6 +2848,7 @@ mod tests {
                 work_offset: 2,
                 flip_about: cndt_model::cam::FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -2797,6 +2885,7 @@ mod tests {
                 work_offset: 2,
                 flip_about: FlipAxis::Y,
                 index: Some(180.0),
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -2831,6 +2920,7 @@ mod tests {
                 work_offset: 1,
                 flip_about: cndt_model::cam::FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -2894,6 +2984,7 @@ mod tests {
                 work_offset: 2,
                 flip_about: cndt_model::cam::FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -2922,6 +3013,7 @@ mod tests {
                 work_offset: 1,
                 flip_about: cndt_model::cam::FlipAxis::X,
                 index: None,
+                angle: None,
             })
             .unwrap()
             .unwrap();
@@ -3025,6 +3117,7 @@ mod tests {
                     work_offset,
                     flip_about: cndt_model::cam::FlipAxis::X,
                     index,
+                    angle: None,
                 })
                 .unwrap()
                 .unwrap();
@@ -3102,6 +3195,7 @@ mod tests {
                     work_offset,
                     flip_about: cndt_model::cam::FlipAxis::X,
                     index,
+                    angle: None,
                 })
                 .unwrap()
                 .unwrap();

@@ -299,3 +299,161 @@ fn a_hole_in_the_right_side_on_the_b_table() {
         "deepest cut at model x {deepest}"
     );
 }
+
+/// A block with a 45° face on its upper right edge and a hole square into
+/// it; a setup turned 45° about Y (decision 0032) drills it straight in.
+#[test]
+fn a_hole_in_a_45_degree_face_on_a_turned_setup() {
+    let mut s = Session { api: Api::new() };
+    s.exec("document.rename", json!({"name": "Bevelled block"}));
+    // The profile in the XZ plane, extruded along Y.
+    let state = s.exec("sketch.create", json!({"plane": "xz", "name": "Profile"}));
+    let frame = state["sketch_frames"]["0"]["frame"].clone();
+    let (o, x, y) = (vec3(&frame["origin"]), vec3(&frame["x"]), vec3(&frame["y"]));
+    let local = |p: [f64; 3]| {
+        let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        json!({"x": dot(d, x), "y": dot(d, y)})
+    };
+    let corners = [
+        [0.0, 0.0, 0.0],
+        [60.0, 0.0, 0.0],
+        [60.0, 0.0, 15.0],
+        [45.0, 0.0, 30.0],
+        [0.0, 0.0, 30.0],
+    ];
+    let mut ids = Vec::new();
+    for c in corners {
+        let state = s.exec("sketch.add_point", json!({"sketch": 0, "at": local(c)}));
+        ids.push(
+            state["document"]["sketches"]["0"]["sketch"]["next_entity"]
+                .as_u64()
+                .unwrap()
+                - 1,
+        );
+    }
+    for k in 0..ids.len() {
+        s.exec(
+            "sketch.add_line",
+            json!({"sketch": 0, "start": ids[k], "end": ids[(k + 1) % ids.len()]}),
+        );
+    }
+    // Into +Y, whichever way the XZ plane's normal points.
+    let normal = vec3(&frame["normal"]);
+    let state = s.exec(
+        "feature.extrude",
+        json!({"sketch": 0, "distance": 40.0 * normal[1].signum()}),
+    );
+    let bounds = &state["body"]["bounds"];
+    assert!(
+        (bounds["max"]["y"].as_f64().unwrap() - 40.0).abs() < 1e-6,
+        "{bounds}"
+    );
+
+    // The 45° face: the one whose sketch looks along (1, 0, 1)/√2.
+    let faces: Vec<String> = state["body"]["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|names| names.as_array().unwrap().iter())
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    let mut found = None;
+    for face in faces {
+        let reply = s
+            .call(json!({"method": "execute", "command": "sketch.create", "args": {"face": face}}));
+        if reply["ok"] != true {
+            continue;
+        }
+        let id = reply["result"]["document"]["next_sketch"].as_u64().unwrap() - 1;
+        let frame = &reply["result"]["sketch_frames"][id.to_string()]["frame"];
+        let n = vec3(&frame["normal"]);
+        if (n[0] - h).abs() < 1e-9 && n[1].abs() < 1e-9 && (n[2] - h).abs() < 1e-9 {
+            found = Some((id, frame.clone()));
+            break;
+        }
+        s.exec("sketch.delete", json!({"sketch": id}));
+    }
+    let (sketch, frame) = found.expect("the 45° face");
+    let (o, x, y) = (vec3(&frame["origin"]), vec3(&frame["x"]), vec3(&frame["y"]));
+    // The middle of the face: model (52.5, 20, 22.5).
+    let c = [52.5, 20.0, 22.5];
+    let d = [c[0] - o[0], c[1] - o[1], c[2] - o[2]];
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    s.exec(
+        "sketch.add_point",
+        json!({"sketch": sketch, "at": {"x": dot(d, x), "y": dot(d, y)}}),
+    );
+    let state = s.exec(
+        "feature.hole",
+        json!({"sketch": sketch, "diameter": 6.6, "depth": 10, "name": "Angled hole"}),
+    );
+    assert_eq!(state["feature_status"]["1"]["state"], "ok", "{state}");
+
+    s.exec("cam.set_stock", json!({"side": 2, "top": 2, "bottom": 3}));
+    let state = s.exec(
+        "cam.add_setup",
+        json!({"side": "turned", "angle": 45, "index": 45, "work_offset": 2}),
+    );
+    assert_eq!(
+        state["document"]["cam"]["setups"][0]["setup"]["name"],
+        "Setup 1 (turned)"
+    );
+    // Turned 45°, the raw block's corner stands above the bevel: face it
+    // first, then drill. (Without the facing, the simulation finds the
+    // spot drill's rapids running into that corner.)
+    s.exec("cam.add_operation", json!({"setup": 0, "type": "face"}));
+    s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
+
+    let reply = s.call(
+        json!({"method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setup": 0}),
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    let gcode = reply["result"]["gcode"].as_str().unwrap();
+    assert!(gcode.contains("G0 B45."), "{gcode}");
+    let notes = reply["result"]["notes"].to_string();
+    assert!(notes.contains("turned 45° about model Y"), "{notes}");
+    check_golden("bevelled-block-turned-45-mazak-smoothg", gcode);
+
+    // Drawn in model coordinates: the drill goes in along the face's normal
+    // from its middle, 10 deep plus the 118° point.
+    let path = s.api.toolpath_preview(Some(0)).unwrap();
+    let count = u32::from_le_bytes(path[8..12].try_into().unwrap()) as usize;
+    let first = path.len() - count * 25;
+    let n = [h, 0.0, h];
+    let mut deepest = f64::INFINITY;
+    for k in 0..count {
+        let at = first + k * 25;
+        let f = |i: usize| {
+            f64::from(f32::from_le_bytes(
+                path[at + 1 + 4 * i..at + 5 + 4 * i].try_into().unwrap(),
+            ))
+        };
+        let p = [f(3), f(4), f(5)];
+        let r = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        let along = dot(r, n);
+        let off = (dot(r, r) - along * along).max(0.0).sqrt();
+        if path[at] == 1 && off < 1e-3 {
+            deepest = deepest.min(along);
+        }
+    }
+    let point = 3.3 / 59f64.to_radians().tan();
+    assert!(
+        (deepest + 10.0 + point).abs() < 2e-3,
+        "the drill's point at {deepest} along the normal"
+    );
+
+    // Simulated from the box round the turned raw stock: no rapid hits, and
+    // the posted G-code cuts what was planned.
+    let verify = s.call(json!({"method": "verify", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setups": [0]}));
+    assert_ne!(verify["result"]["verdict"], "problems", "{verify}");
+    assert!(
+        verify["result"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("it cuts what was planned"),
+        "{verify}"
+    );
+}

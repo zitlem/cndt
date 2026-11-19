@@ -58,7 +58,7 @@ fn kind_name(kind: &ToolKind) -> String {
 }
 
 /// How the side is reached, in words an operator can follow.
-fn reach(side: Side, index: Option<f64>, flip_y: bool) -> String {
+fn reach(side: Side, index: Option<f64>, flip_y: bool, angle: Option<f64>) -> String {
     let which = match side {
         Side::Top => String::from("top face to the spindle, as modelled"),
         Side::Bottom => format!(
@@ -69,6 +69,10 @@ fn reach(side: Side, index: Option<f64>, flip_y: bool) -> String {
         Side::Back => String::from("back face (model +Y) to the spindle"),
         Side::Left => String::from("left face (model -X) to the spindle"),
         Side::Right => String::from("right face (model +X) to the spindle"),
+        Side::Turned => format!(
+            "the face {}° round from the top about model Y to the spindle",
+            num(angle.unwrap_or(0.0))
+        ),
     };
     match index {
         Some(angle) => format!("{which}; the B table turns to B{}", num(angle)),
@@ -154,6 +158,7 @@ impl Api {
                     def.side,
                     def.index,
                     def.flip_about == cndt_model::cam::FlipAxis::Y,
+                    def.angle,
                 ),
             );
             fact(
@@ -196,7 +201,7 @@ impl Api {
                     document,
                     &self.rebuilt,
                     self.kernel.as_ref(),
-                    placed.side,
+                    placed.turn,
                 )
                 .and_then(|w| cndt_process_mill::stock_box(&w.document, &w.rebuilt, placed));
                 match (&cam.stock, stock) {
