@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use cndt_model::sketch::{Constraint, ConstraintId, EntityId, Point2};
-use cndt_model::{Parameter, Plane, SketchId, Unit};
+use cndt_model::{Parameter, Plane, ProjectedShape, SketchId, Unit};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -16,7 +16,7 @@ use crate::{
     RenameDocument, SetCircularPattern, SetMirror, SetParameter, SetPattern, SketchEdit,
     SuppressFeature,
 };
-use crate::{AddWorkGeometry, DeleteWorkGeometry};
+use crate::{AddWorkGeometry, DeleteWorkGeometry, ProjectEdge};
 use cndt_model::sketch::ProfileKey;
 use cndt_model::{Counterbore, EdgeTarget, HoleDepth, HoleSpec, MirrorPlane, Thread};
 use cndt_model::{FeatureId, Operation, RevolveAxis};
@@ -66,6 +66,10 @@ pub enum ArgKind {
     /// `center`, `start` and `end` (counter-clockwise), circles `center`
     /// and `radius`.
     Curves,
+    /// What a projected edge looks like in the sketch plane, as the API
+    /// computes it: `{"type": "line", "start": {"x": 0, "y": 0}, "end": ...}`.
+    /// Not typed by hand.
+    Shape,
 }
 
 /// One argument a command accepts.
@@ -1624,6 +1628,46 @@ impl Registry {
                 },
             },
             CommandSpec {
+                name: "sketch.project_edge",
+                description: "Project a model edge, named by the two faces that meet at it, into a sketch as a line, arc or circle with its points fixed. The sketch remembers the edge: if the part changes so the edge is lost or moves, features using the sketch fail and say so. Refused for an edge square to the sketch plane or one that does not project to a line, arc or circle.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "first",
+                        kind: ArgKind::Text,
+                        required: true,
+                        description: "The name of one face at the edge.",
+                    },
+                    ArgSpec {
+                        name: "second",
+                        kind: ArgKind::Text,
+                        required: true,
+                        description: "The name of the other face.",
+                    },
+                    ArgSpec {
+                        name: "shape",
+                        kind: ArgKind::Shape,
+                        required: false,
+                        description: "Filled in by the API from the part; commands run without the API refuse.",
+                    },
+                ],
+                build: |args| {
+                    let shape = args.get("shape").cloned().ok_or_else(|| {
+                        String::from(
+                            "projecting an edge needs the geometry kernel; run it through the API",
+                        )
+                    })?;
+                    let shape: ProjectedShape = serde_json::from_value(shape)
+                        .map_err(|e| format!("shape is not a projected shape: {e}"))?;
+                    Ok(Box::new(ProjectEdge::new(
+                        sketch_id(args)?,
+                        &text(args, "first")?,
+                        &text(args, "second")?,
+                        shape,
+                    )))
+                },
+            },
+            CommandSpec {
                 name: "sketch.offset",
                 description: "Offset a circle, or lines and arcs joined end to end into one chain, a distance toward a picked side. The copy is new geometry; the original stays. Corners are extended to meet. Refused if the copy would collapse.",
                 args: &[
@@ -2865,6 +2909,11 @@ mod tests {
             (
                 "sketch.offset",
                 json!({"sketch": 0, "entities": [1], "distance": 2, "toward": {"x": 0, "y": 5}}),
+            ),
+            (
+                "sketch.project_edge",
+                json!({"sketch": 0, "first": "f0/end/4-5-6-7", "second": "f0/side/e4",
+                       "shape": {"type": "line", "start": {"x": 0, "y": 0}, "end": {"x": 10, "y": 0}}}),
             ),
             (
                 "sketch.mirror",

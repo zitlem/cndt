@@ -699,6 +699,39 @@ pub const TOOLPATH_MAGIC: &[u8; 8] = b"CNDTTPH2";
 pub const EDGES_MAGIC: &[u8; 8] = b"CNDTEDG1";
 
 impl Api {
+    /// Fills in the `shape` of a `sketch.project_edge` from the part (decision
+    /// 0033). A shape sent by the caller is replaced, never trusted.
+    fn with_projected_shape(&self, mut args: Value) -> Result<Value, ApiError> {
+        let invalid = |reason: String| ApiError::new("invalid_arguments", reason);
+        let map = args
+            .as_object_mut()
+            .ok_or_else(|| invalid(String::from("arguments must be a JSON object")))?;
+        let sketch = map
+            .get("sketch")
+            .and_then(Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .ok_or_else(|| invalid(String::from("sketch must be a whole number id")))?;
+        let face = |key: &str| {
+            map.get(key)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| invalid(format!("{key:?} must be a face name")))
+        };
+        let (first, second) = (face("first")?, face("second")?);
+        let shape = cndt_model::project_edge(
+            self.session.document(),
+            self.kernel.as_ref(),
+            cndt_model::SketchId(sketch),
+            &first,
+            &second,
+        )
+        .map_err(|reason| ApiError::new("rejected", reason))?;
+        let shape =
+            serde_json::to_value(shape).map_err(|e| ApiError::new("internal", e.to_string()))?;
+        map.insert(String::from("shape"), shape);
+        Ok(args)
+    }
+
     /// Starts with an empty, unsaved document and the OpenCascade kernel.
     #[must_use]
     pub fn new() -> Self {
@@ -1489,11 +1522,19 @@ impl Api {
                 }
                 result
             }
-            Request::Execute { command, args } => self
-                .registry
-                .build(&command, &args)
-                .and_then(|command| self.session.execute(command))
-                .map_err(ApiError::from),
+            Request::Execute { command, args } => {
+                let args = if command == "sketch.project_edge" {
+                    self.with_projected_shape(args)
+                } else {
+                    Ok(args)
+                };
+                args.and_then(|args| {
+                    self.registry
+                        .build(&command, &args)
+                        .and_then(|command| self.session.execute(command))
+                        .map_err(ApiError::from)
+                })
+            }
             Request::Undo => self.session.undo().map_err(ApiError::from),
             Request::Redo => self.session.redo().map_err(ApiError::from),
             Request::State => Ok(()),
@@ -2838,7 +2879,7 @@ mod tests {
             .iter()
             .filter_map(|spec| spec["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 57, "{names:?}");
+        assert_eq!(names.len(), 58, "{names:?}");
         for expected in [
             "document.rename",
             "parameter.set",

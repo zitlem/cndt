@@ -15,7 +15,7 @@ use cndt_kernel::{Blend, Body, BodyProperties, BooleanOp, Curve, Kernel, Made};
 use cndt_sketch::{EntityId, Geometry, Loop, ProfileKey, Sketch};
 use serde::{Deserialize, Serialize};
 
-use crate::{Document, OriginPlane, Plane, Reference, ReferenceId, SketchId};
+use crate::{Document, OriginPlane, Plane, ProjectedShape, Reference, ReferenceId, SketchId};
 
 /// Identifies a feature. Never reused after deletion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1513,7 +1513,7 @@ fn hole_tool(
 }
 
 /// The one face named `token`, or why not.
-fn unique_face(names: &Names, token: &str) -> Result<u32, String> {
+fn unique_face(names: &[BTreeSet<FaceName>], token: &str) -> Result<u32, String> {
     let found: Vec<usize> = names
         .iter()
         .enumerate()
@@ -1530,6 +1530,138 @@ fn unique_face(names: &Names, token: &str) -> Result<u32, String> {
             found.len()
         )),
     }
+}
+
+/// The shape the edge where faces `first` and `second` meet makes in the
+/// plane of `frame`, straight-projected (decision 0033).
+fn edge_shape(
+    kernel: &dyn Kernel,
+    body: &Body,
+    names: &[BTreeSet<FaceName>],
+    frame: &Frame,
+    first: &str,
+    second: &str,
+) -> Result<ProjectedShape, String> {
+    let face = |token: &str| {
+        unique_face(names, token).map_err(|_| {
+            let count = names
+                .iter()
+                .filter(|n| n.iter().any(|name| name.to_string() == token))
+                .count();
+            if count == 0 {
+                format!("the face {token} no longer exists")
+            } else {
+                format!("the face {token} is now split into {count} faces")
+            }
+        })
+    };
+    let (fa, fb) = (face(first)?, face(second)?);
+    let joins = kernel.edges(body).map_err(|e| e.to_string())?;
+    let found: Vec<usize> = joins
+        .iter()
+        .enumerate()
+        .filter(|(_, (a, b))| (*a == fa && *b == fb) || (*a == fb && *b == fa))
+        .map(|(e, _)| e)
+        .collect();
+    let edge = match found.as_slice() {
+        [one] => *one,
+        [] => return Err(format!("{first} and {second} no longer meet at an edge")),
+        _ => {
+            return Err(format!(
+                "{first} and {second} now meet at {} edges",
+                found.len()
+            ));
+        }
+    };
+    let outlines = kernel
+        .edge_polylines(body, 0.01)
+        .map_err(|e| e.to_string())?;
+    let outline = outlines
+        .get(edge)
+        .ok_or_else(|| String::from("the kernel gave no outline for the edge"))?;
+    let o = frame.origin;
+    let points: Vec<cndt_geom::Point2> = outline
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|c| {
+            let p = [
+                f64::from(c.first().copied().unwrap_or_default()) - o.x,
+                f64::from(c.get(1).copied().unwrap_or_default()) - o.y,
+                f64::from(c.get(2).copied().unwrap_or_default()) - o.z,
+            ];
+            cndt_geom::Point2::new(dot(p, frame.x), dot(p, frame.y))
+        })
+        .collect();
+    ProjectedShape::fit(&points)
+}
+
+/// The shape of the model edge where faces `first` and `second` meet, in the
+/// plane of `sketch`, from the part as it is just before the first feature
+/// that uses the sketch (all of it if none does).
+///
+/// # Errors
+///
+/// Says why when the sketch cannot be placed, the edge is not there or is
+/// not one, or it does not project to a line, an arc or a circle.
+pub fn project_edge(
+    document: &Document,
+    kernel: &dyn Kernel,
+    sketch: SketchId,
+    first: &str,
+    second: &str,
+) -> Result<ProjectedShape, String> {
+    let record = document
+        .sketch(sketch)
+        .ok_or_else(|| format!("{sketch} does not exist"))?;
+    let at = document
+        .features()
+        .iter()
+        .position(|e| e.feature.sketch() == Some(sketch));
+    let before = rebuild_to(document, kernel, at);
+    let part = before.body.map(|body| (body, before.faces));
+    let frame = resolve(document, &record.plane, part.as_ref(), kernel)
+        .map_err(|reason| format!("{} cannot be placed: {reason}", record.name))?;
+    let (body, names) = part
+        .as_ref()
+        .ok_or_else(|| String::from("there is no part to project from; add an extrude first"))?;
+    edge_shape(kernel, body, names, &frame, first, second)
+}
+
+/// Looks every projected edge of a sketch up again. A lost edge, or one
+/// that has moved, fails with the reason: stale geometry is never used.
+fn check_projections(
+    record: &crate::SketchRecord,
+    frame: &Frame,
+    part: Option<&(Body, Names)>,
+    kernel: &dyn Kernel,
+) -> Result<(), String> {
+    for projection in &record.projections {
+        let Some(stored) = ProjectedShape::of_entity(&record.sketch, projection.entity) else {
+            // The user deleted what it made.
+            continue;
+        };
+        let lost = |why: &str| {
+            format!(
+                "{} has an edge projected from {} and {} that is out of date: {why}; delete it and project the edge again",
+                record.name, projection.first, projection.second
+            )
+        };
+        let (body, names) = part.ok_or_else(|| lost("there is no part at this point"))?;
+        let fresh = edge_shape(
+            kernel,
+            body,
+            names,
+            frame,
+            &projection.first,
+            &projection.second,
+        )
+        .map_err(|why| lost(&why))?;
+        if !stored.matches(&fresh) {
+            return Err(lost("the edge has moved"));
+        }
+    }
+    Ok(())
 }
 
 /// Chamfers or fillets the part, naming each new face by the faces its edge
@@ -2076,6 +2208,7 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
             });
             let frame =
                 placed.map_err(|reason| format!("{} cannot be placed: {reason}", record.name))?;
+            check_projections(record, &frame, part.as_ref(), kernel)?;
             let (tool, names, operation) = match &entry.feature {
                 Feature::Extrude { operation, .. } => {
                     let (tool, names) =
