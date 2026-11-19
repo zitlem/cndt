@@ -1017,20 +1017,24 @@ fn the_cndt_test_block() {
     // The Fanuc post on the Mazak is a problem, not a review item.
     let reply = s.call(json!({"method": "verify", "post": "fanuc-mill", "machine": "mazak-hcn-5000", "setups": [1]}));
     assert_eq!(reply["result"]["verdict"], "problems", "{reply}");
-    // Without the facing, the pocket's rapid down to Z0.5 runs into the
-    // 2 mm of stock still on top.
+    // Without the facing, the pocket starts above the 2 mm of stock still
+    // on top (it used to rapid to Z0.5, into it): nothing is hit.
     let face_op = s.state()["document"]["cam"]["setups"][0]["setup"]["operations"][0]["id"].clone();
     s.exec(
         "cam.remove_operation",
         json!({"setup": 0, "operation": face_op}),
     );
     let reply = s.call(json!({"method": "simulate", "setup": 0, "cell": 0.5}));
-    let first = &reply["result"]["collisions"][0];
-    assert_eq!(first["operation"], "Pocket 8 mm deep", "{reply}");
+    let collisions = reply["result"]["collisions"].as_array().unwrap();
     assert!(
-        (first["depth"].as_f64().unwrap() - 1.5).abs() < 1e-9,
+        collisions
+            .iter()
+            .all(|c| c["operation"] != "Pocket 8 mm deep"),
         "{reply}"
     );
+    s.call(json!({"method": "undo"}));
+    // A vise gripping 10 mm: the contour down the walls hits its jaws.
+    s.exec("cam.set_vise", json!({"setup": 0, "grip": 10}));
     let reply = s.call(json!({"method": "verify", "post": "mazak-smoothg", "setups": [0]}));
     assert_eq!(reply["result"]["verdict"], "problems", "{reply}");
     assert!(
@@ -1054,9 +1058,9 @@ fn the_cndt_test_block() {
         "{header:?}"
     );
     assert!(
-        header.iter().any(
-            |l| l.contains("RAPID MOVE RUNS INTO THE STOCK, 1.50 MM DEEP, IN POCKET 8 MM DEEP")
-        ),
+        header
+            .iter()
+            .any(|l| l.contains("THE TOOL HITS THE VISE") && l.contains("CONTOUR 20 MM DEEP")),
         "{header:?}"
     );
     s.call(json!({"method": "undo"}));
