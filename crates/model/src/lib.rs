@@ -15,6 +15,7 @@ use std::fmt;
 pub mod cam;
 pub mod expr;
 mod features;
+mod reference;
 pub mod threads;
 
 pub use cndt_sketch::{self as sketch, Sketch, SketchError};
@@ -24,6 +25,7 @@ pub use features::{
     MAX_IMPORT_BYTES, MirrorPlane, Operation, Rebuilt, ReferenceMesh, RevolveAxis, Thread,
     default_profiles, rebuild, rebuild_to,
 };
+pub use reference::{OriginPlane, Reference, ReferenceId};
 use serde::{Deserialize, Serialize};
 
 /// Longest allowed parameter name, in characters.
@@ -121,6 +123,8 @@ pub enum Plane {
     /// axis are the model's projected onto the face, and the normal points
     /// out of the part.
     Face(String),
+    /// A work plane: an origin plane moved along its normal (decision 0029).
+    Work(ReferenceId),
 }
 
 impl Plane {
@@ -193,6 +197,15 @@ pub enum ModelError {
         /// What uses it.
         by: Vec<String>,
     },
+    /// No reference geometry has this id, or it is the wrong kind.
+    UnknownReference(String),
+    /// Sketches or features still use this reference geometry.
+    ReferenceInUse {
+        /// The reference's name.
+        reference: String,
+        /// What uses it.
+        by: Vec<String>,
+    },
     /// Features still use this sketch.
     SketchInUse {
         /// The sketch's name.
@@ -223,6 +236,12 @@ impl fmt::Display for ModelError {
                 write!(f, "{name} is used by {}; change those first", by.join(", "))
             }
             Self::InvalidFeature(reason) => f.write_str(reason),
+            Self::UnknownReference(reason) => f.write_str(reason),
+            Self::ReferenceInUse { reference, by } => write!(
+                f,
+                "{reference} is used by {}; delete or change those first",
+                by.join(", ")
+            ),
             Self::SketchInUse { sketch, by } => write!(
                 f,
                 "{sketch} is used by {}; delete or change those first",
@@ -254,6 +273,11 @@ pub struct Document {
     features: Vec<FeatureEntry>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_feature: u32,
+    /// Work planes, axes and points (decision 0029).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    references: BTreeMap<ReferenceId, Reference>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    next_reference: u32,
     /// Stock, tools, setups and operations (decision 0014).
     #[serde(default, skip_serializing_if = "cam::Cam::is_empty")]
     cam: cam::Cam,
@@ -286,6 +310,8 @@ impl Document {
             next_sketch: 0,
             features: Vec::new(),
             next_feature: 0,
+            references: BTreeMap::new(),
+            next_reference: 0,
             cam: cam::Cam::default(),
         }
     }
@@ -532,6 +558,7 @@ impl Document {
             name.to_owned()
         };
         check_plane(&plane)?;
+        self.check_work_plane(&plane)?;
         self.restore_sketch(
             id,
             SketchRecord {
@@ -787,12 +814,116 @@ impl Document {
     fn check_feature(&self, feature: &Feature) -> Result<(), ModelError> {
         feature.check().map_err(ModelError::InvalidFeature)?;
         check_document_name(feature.name())?;
+        if let Some(id) = feature.reference() {
+            match self.references.get(&id) {
+                Some(Reference::WorkAxis { .. }) => {}
+                Some(other) => {
+                    return Err(ModelError::UnknownReference(format!(
+                        "{} is a {}, not a work axis",
+                        other.name(),
+                        other.kind()
+                    )));
+                }
+                None => {
+                    return Err(ModelError::UnknownReference(format!("{id} does not exist")));
+                }
+            }
+        }
         match feature.sketch() {
             Some(sketch) if !self.sketches.contains_key(&sketch) => {
                 Err(ModelError::UnknownSketch(sketch))
             }
             _ => Ok(()),
         }
+    }
+
+    fn check_work_plane(&self, plane: &Plane) -> Result<(), ModelError> {
+        let Plane::Work(id) = plane else {
+            return Ok(());
+        };
+        match self.references.get(id) {
+            Some(Reference::WorkPlane { .. }) => Ok(()),
+            Some(other) => Err(ModelError::UnknownReference(format!(
+                "{} is a {}, not a work plane",
+                other.name(),
+                other.kind()
+            ))),
+            None => Err(ModelError::UnknownReference(format!("{id} does not exist"))),
+        }
+    }
+
+    /// All reference geometry, by id.
+    #[must_use]
+    pub const fn references(&self) -> &BTreeMap<ReferenceId, Reference> {
+        &self.references
+    }
+
+    /// One item of reference geometry.
+    #[must_use]
+    pub fn reference(&self, id: ReferenceId) -> Option<&Reference> {
+        self.references.get(&id)
+    }
+
+    /// Adds reference geometry. An empty name gets the next free `PlaneN`,
+    /// `AxisN` or `PointN`.
+    ///
+    /// # Errors
+    ///
+    /// A bad name or value; nothing changes then.
+    pub fn add_reference(&mut self, mut reference: Reference) -> Result<ReferenceId, ModelError> {
+        reference.check().map_err(ModelError::InvalidFeature)?;
+        if reference.name().trim().is_empty() {
+            let prefix = reference.prefix();
+            let name = (1..)
+                .map(|n| format!("{prefix}{n}"))
+                .find(|candidate| self.references.values().all(|r| r.name() != *candidate))
+                .unwrap_or_default();
+            match &mut reference {
+                Reference::WorkPlane { name: n, .. }
+                | Reference::WorkAxis { name: n, .. }
+                | Reference::WorkPoint { name: n, .. } => *n = name,
+            }
+        } else {
+            check_document_name(reference.name())?;
+        }
+        let id = ReferenceId(self.next_reference);
+        self.next_reference = self.next_reference.saturating_add(1);
+        self.references.insert(id, reference);
+        Ok(id)
+    }
+
+    /// Deletes reference geometry and returns it.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::UnknownReference`] if there is none with this id, and
+    /// [`ModelError::ReferenceInUse`] if a sketch or feature uses it.
+    pub fn remove_reference(&mut self, id: ReferenceId) -> Result<Reference, ModelError> {
+        let reference = self
+            .references
+            .get(&id)
+            .ok_or_else(|| ModelError::UnknownReference(format!("{id} does not exist")))?;
+        let mut by: Vec<String> = self
+            .sketches
+            .values()
+            .filter(|s| s.plane == Plane::Work(id))
+            .map(|s| s.name.clone())
+            .collect();
+        by.extend(
+            self.features
+                .iter()
+                .filter(|e| e.feature.reference() == Some(id))
+                .map(|e| e.feature.name().to_owned()),
+        );
+        if !by.is_empty() {
+            return Err(ModelError::ReferenceInUse {
+                reference: reference.name().to_owned(),
+                by,
+            });
+        }
+        self.references
+            .remove(&id)
+            .ok_or_else(|| ModelError::UnknownReference(format!("{id} does not exist")))
     }
 
     /// Changes a sketch's contents. The edit runs on a copy, and the
@@ -852,12 +983,22 @@ impl Document {
             }
             check_document_name(&record.name)?;
             check_plane(&record.plane)?;
+            self.check_work_plane(&record.plane)?;
             record.sketch.validate()?;
             for text in record.expressions.values() {
                 self.evaluate(text)?;
             }
         }
         self.cam.check().map_err(ModelError::InvalidCam)?;
+        for (id, reference) in &self.references {
+            if id.0 >= self.next_reference {
+                return Err(ModelError::UnknownReference(format!(
+                    "{id} is beyond the next free reference id"
+                )));
+            }
+            check_document_name(reference.name())?;
+            reference.check().map_err(ModelError::InvalidFeature)?;
+        }
         let mut ids = BTreeSet::new();
         for entry in &self.features {
             if entry.id.0 >= self.next_feature || !ids.insert(entry.id) {

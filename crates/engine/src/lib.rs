@@ -15,6 +15,7 @@ mod sketch_commands;
 mod sketch_offset;
 mod sketch_pattern;
 mod sketch_trim;
+mod work_commands;
 
 use std::fmt;
 
@@ -32,6 +33,7 @@ pub use sketch_commands::{
     CreateSketch, DeleteSketch, EditSketch, ImportCurve, MAX_IMPORT_CURVES, PointRef, SketchEdit,
     sketch_from_curves,
 };
+pub use work_commands::{AddWorkGeometry, DeleteWorkGeometry};
 
 /// A change to a document that can be undone.
 ///
