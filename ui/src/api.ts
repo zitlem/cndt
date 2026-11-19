@@ -137,7 +137,7 @@ export type Feature =
 
 export type EdgeTarget = { face: string } | { between: [string, string] };
 
-export type FeatureStatus = { state: "ok" } | { state: "failed"; reason: string };
+export type FeatureStatus = { state: "ok" } | { state: "suppressed" } | { state: "failed"; reason: string };
 
 export interface BodyView {
   volume: number;
@@ -176,7 +176,7 @@ export interface DocumentState {
     name: string;
     parameters: Record<string, Parameter>;
     sketches?: Record<string, SketchRecord>;
-    features?: { id: number; feature: Feature }[];
+    features?: { id: number; feature: Feature; suppressed?: boolean }[];
     cam?: Cam;
   };
   path: string | null;

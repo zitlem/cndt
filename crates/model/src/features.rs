@@ -429,6 +429,17 @@ impl Feature {
         }
     }
 
+    /// The earlier feature this one repeats or mirrors, if any.
+    #[must_use]
+    pub const fn source(&self) -> Option<FeatureId> {
+        match self {
+            Self::Pattern { feature, .. }
+            | Self::CircularPattern { feature, .. }
+            | Self::Mirror { feature, .. } => Some(*feature),
+            _ => None,
+        }
+    }
+
     /// The sketch it uses, if any.
     #[must_use]
     pub const fn sketch(&self) -> Option<SketchId> {
@@ -618,6 +629,14 @@ pub struct FeatureEntry {
     pub id: FeatureId,
     /// The feature.
     pub feature: Feature,
+    /// Switched off: the part is built without it (decision 0028).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub suppressed: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes fields by reference
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Where a face came from.
@@ -754,6 +773,8 @@ impl fmt::Display for FaceName {
 pub enum FeatureStatus {
     /// It built.
     Ok,
+    /// It is suppressed: left out of the part on purpose (decision 0028).
+    Suppressed,
     /// It could not be built and was skipped. Says why and what to do.
     Failed {
         /// The reason.
@@ -1886,10 +1907,22 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
     let mut frames = BTreeMap::new();
     let mut tools: BTreeMap<FeatureId, Tool> = BTreeMap::new();
     let mut references = BTreeMap::new();
+    let mut suppressed: BTreeSet<FeatureId> = BTreeSet::new();
     let features = document.features();
     let features = &features[..count.map_or(features.len(), |n| n.min(features.len()))];
     for entry in features {
+        if entry.suppressed {
+            suppressed.insert(entry.id);
+            status.insert(entry.id, FeatureStatus::Suppressed);
+            continue;
+        }
         let outcome = (|| -> Result<Option<(Body, Names)>, String> {
+            if let Some(source) = entry.feature.source().filter(|s| suppressed.contains(s)) {
+                let name = document.feature(source).map_or("", Feature::name);
+                return Err(format!(
+                    "it repeats {name}, which is suppressed; unsuppress {name} or delete this"
+                ));
+            }
             let Some(sketch) = entry.feature.sketch() else {
                 if let Feature::Reference { data, .. } = &entry.feature {
                     let mesh = reference_mesh(data)

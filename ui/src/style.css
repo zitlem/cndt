@@ -1951,3 +1951,17 @@ span.ribbon-label {
   display: flex;
   gap: 8px;
 }
+
+.feature-list li.suppressed {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.feature-list li button.suppress {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  right: auto;
+  width: 16px;
+  height: 16px;
+}

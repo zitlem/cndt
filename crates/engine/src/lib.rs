@@ -24,7 +24,7 @@ pub use commands::{RemoveParameter, RenameDocument, SetParameter};
 pub use feature_commands::{
     AddBlend, AddExtrude, AddHole, AddImport, AddReference, AddRevolve, AddShell, BlendKind,
     DeleteFeature, EditBlend, EditCam, EditExtrude, EditHole, EditRevolve, EditShell, Grid,
-    SetCircularPattern, SetMirror, SetPattern,
+    MoveFeature, SetCircularPattern, SetMirror, SetPattern, SuppressFeature,
 };
 pub use registry::{ArgKind, ArgSpec, CommandSpec, Registry};
 pub use session::Session;

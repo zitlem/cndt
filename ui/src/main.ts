@@ -483,13 +483,16 @@ function renderFeatures(state: DocumentState): void {
   ui.filletButton.disabled = !state.body;
   ui.shellButton.disabled = !state.body;
   const built = state.rollback ?? features.length;
-  for (const [index, { id, feature }] of features.entries()) {
+  for (const [index, { id, feature, suppressed }] of features.entries()) {
     if (index === built) ui.featureList.append(rollbackMarker());
     const status = state.feature_status[String(id)];
     const item = globalThis.document.createElement("li");
     const failed = status?.state === "failed";
     item.classList.toggle("failed", failed);
-    item.title = failed
+    item.classList.toggle("suppressed", suppressed === true);
+    item.title = suppressed
+      ? text.suppressedTitle(feature.name)
+      : failed
       ? text.needsRepair(feature.name, status.reason)
       : text.featureTitle(feature.name, featureDetail(feature, id), feature.type === "import" || feature.type === "reference");
     item.tabIndex = 0;
@@ -519,6 +522,16 @@ function renderFeatures(state: DocumentState): void {
       event.stopPropagation();
       guarded(async () => render(await execute("feature.delete", { feature: id })))();
     });
+    const hide = globalThis.document.createElement("button");
+    hide.type = "button";
+    hide.className = "suppress";
+    hide.setAttribute("aria-label", suppressed ? text.unsuppress(feature.name) : text.suppress(feature.name));
+    hide.innerHTML =
+      '<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z" /><circle cx="10" cy="10" r="2" /></svg>';
+    hide.addEventListener("click", (event) => {
+      event.stopPropagation();
+      guarded(async () => render(await execute("feature.suppress", { feature: id, suppressed: !suppressed })))();
+    });
     item.addEventListener("click", () => {
       if (feature.type === "import" || feature.type === "reference") return; // nothing to edit: re-import to change it
       if (feature.type === "pattern") openPattern(id);
@@ -530,8 +543,16 @@ function renderFeatures(state: DocumentState): void {
     });
     item.addEventListener("keydown", (event) => {
       if (event.key === "Enter") item.click();
+      // Alt+Left and Alt+Right move the feature earlier or later in the timeline.
+      if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        event.preventDefault();
+        const position = index + (event.key === "ArrowLeft" ? -1 : 1);
+        if (position >= 0 && position < features.length) {
+          guarded(async () => render(await execute("feature.move", { feature: id, position })))();
+        }
+      }
     });
-    item.append(icon, name, remove);
+    item.append(icon, name, hide, remove);
     // Past the marker: not built, as if not there yet.
     item.classList.toggle("rolled", index >= built);
     ui.featureList.append(item);
