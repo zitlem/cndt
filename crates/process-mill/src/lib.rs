@@ -480,7 +480,12 @@ pub fn hole_program(
     setup: &Setup,
     library: &ToolLibrary,
     name: &str,
+    faced: bool,
 ) -> Result<Planned, CamError> {
+    // Where milled holes (counterbores, bores) start: on their face when an
+    // earlier operation in the setup faced the stock, else above the raw
+    // stock, so the tool never rapids into it.
+    let raw_top = raw_top(document, setup, faced);
     let bounds = rebuilt.properties.ok_or(CamError::NoPart)?.bounds;
     // The far side of the part, in program Z.
     let bottom = round3(-(bounds.max.z - bounds.min.z));
@@ -549,6 +554,13 @@ pub fn hole_program(
     let mut operations = Vec::new();
 
     // Spot every hole: to a depth that leaves a small chamfer on the drill.
+    // The largest drill there is: holes beyond it are bored.
+    let largest_drill = library
+        .tools
+        .values()
+        .filter(|t| t.kind == ToolKind::Drill)
+        .map(|t| t.diameter)
+        .fold(0.0, f64::max);
     let spot = library
         .find(|t| t.kind == ToolKind::SpotDrill)
         .ok_or_else(|| CamError::NoTool(String::from("spot drill")))?;
@@ -559,7 +571,13 @@ pub fn hole_program(
         } else {
             hole.diameter
         };
-        let depth = round3(drill / 2.0 + 0.2);
+        // A hole too large for any drill is bored, and needs no spot.
+        if drill > largest_drill + 1e-6 {
+            continue;
+        }
+        // Never deeper than the spot drill's 90° point is long: past it,
+        // its full width would plunge.
+        let depth = round3((drill / 2.0 + 0.2).min(spot.1.diameter / 2.0));
         by_depth
             .entry((depth * 1000.0) as u64)
             .or_default()
@@ -568,8 +586,10 @@ pub fn hole_program(
     let cycles = by_depth
         .into_iter()
         .map(|(depth, at)| (CycleKind::Drill, at, -(depth as f64) / 1000.0, spot.1.feed))
-        .collect();
-    operations.push(operation("Spot drill", spot, setup, cycles));
+        .collect::<Vec<_>>();
+    if !cycles.is_empty() {
+        operations.push(operation("Spot drill", spot, setup, cycles));
+    }
 
     // Drill each size, deepest-first within a size never matters: one cycle
     // per depth.
@@ -587,6 +607,32 @@ pub fn hole_program(
     }
     for (size, group) in drills {
         let diameter = size as f64 / 1000.0;
+        if library.drill(diameter).is_none() && diameter > largest_drill + 1e-6 {
+            // Larger than any drill: bored with an end mill by helical
+            // interpolation (decision 0030), one depth at a time.
+            let tool = boring_mill(library, diameter)?;
+            let mut by_depth: BTreeMap<u64, Vec<&Hole>> = BTreeMap::new();
+            for hole in group {
+                // Through: 1 mm past the bottom; blind: to the full
+                // diameter's depth, flat (a drill point is not milled).
+                let depth = match hole.depth {
+                    Some(d) => d,
+                    None => hole.at.z - bottom + 1.0,
+                };
+                by_depth
+                    .entry((round3(depth) * 1000.0) as u64)
+                    .or_default()
+                    .push(hole);
+            }
+            for (depth, holes) in by_depth {
+                let depth = depth as f64 / 1000.0;
+                let mut op =
+                    counterbore_op(tool.0, tool.1, setup, &holes, diameter, depth, raw_top);
+                op.name = format!("Bore {diameter} mm x {depth} mm");
+                operations.push(op);
+            }
+            continue;
+        }
         let tool = library
             .drill(diameter)
             .ok_or_else(|| CamError::NoTool(format!("{diameter} mm drill")))?;
@@ -654,7 +700,9 @@ pub fn hole_program(
                     diameter - 0.2
                 ))
             })?;
-        operations.push(counterbore_op(number, tool, setup, &group, diameter, depth));
+        operations.push(counterbore_op(
+            number, tool, setup, &group, diameter, depth, raw_top,
+        ));
     }
 
     // Tap: rigid, feed = rpm × pitch.
@@ -1190,6 +1238,172 @@ const RAMP_DEGREES: f64 = 3.0;
 /// A flat face's outline offset inwards by `distance`, in program
 /// coordinates, anticlockwise (climb milling inside a pocket), starting at
 /// the middle of its longest straight side if it has one.
+/// Whether a floor is open to the spindle: at each sample point (program
+/// coordinates), the first material met coming down is the floor itself.
+/// A wall inside the part that faces this side (a pocket's wall, seen from
+/// the side) is covered, and pocketing it would cut through the part.
+fn floor_open(
+    kernel: &dyn cndt_kernel::Kernel,
+    body: &cndt_kernel::Body,
+    setup: &Setup,
+    samples: &[Point3],
+    depth: f64,
+) -> Result<(), CamError> {
+    let bad = |reason: String| CamError::Contour(reason);
+    let every = samples.len().div_ceil(200).max(1);
+    let model: Vec<[f64; 2]> = samples
+        .iter()
+        .step_by(every)
+        .map(|p| {
+            let m = setup.model_point(Point3::new(p.x, p.y, -depth));
+            [m.x, m.y]
+        })
+        .collect();
+    let hits = kernel
+        .heights(body, &model, setup.facing() > 0.0)
+        .map_err(|e| bad(e.to_string()))?;
+    for (hit, [x, y]) in hits.iter().zip(&model) {
+        if let Some(z) = hit {
+            let above = setup.program_point(Point3::new(*x, *y, *z)).z;
+            if above > -depth + 0.01 {
+                return Err(bad(format!(
+                    "the pocket's floor is covered by material {:.3} mm above it; \
+                     it cannot be reached from this side",
+                    above + depth
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A floor shaped as a slot (two straight sides joined by two half-circle
+/// ends of the same radius): the centres of its ends and its width, in
+/// program coordinates.
+fn slot_centreline(
+    kernel: &dyn cndt_kernel::Kernel,
+    body: &cndt_kernel::Body,
+    setup: &Setup,
+    face: u32,
+) -> Option<(Point3, Point3, f64)> {
+    let outline = inner_loop(kernel, body, setup, face, 0.0)?;
+    // The outline may start part way along a side, splitting it in two.
+    let mut ends = Vec::new();
+    let mut sides = Vec::new();
+    for piece in &outline {
+        match *piece {
+            Piece::Arc {
+                start, end, center, ..
+            } => {
+                let r = (start.x - center.x).hypot(start.y - center.y);
+                // A half circle: its ends a diameter apart.
+                if ((start.x - end.x).hypot(start.y - end.y) - 2.0 * r).abs() > 1e-6 {
+                    return None;
+                }
+                ends.push((center, r));
+            }
+            Piece::Line { start, end } => sides.push((start, end)),
+        }
+    }
+    let [(a, ra), (b, rb)] = ends[..] else {
+        return None;
+    };
+    let length = (a.x - b.x).hypot(a.y - b.y);
+    if (ra - rb).abs() > 1e-6 || length < 0.5 {
+        return None;
+    }
+    let (ux, uy) = ((b.x - a.x) / length, (b.y - a.y) / length);
+    let mut total = 0.0;
+    for (start, end) in sides {
+        let (dx, dy) = (end.x - start.x, end.y - start.y);
+        // Every side runs along the centreline.
+        if (dx * uy - dy * ux).abs() > 1e-6 {
+            return None;
+        }
+        total += dx.hypot(dy);
+    }
+    if (total - 2.0 * length).abs() > 1e-6 {
+        return None;
+    }
+    Some((a, b, round3(2.0 * ra)))
+}
+
+/// Mills a slot as wide as the cutter along its centreline from `a` to
+/// `b`: each level is reached by ramping back and forth along it at most
+/// 3° down, then one flat pass clears the ramp. Starts on the face, or
+/// above the raw stock when nothing has faced it.
+fn slot_op(
+    number: u32,
+    cutter: &Tool,
+    setup: &Setup,
+    a: Point3,
+    b: Point3,
+    depth: f64,
+    raw_top: Option<f64>,
+) -> Operation {
+    // Full-width slotting takes half the depth of cut of a pocket.
+    let passes = ((depth / (cutter.diameter * POCKET_DEPTH_PER_PASS / 2.0)).ceil() as usize).max(1);
+    let top = raw_top.unwrap_or(0.0).max(0.0);
+    let safe = round3(setup.safe_z.max(top + setup.clearance));
+    let at = |p: Point3, z: f64| Point3::new(round3(p.x), round3(p.y), round3(z));
+    let length = (a.x - b.x).hypot(a.y - b.y);
+    let per_pass = length * RAMP_DEGREES.to_radians().tan();
+    let ramp_feed = cutter.feed / 2.0;
+    let mut steps = vec![
+        Step::Event(Event::ToolChange {
+            number,
+            description: if cutter.description.is_empty() {
+                format!("tool {number}")
+            } else {
+                cutter.description.clone()
+            },
+        }),
+        Step::Event(Event::SpindleOn {
+            rpm: cutter.rpm,
+            direction: SpindleDirection::Clockwise,
+        }),
+        Step::Event(Event::Coolant {
+            mode: Coolant::Flood,
+        }),
+        Step::Move(Move::Rapid { to: at(a, safe) }),
+        Step::Move(Move::Rapid {
+            to: at(a, top + 0.5),
+        }),
+        Step::Move(Move::Linear {
+            to: at(a, top),
+            feed: ramp_feed,
+        }),
+    ];
+    let (mut here, mut there) = (a, b);
+    let mut above = top;
+    for k in 1..=passes {
+        let z = -depth * k as f64 / passes as f64;
+        let drop = above - z;
+        let ramps = (drop / per_pass).ceil().max(1.0) as usize;
+        for r in 1..=ramps {
+            let h = above - drop * r as f64 / ramps as f64;
+            steps.push(Step::Move(Move::Linear {
+                to: at(there, h),
+                feed: ramp_feed,
+            }));
+            std::mem::swap(&mut here, &mut there);
+        }
+        // One flat pass at the level clears what the ramp left.
+        steps.push(Step::Move(Move::Linear {
+            to: at(there, z),
+            feed: cutter.feed,
+        }));
+        std::mem::swap(&mut here, &mut there);
+        above = z;
+    }
+    steps.push(Step::Move(Move::Rapid { to: at(here, safe) }));
+    steps.push(Step::Event(Event::Coolant { mode: Coolant::Off }));
+    Operation {
+        name: format!("Slot {} mm", round3(cutter.diameter)),
+        steps,
+    }
+}
+
 fn inner_loop(
     kernel: &dyn cndt_kernel::Kernel,
     body: &cndt_kernel::Body,
@@ -1292,15 +1506,30 @@ fn piece_move(piece: &Piece, z: f64, feed: f64) -> Move {
 /// Clears a pocket: offset loops from the middle outwards, the last one a
 /// cutter radius from the wall, in levels of half the cutter. Each level is
 /// entered by a 3° ramp along the innermost loop, never by plunging.
+/// How a pocket is cut, beyond its floor.
+#[derive(Debug, Clone, Copy, Default)]
+struct PocketOptions {
+    /// The tool; by default the largest end mill that fits.
+    tool: Option<u32>,
+    /// Left on the walls for one finishing lap, in millimetres.
+    finish: f64,
+    /// How high the unfaced stock stands above Z0, if nothing faced it.
+    raw_top: Option<f64>,
+}
+
 fn pocket(
     rebuilt: &Rebuilt,
     kernel: &dyn cndt_kernel::Kernel,
     setup: &Setup,
     library: &ToolLibrary,
     floor: &str,
-    tool: Option<u32>,
-    finish: f64,
+    options: PocketOptions,
 ) -> Result<Operation, CamError> {
+    let PocketOptions {
+        tool,
+        finish,
+        raw_top,
+    } = options;
     let bad = |reason: String| CamError::Contour(reason);
     if !(finish.is_finite() && finish >= 0.0) {
         return Err(bad(format!(
@@ -1320,6 +1549,28 @@ fn pocket(
     let depth = -setup.program_point(point).z;
     if depth.is_nan() || depth <= 1e-6 {
         return Err(bad(String::from("the pocket's floor is not below Z0")));
+    }
+    // A slot exactly as wide as an end mill: cut along its centreline in
+    // one width (decision 0031), unless a finishing allowance asks for a
+    // separate lap.
+    if finish <= 0.0
+        && let Some((a, b, width)) = slot_centreline(kernel, body, setup, index)
+    {
+        let matches = |t: &Tool| t.kind == ToolKind::EndMill && (t.diameter - width).abs() < 0.01;
+        let chosen = match tool {
+            Some(n) => library.tools.get(&n).filter(|t| matches(t)).map(|t| (n, t)),
+            None => library
+                .tools
+                .iter()
+                .filter(|(_, t)| matches(t))
+                .min_by_key(|(n, _)| **n)
+                .map(|(n, t)| (*n, t)),
+        };
+        if let Some((number, cutter)) = chosen {
+            let mid = Point3::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, 0.0);
+            floor_open(kernel, body, setup, &[a, b, mid], depth)?;
+            return Ok(slot_op(number, cutter, setup, a, b, depth, raw_top));
+        }
     }
     // The tightest corner the cutter must fit into.
     let outline = kernel
@@ -1383,10 +1634,7 @@ fn pocket(
         }
     }
     loops.reverse();
-    // The floor must be open to the spindle: along the cutter's path, the
-    // first material met coming down is the floor itself. A wall inside the
-    // part that faces this side (a pocket's wall, seen from the side) is
-    // covered, and pocketing it would cut through the part.
+    // The floor must be open to the spindle along the cutter's path.
     let samples: Vec<Point3> = loops
         .iter()
         .flatten()
@@ -1394,30 +1642,7 @@ fn pocket(
             Piece::Line { start, .. } | Piece::Arc { start, .. } => start,
         })
         .collect();
-    let every = samples.len().div_ceil(200).max(1);
-    let model: Vec<[f64; 2]> = samples
-        .iter()
-        .step_by(every)
-        .map(|p| {
-            let m = setup.model_point(Point3::new(p.x, p.y, -depth));
-            [m.x, m.y]
-        })
-        .collect();
-    let hits = kernel
-        .heights(body, &model, setup.facing() > 0.0)
-        .map_err(|e| bad(e.to_string()))?;
-    for (hit, [x, y]) in hits.iter().zip(&model) {
-        if let Some(z) = hit {
-            let above = setup.program_point(Point3::new(*x, *y, *z)).z;
-            if above > -depth + 0.01 {
-                return Err(bad(format!(
-                    "the pocket's floor is covered by material {:.3} mm above it; \
-                     it cannot be reached from this side",
-                    above + depth
-                )));
-            }
-        }
-    }
+    floor_open(kernel, body, setup, &samples, depth)?;
     let passes = ((depth / (cutter.diameter * POCKET_DEPTH_PER_PASS)).ceil() as usize).max(1);
     let levels: Vec<f64> = (1..=passes)
         .map(|k| round3(-depth * k as f64 / passes as f64))
@@ -1453,7 +1678,12 @@ fn pocket(
         }),
     ];
     let ramp_feed = cutter.feed / 2.0;
-    let mut above = 0.0;
+    // From the face, or from above the raw stock when nothing has faced it.
+    let mut above = raw_top.unwrap_or(0.0).max(0.0);
+    let safe = round3(safe.max(above + setup.clearance));
+    if let Some(Step::Move(Move::Rapid { to })) = steps.last_mut() {
+        to.z = safe;
+    }
     for z in levels {
         // Down to just above the last level (already cleared), then ramp.
         steps.push(Step::Move(Move::Rapid {
@@ -1992,7 +2222,14 @@ pub fn detect(
         .collect();
     floors.sort();
     for (_, floor) in floors {
-        match pocket(rebuilt, kernel, &setup, &library, &floor, None, 0.0) {
+        match pocket(
+            rebuilt,
+            kernel,
+            &setup,
+            &library,
+            &floor,
+            PocketOptions::default(),
+        ) {
             Ok(_) => operations.push(OperationDef::Pocket {
                 floor,
                 tool: None,
@@ -2002,7 +2239,7 @@ pub fn detect(
         }
     }
 
-    match hole_program(document, rebuilt, &setup, &library, "detect") {
+    match hole_program(document, rebuilt, &setup, &library, "detect", false) {
         Ok(planned) if !planned.program.operations.is_empty() => {
             operations.push(OperationDef::Holes);
         }
@@ -2243,6 +2480,8 @@ fn plan_entry(
     };
     let mut notes = Vec::new();
     let mut taps = Vec::new();
+    // Whether an operation before the holes has faced the stock.
+    let mut faced = false;
     for op in &entry.setup.operations {
         match op.operation {
             OperationDef::Chamfer {
@@ -2265,8 +2504,11 @@ fn plan_entry(
                     &setup,
                     &library,
                     floor,
-                    tool,
-                    finish.unwrap_or(0.0),
+                    PocketOptions {
+                        tool,
+                        finish: finish.unwrap_or(0.0),
+                        raw_top: raw_top(document, &setup, faced),
+                    },
                 )?);
             }
             OperationDef::Contour {
@@ -2282,9 +2524,11 @@ fn plan_entry(
                 program
                     .operations
                     .push(face(document, rebuilt, &setup, &library, tool)?);
+                faced = true;
             }
             OperationDef::Holes => {
-                let planned = hole_program(document, rebuilt, &setup, &library, &program.name)?;
+                let planned =
+                    hole_program(document, rebuilt, &setup, &library, &program.name, faced)?;
                 // Tapping waits until the end of the setup, after any
                 // chamfering, so burrs are not pushed into fresh threads.
                 for op in planned.program.operations {
@@ -2337,8 +2581,46 @@ fn plan_entry(
     })
 }
 
+/// How high the raw stock stands above Z0 when nothing in the setup has
+/// faced it yet: milled features start above it. `None` once faced.
+fn raw_top(document: &Document, setup: &Setup, faced: bool) -> Option<f64> {
+    if faced {
+        return None;
+    }
+    document.cam().stock.map(|s| match setup.side {
+        Side::Bottom => s.bottom,
+        Side::Top | Side::Front | Side::Back | Side::Left | Side::Right | Side::Turned => s.top,
+    })
+}
+
+/// The end mill that bores a hole of `diameter` larger than every drill:
+/// the largest that is at least half the hole (so one circle clears its
+/// middle) and leaves at least 0.2 mm to its wall.
+fn boring_mill(library: &ToolLibrary, diameter: f64) -> Result<(u32, &Tool), CamError> {
+    library
+        .tools
+        .iter()
+        .filter(|(_, t)| {
+            t.kind == ToolKind::EndMill
+                && t.diameter >= diameter / 2.0
+                && t.diameter < diameter - 0.2
+        })
+        .max_by(|a, b| a.1.diameter.total_cmp(&b.1.diameter).then(b.0.cmp(a.0)))
+        .map(|(n, t)| (*n, t))
+        .ok_or_else(|| {
+            CamError::NoTool(format!(
+                "end mill between {} and {} mm to bore the {diameter} mm holes, which no drill \
+                 is large enough for",
+                diameter / 2.0,
+                diameter - 0.2
+            ))
+        })
+}
+
 /// Mills counterbores: for each, a helix down at most 3° per turn to the
-/// floor, one flat circle to finish it, then to the centre and out.
+/// floor, one flat circle to finish it, then to the centre and out. The
+/// helix starts on the hole's face, or at `raw_top` (program Z) when the
+/// stock above it has not been faced yet.
 fn counterbore_op(
     number: u32,
     tool: &Tool,
@@ -2346,13 +2628,13 @@ fn counterbore_op(
     holes: &[&Hole],
     diameter: f64,
     depth: f64,
+    raw_top: Option<f64>,
 ) -> Operation {
     let r = tool.diameter / 2.0;
     let e = round3(diameter / 2.0 - r);
     let circumference = std::f64::consts::TAU * e;
     let pitch = (circumference * RAMP_DEGREES.to_radians().tan()).min(r);
-    let turns = (depth / pitch).ceil().max(1.0) as usize;
-    let safe = round3(setup.safe_z);
+    let safe = round3(setup.safe_z.max(raw_top.unwrap_or(0.0) + setup.clearance));
     let mut steps = vec![
         Step::Event(Event::ToolChange {
             number,
@@ -2375,16 +2657,19 @@ fn counterbore_op(
         let start = |z: f64| Point3::new(round3(c.x + e), round3(c.y), round3(z));
         let center = |z: f64| Point3::new(round3(c.x), round3(c.y), round3(z));
         let floor = c.z - depth;
+        let top = raw_top.map_or(c.z, |t| t.max(c.z));
+        let length = top - floor;
+        let turns = (length / pitch).ceil().max(1.0) as usize;
         steps.push(Step::Move(Move::Rapid { to: start(safe) }));
         steps.push(Step::Move(Move::Rapid {
-            to: start(c.z + 0.5),
+            to: start(top + 0.5),
         }));
         steps.push(Step::Move(Move::Linear {
-            to: start(c.z),
+            to: start(top),
             feed: tool.feed / 2.0,
         }));
         for turn in 1..=turns {
-            let z = c.z - depth * turn as f64 / turns as f64;
+            let z = top - length * turn as f64 / turns as f64;
             steps.push(Step::Move(Move::Arc {
                 to: start(z),
                 center: center(z),
