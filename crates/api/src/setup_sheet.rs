@@ -169,7 +169,7 @@ impl Api {
                     |v| {
                         format!(
                             "jaws on the {}, gripping {} mm of the stock from its bottom up, {} mm thick, \
-                             the stock on {} mm parallels under its clamped faces; every tool was \
+                             the stock on {} mm parallels under its clamped faces{}; every tool was \
                              checked against them",
                             match v.along {
                                 cndt_model::cam::JawAxis::X => "front and back",
@@ -177,7 +177,11 @@ impl Api {
                             },
                             num(v.grip),
                             num(v.jaw),
-                            num(cndt_model::cam::PARALLEL)
+                            num(cndt_model::cam::PARALLEL),
+                            v.body.map_or_else(String::new, |b| format!(
+                                " and the vise's floor {} mm below the stock's bottom",
+                                num(b)
+                            ))
                         )
                     },
                 ),

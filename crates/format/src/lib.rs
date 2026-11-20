@@ -64,7 +64,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 28: setups turned to any angle about model Y (decision 0032).
 /// - 29: model edges projected into sketches (decision 0033).
 /// - 30: splines in sketches (decision 0034).
-pub const SCHEMA_VERSION: u32 = 30;
+/// - 31: a vise body and floor (decision 0020).
+pub const SCHEMA_VERSION: u32 = 31;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -368,6 +369,19 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     {
         return Err(FormatError::Corrupt(format!(
             "a version {} file cannot contain revolve features",
+            manifest.schema_version
+        )));
+    }
+    // Version 30 knew nothing of a vise's body.
+    if manifest.schema_version < 31
+        && document
+            .cam()
+            .setups
+            .iter()
+            .any(|s| s.setup.vise.is_some_and(|v| v.body.is_some()))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain a vise body",
             manifest.schema_version
         )));
     }
@@ -1451,6 +1465,7 @@ mod tests {
                     grip: 8.0,
                     along: JawAxis::Y,
                     jaw: 20.0,
+                    body: None,
                 }),
             })
             .unwrap();
@@ -1460,6 +1475,51 @@ mod tests {
         let v20 = raw_zip(&[(MANIFEST, &manifest(20)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v20)).unwrap_err();
         assert!(error.to_string().contains("vises"), "{error}");
+    }
+
+    #[test]
+    fn a_vise_body_needs_version_31() {
+        use cndt_model::cam::{CamEdit, FlipAxis, JawAxis, Side, Vise};
+        let mut document = Document::new("Body");
+        let id = document
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+                flip_about: FlipAxis::X,
+                index: None,
+                angle: None,
+            })
+            .unwrap()
+            .unwrap();
+        let mut set = |body| {
+            document
+                .edit_cam(CamEdit::SetVise {
+                    setup: id,
+                    vise: Some(Vise {
+                        grip: 8.0,
+                        along: JawAxis::X,
+                        jaw: 20.0,
+                        body,
+                    }),
+                })
+                .unwrap();
+            serde_json::to_string(&document).unwrap()
+        };
+        // Without a body the file is the same as before and old builds read it.
+        let plain = set(None);
+        assert!(!plain.contains("body"), "{plain}");
+        read(Cursor::new(raw_zip(&[
+            (MANIFEST, &manifest(30)),
+            (DOCUMENT, &plain),
+        ])))
+        .unwrap();
+        let json = set(Some(12.0));
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let v30 = raw_zip(&[(MANIFEST, &manifest(30)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v30)).unwrap_err();
+        assert!(error.to_string().contains("vise body"), "{error}");
     }
 
     #[test]

@@ -166,7 +166,7 @@ export interface Cam {
       work_offset: number;
       flip_about?: "x" | "y";
       index?: number;
-      vise?: { grip: number; along?: "y"; jaw: number };
+      vise?: { grip: number; along?: "y"; jaw: number; body?: number };
       operations: { id: number; operation: CamOperation }[];
     };
   }[];

@@ -273,6 +273,10 @@ impl Api {
                             // The parallels under the clamped faces: their
                             // tops at the stock's bottom.
                             Some(exact.0[2])
+                        } else if (lo..hi).contains(&v) {
+                            // Between the parallels: open down to the
+                            // vise's floor, when it has one.
+                            vise.body.map(|body| exact.0[2] - body)
                         } else {
                             None
                         }

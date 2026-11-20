@@ -1151,6 +1151,12 @@ impl Registry {
                         required: false,
                         description: "Each jaw's thickness in millimetres; 25 by default.",
                     },
+                    ArgSpec {
+                        name: "body",
+                        kind: ArgKind::Number,
+                        required: false,
+                        description: "How far below the stock's bottom the vise's fixed body (its floor) stands, in millimetres. Leave out for none.",
+                    },
                 ],
                 build: |args| {
                     use cndt_model::cam::{CamEdit, DEFAULT_JAW, JawAxis, Vise};
@@ -1171,6 +1177,7 @@ impl Registry {
                             grip: number(args, "grip")?,
                             along,
                             jaw: optional_number(args, "jaw")?.unwrap_or(DEFAULT_JAW),
+                            body: optional_number(args, "body")?,
                         })
                     } else {
                         None
