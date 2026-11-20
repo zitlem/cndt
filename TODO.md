@@ -145,7 +145,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       Refusal paths and boundaries: tool wider than a pocket or slot, depth below the part, step-over above the
       tool, zero-length contours, a vise along `y`, a carried-stock chain of three setups. Done: at least 12
       new tests across the two crates, each failing when the code it covers is changed; `cargo xtask ci` exits 0.
-- [ ] **G4 Test gaps, verify and post gate** (docs/safety.md gates 2 and 4). Tests through the API that: `post`
+- [~] **G4 Test gaps, verify and post gate** (PR pending; `crates/api/tests/post_gate.rs`; covers the read-back problem kind, not machine-limit or rapid-through-material kinds yet) (docs/safety.md gates 2 and 4). Tests through the API that: `post`
       refuses each problem kind without the override; the override is listed in the program header; an
       unverified post and machine are flagged for review; an edited or custom post is named in the header.
       Done: one test per item, each failing without the code it covers.
