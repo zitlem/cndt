@@ -149,3 +149,29 @@ fn a_finishing_allowance_or_no_matching_cutter_pockets_it_instead() {
     let gcode = reply["result"]["gcode"].as_str().unwrap();
     assert!(!gcode.contains("(SLOT "), "{gcode}");
 }
+
+/// Verifies with the shipped post's text edited (`from` replaced by `to`):
+/// the problems it reports.
+fn problems_with_post_edit(s: &mut Session, from: &str, to: &str) -> String {
+    let shipped =
+        s.call(json!({"method": "post_source", "post": "mazak-smoothg"}))["result"]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    let edited = shipped.replacen(from, to, 1);
+    assert_ne!(edited, shipped, "the post has no {from:?}");
+    let verify = s.call(json!({"method": "verify", "definition": edited, "machine": "mazak-hcn-5000", "setups": [0]}));
+    assert_eq!(verify["ok"], true, "{verify}");
+    assert_eq!(verify["result"]["verdict"], "problems", "{verify}");
+    verify["result"]["problems"].to_string()
+}
+
+#[test]
+fn a_cutting_move_posted_as_a_rapid_is_a_problem() {
+    let mut s = block(6.0, None);
+    let problems = problems_with_post_edit(&mut s, "linear = \"G1\"", "linear = \"G0\"");
+    assert!(
+        problems.contains("a cutting move at F500") && problems.contains("do not run it"),
+        "{problems}"
+    );
+}

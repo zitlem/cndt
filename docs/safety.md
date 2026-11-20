@@ -50,7 +50,7 @@ The reader reads what the shipped posts write: G0 to G3 with I and J, canned cyc
 
 ## Known gap
 
-The read-back compares material removed. A difference that removes no material (a rapid in a different but harmless place, a feed rate) is not caught by it; the golden-file tests and verified posts cover those.
+The read-back compares material removed and, in order, the kind (rapid, cutting move, drilling cycle) and the feed rate of every move of the posted G-code with the plan's. A wrong `F`, or a cutting move posted as a rapid, is a problem. Not compared yet: where a move that removes no material ends (a rapid to a different but harmless place), spindle speed, coolant and tool numbers; the golden-file tests and verified posts cover those. A post that cannot be read back (GRBL) is flagged for review, not passed.
 
 ## Rules for contributors
 
