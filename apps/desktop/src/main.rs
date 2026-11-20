@@ -19,6 +19,10 @@
 //! - `posted_preview`: a setup's posted G-code read back and drawn, in the
 //!   `toolpath_preview` layout.
 //!
+//! - `job_cancel` and `job_progress`: stop the running simulation or
+//!   verification and read how far it is, without waiting for the document
+//!   lock the running request holds (decision 0035).
+//!
 //! Both run off the main thread, so a slow import never freezes the window.
 
 // No console window on Windows release builds.
@@ -33,14 +37,19 @@ use tauri::ipc::Response;
 
 /// The one open document. The API is not thread-safe, so every command
 /// takes the lock.
-struct AppState(Mutex<Api>);
+struct AppState {
+    api: Mutex<Api>,
+    /// Cancel and progress of the running simulation or verification, kept
+    /// outside the lock the running request holds (decision 0035).
+    jobs: cndt_api::JobControl,
+}
 
 impl AppState {
     fn api(&self) -> MutexGuard<'_, Api> {
         // A poisoned lock means a command panicked mid-request. The document
         // itself is only changed through commands that either finish or
         // change nothing, so it is still consistent.
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.api.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -53,6 +62,19 @@ fn api(request: String, state: State<'_, AppState>) -> String {
         eprintln!("api< {}", response.chars().take(200).collect::<String>());
     }
     response
+}
+
+/// Asks the running simulation or verification to stop. It does not wait for
+/// the document lock, which that request holds.
+#[tauri::command]
+fn job_cancel(state: State<'_, AppState>) {
+    state.jobs.cancel();
+}
+
+/// How far the running simulation has got: steps done and steps in all.
+#[tauri::command]
+fn job_progress(state: State<'_, AppState>) -> (usize, usize) {
+    state.jobs.progress()
 }
 
 #[tauri::command(async)]
@@ -131,12 +153,23 @@ fn context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
 }
 
+fn new_state() -> AppState {
+    let api = Api::new();
+    let jobs = api.job_control();
+    AppState {
+        api: Mutex::new(api),
+        jobs,
+    }
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState(Mutex::new(Api::new())))
+        .manage(new_state())
         .invoke_handler(tauri::generate_handler![
             api,
+            job_cancel,
+            job_progress,
             step_preview,
             body_mesh,
             body_edges,
