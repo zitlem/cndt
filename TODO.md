@@ -154,7 +154,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       face of the part in the 3D view; only the four quarter-turn sides, anything else says so. Done: a pure
       function mapping a face normal to a side with tests (including a tilted face refused), UI build passes,
       page loads headless with no `[[` marker, strings in `strings.ts`.
-- [~] **G6 Pick an edge for projection** (PR pending) (decision 0033 "Not covered here"). In the sketcher, pick a model edge in
+- [~] **G6 Pick an edge for projection** (PR #96) (decision 0033 "Not covered here"). In the sketcher, pick a model edge in
       the 3D view to run the project-edge command; a lost edge shows its message. Done: a pure function
       from a pick to the edge's two-face name with tests, UI build passes, headless load check, strings in
       `strings.ts`.
