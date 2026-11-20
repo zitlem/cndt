@@ -28,6 +28,7 @@ import {
 } from "./api";
 import { firstSentence, matchEntries, type PaletteEntry } from "./palette";
 import { operationRange, type Toolpath, visibleMoves } from "./scrub";
+import { edgePairName } from "./edgepick";
 import { sideFromNormal } from "./sidepick";
 import { SketchEditor, type Tool } from "./sketch";
 import { ui as text } from "./strings";
@@ -1984,6 +1985,60 @@ viewer.canvas.addEventListener("click", (event) => {
 window.addEventListener("keydown", (event) => {
   if (pickingSide && event.key === "Escape") stopPickingSide();
 });
+// Projecting a model edge into the open sketch by clicking it (decision 0033). The drawing
+// surface is hidden while picking so the 3D part under it can be clicked.
+let pickingEdge = false;
+function stopPickingEdge(): void {
+  if (!pickingEdge) return;
+  pickingEdge = false;
+  viewer.highlightEdges([]);
+  viewer.canvas.style.cursor = "";
+  ui.viewportHint.hidden = true;
+  editor.setSurfaceHidden(false);
+}
+element("project-edge").addEventListener("click", () => {
+  if (editor.editing === null) return;
+  if (!current?.body) {
+    showError(new Error(text.noPartYet));
+    return;
+  }
+  pickingEdge = true;
+  editor.setSurfaceHidden(true);
+  viewer.canvas.style.cursor = "pointer";
+  ui.viewportHint.textContent = text.clickProjectEdge;
+  ui.viewportHint.hidden = false;
+});
+viewer.canvas.addEventListener("pointermove", (event) => {
+  if (pickingEdge) viewer.highlightEdges([], viewer.edgeAt(event.clientX, event.clientY));
+});
+viewer.canvas.addEventListener("click", (event) => {
+  if (!pickingEdge) return;
+  const sketch = editor.editing;
+  const edge = viewer.edgeAt(event.clientX, event.clientY);
+  const pick =
+    edge === null || sketch === null
+      ? null
+      : edgePairName(current?.body?.edges ?? [], current?.body?.faces ?? [], edge);
+  if (pick === null || !pick.ok) {
+    // A refused edge keeps the picker open, with the reason in the hint.
+    ui.viewportHint.textContent =
+      pick === null || pick.reason === "unknown" || pick.reason === "same-face"
+        ? text.projectEdgeNone
+        : pick.reason === "unnamed"
+          ? text.projectEdgeUnnamed
+          : text.projectEdgeAmbiguous;
+    return;
+  }
+  stopPickingEdge();
+  guarded(async () => {
+    // A lost or unprojectable edge comes back as the engine's own message.
+    render(await execute("sketch.project_edge", { sketch, first: pick.first, second: pick.second }));
+  })();
+});
+window.addEventListener("keydown", (event) => {
+  if (pickingEdge && event.key === "Escape") stopPickingEdge();
+});
+element("finish-sketch").addEventListener("click", stopPickingEdge);
 element("cam-post-all").addEventListener(
   "click",
   guarded(async () => {

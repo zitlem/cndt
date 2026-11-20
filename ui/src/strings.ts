@@ -130,6 +130,8 @@ export const page = {
   "construction": "Construction",
   "sketch-fit.title": "Fit the sketch in view (F)",
   "sketch-fit": "Fit",
+  "project-edge.title": "Click an edge of the part in the 3D view to draw it into this sketch, with its points fixed",
+  "project-edge.label": "Project edge",
   "finish-sketch.title": "Finish sketch",
   "finish-sketch": "Finish",
   "sketch-tools.sketch": "Sketch",
@@ -583,6 +585,12 @@ export const ui = {
   pickedFaceNoName: "One of the picked faces has no name of its own yet.",
   pickedEdgeNoName:
     "One of the picked edges can't be named on its own yet (its faces meet at more than one edge). Pick its face instead.",
+  clickProjectEdge: "Click an edge of the part to project it into the sketch. Esc cancels.",
+  projectEdgeUnnamed:
+    "That edge can't be named yet: one of its faces has no name of its own. Pick another edge.",
+  projectEdgeAmbiguous:
+    "That edge can't be named on its own: its two faces meet at more than one edge. Pick another edge.",
+  projectEdgeNone: "That is not an edge of the part. Pick another.",
   faceNoNameForSketch: "That face has no name of its own yet, so a sketch could not find it again.",
   cantSketchThere: (reason: string) => `Can't sketch there: ${reason}.`,
   addSetupFirst: "Add a setup first, from SETUP in the ribbon.",
