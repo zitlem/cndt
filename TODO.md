@@ -163,21 +163,45 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       0017 to 0033 now provide and what remains. Done: a table row per phase that matches the code, every
       command named in docs exists in `cndt commands`, no code change.
 
-- [ ] **G8 Spline end tangent** (decision 0034 "Not in this record", follow-up B8b). A solver constraint that makes a
+- [~] **G8 Spline end tangent** (PR #97; format 32; format change, so not self-merged; the UI has no button for it yet: use `sketch.constrain`) (decision 0034 "Not in this record", follow-up B8b). A solver constraint that makes a
       spline's end tangent to a line or arc at a shared end point. Done: solver tests (converges, refuses a
       conflicting or over-constrained set with a message), command `sketch.add_constraint` accepts it, file
       version +1 only if the constraint list needs a new kind (decision amended first), `cargo xtask ci` exits 0.
-- [x] **G9 Splines in the sketcher UI** (PR #98, merged: draw, show, pick and drag through points; no headless browser was available, so the load check was the build only) (follow-up B8c). Draw, show, select and drag splines in `sketch.ts` and
+- [x] **G9 Splines in the sketcher UI** (PR #98, merged; draw, show, pick and drag through points; no headless browser was available, so the load check was the build only) (follow-up B8c). Draw, show, select and drag splines in `sketch.ts` and
       `viewer.ts`; their points no longer show as loose points. Done: a pure function for the spline's sampled
       polyline with tests, UI build passes, headless load check with no `[[` marker, strings in `strings.ts`.
 - [~] **G10 Cancel button and progress bar** (PR #99; no headless browser was available, so the load check was the build only) (decision 0035, follow-up of D7). Wrappers for `job_cancel` and
       `job_progress` in `ui/src/api.ts`, a cancel button and a progress bar for simulation and verification.
       Done: a pure function turning progress into a label with tests, UI build passes, headless load check,
       strings in `strings.ts`.
-- [ ] **G11 Interruptible rebuild and toolpath planning** (decision 0035 "Left as a follow-up"). Extend the job
+- [~] **G11 Interruptible rebuild and toolpath planning** (decision 0035 "Left as a follow-up"). Extend the job
       control to rebuild and operation planning, checked between features and between passes. Done: a test
       cancels a planning of a pocket and gets a "cancelled" result with the document unchanged, another cancels
       a rebuild; no change to any golden file; `cargo xtask ci` exits 0.
+
+## H. Refill of 2026-11-19 (third)
+
+Added by the refill run. Same rules as above. G8 and G10 have open PRs: do not start them again.
+
+- [ ] **H1 Read-back compares spindle, coolant and tool numbers** (docs/safety.md "Known gap"). Compare, in order, the
+      spindle speed and direction, coolant state and tool number of the read-back program with the plan; a
+      difference is a **problem**. Done: tests where a post writes a wrong S, a missing coolant code and a wrong T
+      each fail without the code; shipped posts still verify clean; GRBL (no tool numbers) is still review-only;
+      `docs/safety.md` "Known gap" updated; `cargo xtask ci` exits 0.
+- [ ] **H2 Post gate tests, machine limits and rapids through material** (G4 left these two problem kinds). Through the
+      API, `post` refuses a program that breaks a machine travel limit and one with a rapid through material,
+      without the override, and with it lists each in the header. Done: one test per kind, each failing without
+      the code it covers.
+- [ ] **H3 Test gaps, pocket and step-over** (G3 left these). In `process-mill`: a pocket narrower than its tool is
+      refused with the size needed; a step-over above the tool diameter is refused or clamped as the code says.
+      Done: tests for both, each failing when the check is removed; `cargo xtask ci` exits 0.
+- [ ] **H4 Vise floor depth in the UI** (G2 left it). A field for the vise `body` height in the setup panel in
+      `main.ts`, empty meaning none, sent through the existing command. Done: a pure function parsing the field
+      (empty, number, negative refused) with tests, UI build passes, headless load check, strings in `strings.ts`.
+- [ ] **H5 Rings for holes over twice the largest end mill** (decision 0030 "Not in this slice", still Accepted). Bore
+      such holes by concentric helical rings instead of refusing. Amend 0030 first. Done: tests for a hole needing
+      two rings (material removed against the closed form, no uncut ring), the refusal when even rings cannot fit,
+      golden files for all five posts, no change to existing goldens, `cargo xtask ci` exits 0.
 
 ## F. Never by the loop (need the machine or the owner)
 

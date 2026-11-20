@@ -212,6 +212,37 @@ impl Resolver<'_> {
                     order: 1.0,
                 },
             },
+            K::SplineTangent { spline, end, to } => {
+                let Some(Geometry::Spline { through, .. }) =
+                    self.sketch.entity(spline).map(|e| &e.geometry)
+                else {
+                    return Err(SketchError::UnknownEntity(spline));
+                };
+                let at = self
+                    .sketch
+                    .spline_end(spline, end)
+                    .ok_or(SketchError::UnknownEntity(spline))?;
+                let next = match end {
+                    crate::SplineEnd::Start => through.get(1),
+                    crate::SplineEnd::End => {
+                        through.len().checked_sub(2).and_then(|i| through.get(i))
+                    }
+                }
+                .ok_or(SketchError::UnknownEntity(spline))?;
+                let chord = (self.point(at)?, self.point(*next)?);
+                if self.is_line(to) {
+                    Form::ChordAlongLine {
+                        chord,
+                        line: self.line(to)?,
+                    }
+                } else {
+                    Form::ChordTangentArc {
+                        chord,
+                        center: self.center(to)?,
+                        at: chord.0,
+                    }
+                }
+            }
             K::Concentric { a, b } => Form::Concentric(self.center(a)?, self.center(b)?),
             K::Symmetric { a, b, axis } => {
                 Form::Symmetric(self.point(a)?, self.point(b)?, self.line(axis)?)
