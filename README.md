@@ -20,9 +20,11 @@ CNDT is an open-source CAD/CAM application for designing parts and machining the
 | Phase | Scope | State |
 | --- | --- | --- |
 | 0 | Foundations: workspace, CI, geometry kernel build, command engine, desktop shell | Done |
-| 1 | CAD core: sketcher, solid features, timeline | Done for the test block: sketches, extrude, cut, holes, chamfer, fillet, patterns, parameters |
-| 2 | 2.5D milling and first posts | Built: face, contour, pocket, holes, counterbore and chamfer milling, feature detection, both sides in one program (by hand or on a B table), machine definitions, and Fanuc, Haas, LinuxCNC, Mazak SmoothG and GRBL posts. Unverified until it cuts a real part |
-| 3 | Simulation and verification (v1.0) | In progress: stock simulation of a setup, with collisions, gouges and material left |
+| 1 | CAD core: sketcher, solid features, timeline | Built: sketches with a constraint solver (lines, arcs, circles, slots, fit-point splines, trim, offset, mirror, patterns, projected model edges, DXF import and export); extrude, cut, revolve, holes, chamfer, fillet, shell, mirror, linear and circular patterns, imported STEP solids; parameters; work planes, axes and points; suppress and reorder in the timeline; undo. Not yet: combining several bodies (needs a design decision), a solver constraint for spline end tangents, drawing splines in the UI |
+| 2 | 2.5D milling and first posts | Built: face, contour, pocket, holes (spot, drill, tap, ream, counterbore), bore, slot and chamfer milling, feature detection, setups on the part's sides (by hand or on a B table, turned to any angle about the upright axis), machine definitions and a tool library, and Fanuc, Haas, LinuxCNC, Mazak SmoothG and GRBL posts that can extend one another. Unverified until it cuts a real part. Not yet: adaptive clearing, rest machining, 3D milling, turning |
+| 3 | Simulation and verification (v1.0) | Built: stock simulation of every setup with the vise and carried stock; collisions, gouges, rapids through material, material left and machine limits; the posted G-code read back and compared with the plan (material, move kinds and feeds); post gates with a recorded override; prove-out (air cut) output; cancel and progress for long jobs. Not yet: spindle collisions, clamps and fixture plates, travel against the machine's measured coordinates, any post marked verified |
+
+Also in the app: a command palette, stale markers on operations after a design edit, toolpath scrubbing, project thumbnails and crash recovery. Every feature is a command listed by `cndt commands`, and the decisions behind them are [0017 to 0035](docs/decisions/README.md).
 
 ## Building
 
