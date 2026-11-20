@@ -135,7 +135,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       the read-back toolpath with the planned one; a difference is a **problem**. Done: tests where a post
       writes a wrong F, and where a cutting move is posted as G0, each fail without the code; the shipped posts
       still verify clean; `docs/safety.md` "Known gap" updated.
-- [~] **G2 Vise body and floor** (PR pending; format 31; format change, so not self-merged; no UI field for `body` yet, the command sets it and the UI keeps it) (decision 0020 "Not yet"). Amend 0020 (still Accepted) so the vise has a fixed
+- [~] **G2 Vise body and floor** (PR #90; format 31; format change, so not self-merged; no UI field for `body` yet, the command sets it and the UI keeps it) (decision 0020 "Not yet"). Amend 0020 (still Accepted) so the vise has a fixed
       body and floor under the parallels, entered as one number (`body` height, default none). The simulation
       reports a tool going below the parallels onto it as a fixture problem. Done: a drill through the full stock
       into the floor is a problem, with the finding naming it; no change to setups without a vise; format +1
