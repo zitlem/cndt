@@ -61,6 +61,7 @@ impl Api {
         machine: Option<&str>,
         id: u32,
         sim: &crate::simulate::Simulated,
+        planned: Option<&cndt_cam_core::Program>,
     ) -> Result<Option<String>, String> {
         let posted = self
             .post_program(post, machine, Some(id), None, crate::Output::default(), &[])
@@ -69,6 +70,13 @@ impl Api {
         let back = cndt_post::read_back(gcode).map_err(|e| e.to_string())?;
         let report = cndt_sim::simulate_controlled(&back, &sim.tools, &sim.input, &self.control)
             .map_err(|e| format!("it could not be simulated: {e}"))?;
+        // Material removed is not all: a wrong feed, or a cut posted as a
+        // rapid, removes the same stock.
+        if let Some(planned) = planned
+            && let Some(problem) = crate::motion_check::compare(planned, &back)
+        {
+            return Ok(Some(problem));
+        }
         let worst = report
             .heights
             .iter()
@@ -178,6 +186,7 @@ impl Api {
                     .index
                     .map_or(String::new(), |b| format!(" · table at B{b}"))
             );
+            let mut planned_program = None;
             match cndt_process_mill::plan_setup(
                 document,
                 &self.rebuilt,
@@ -185,6 +194,7 @@ impl Api {
                 Some(*id),
             ) {
                 Ok(planned) => {
+                    planned_program = Some(planned.program.clone());
                     let mut tools: Vec<String> = Vec::new();
                     let mut typical = false;
                     for step in planned.program.operations.iter().flat_map(|o| &o.steps) {
@@ -283,7 +293,7 @@ impl Api {
                     }
                     // The G-code as posted, read back and simulated on the
                     // same stock: it must cut exactly what was planned.
-                    match self.read_back_check(post, machine, *id, &sim) {
+                    match self.read_back_check(post, machine, *id, &sim, planned_program.as_ref()) {
                         Ok(None) => {
                             let _ = writeln!(
                                 sections,

@@ -20,6 +20,7 @@
 mod dxf;
 mod dxf_import;
 mod export;
+mod motion_check;
 mod setup_sheet;
 mod simulate;
 mod stale;

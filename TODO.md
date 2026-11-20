@@ -130,7 +130,7 @@ named below exist and pass · the page still loads headless with no `[[` marker 
 
 Added by the refill run. Same rules as above. Re-check each line against the code and `gh pr list` before starting.
 
-- [ ] **G1 Read-back compares feeds and rapids** (decision 0016, docs/safety.md "Known gap"). `verify`'s read-back
+- [~] **G1 Read-back compares feeds and rapids** (PR pending) (decision 0016, docs/safety.md "Known gap"). `verify`'s read-back
       today compares material removed only. Also compare, move by move, the feed rate and the rapid/feed kind of
       the read-back toolpath with the planned one; a difference is a **problem**. Done: tests where a post
       writes a wrong F, and where a cutting move is posted as G0, each fail without the code; the shipped posts

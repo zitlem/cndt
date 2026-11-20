@@ -600,6 +600,25 @@ fn the_cndt_test_block() {
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(std::fs::read_to_string(&nc).unwrap(), gcode);
     let _ = std::fs::remove_file(nc);
+    // A post that writes the wrong feed in its drilling cycle removes the
+    // same stock, so only the feed comparison of the read-back sees it
+    // (decision 0016): a problem, naming the cycle and the feeds.
+    let shipped = s.call(json!({"method": "post_source", "post": "fanuc-mill"}))["result"]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let wrong = shipped.replacen("Z{z} R{r} F{feed}", "Z{z} R{r} F{r}", 1);
+    assert_ne!(
+        wrong, shipped,
+        "the fanuc post has no drill template to edit"
+    );
+    let verify = s.call(json!({"method": "verify", "definition": wrong, "setups": [0]}));
+    assert_eq!(verify["result"]["verdict"], "problems", "{verify}");
+    let problems = verify["result"]["problems"].to_string();
+    assert!(
+        problems.contains("moves differently from the plan") && problems.contains("cycle"),
+        "{problems}"
+    );
     // The other shipped posts with rigid tapping take the whole setup too.
     for post in ["haas-mill", "linuxcnc-mill"] {
         let reply = s.call(json!({"method": "post", "post": post, "setup": 0}));
