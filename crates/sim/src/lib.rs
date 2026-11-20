@@ -1265,6 +1265,129 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_length_cut_moves_nothing_and_finds_nothing() {
+        let report = simulate(
+            &program(vec![rapid(10.0, 10.0, 5.0), cut(10.0, 10.0, 5.0)]),
+            &tools(ToolShape::Flat { diameter: 4.0 }),
+            &block(),
+        )
+        .unwrap();
+        assert!(report.cut_length.abs() < 1e-12, "{report:?}");
+        assert!(report.removed.abs() < 1e-12);
+        assert!(report.collisions.is_empty() && report.gouges.is_empty());
+    }
+
+    #[test]
+    fn a_cut_wholly_beside_the_stock_removes_nothing_but_still_counts() {
+        let report = simulate(
+            &program(vec![
+                rapid(40.0, 40.0, 2.0),
+                cut(40.0, 40.0, -5.0),
+                cut(50.0, 40.0, -5.0),
+            ]),
+            &tools(ToolShape::Flat { diameter: 4.0 }),
+            &block(),
+        )
+        .unwrap();
+        assert!(report.removed.abs() < 1e-12, "{report:?}");
+        assert!(report.collisions.is_empty() && report.gouges.is_empty());
+        assert!(
+            (report.cut_length - 17.0).abs() < 1e-9,
+            "{}",
+            report.cut_length
+        );
+    }
+
+    #[test]
+    fn a_rapid_that_only_reaches_the_stock_top_is_not_a_collision() {
+        // The stock top is Z0: a rapid ending exactly there touches, no more.
+        let report = simulate(
+            &program(vec![rapid(10.0, 10.0, 5.0), rapid(10.0, 10.0, 0.0)]),
+            &tools(ToolShape::Flat { diameter: 4.0 }),
+            &block(),
+        )
+        .unwrap();
+        assert!(report.collisions.is_empty(), "{report:?}");
+        assert!(
+            (report.rapid_length - 5.0).abs() < 1e-9,
+            "{}",
+            report.rapid_length
+        );
+    }
+
+    #[test]
+    fn a_tool_below_the_fixture_top_along_y_is_a_fixture_hit() {
+        // A jaw along Y: the first 3 mm of Y hold a fixture up to Z-2.
+        let mut setup = block();
+        let grid = setup.grid;
+        setup.fixture = grid
+            .centres()
+            .iter()
+            .map(|[_, y]| (*y < 3.0).then_some(-2.0))
+            .collect();
+        let tool = tools(ToolShape::Flat { diameter: 2.0 });
+        let fixture_hits = |report: &Report| {
+            report
+                .collisions
+                .iter()
+                .filter(|c| c.what == Hit::Fixture)
+                .count()
+        };
+        // Over the jaw, 1 mm below its top.
+        let over = program(vec![rapid(10.0, 1.0, 5.0), rapid(10.0, 1.0, -3.0)]);
+        let report = simulate(&over, &tool, &setup).unwrap();
+        let hit = report
+            .collisions
+            .iter()
+            .find(|c| c.what == Hit::Fixture)
+            .unwrap_or_else(|| panic!("no fixture hit: {report:?}"));
+        assert!((hit.depth - 1.0).abs() < 1e-9, "{hit:?}");
+        // The same depth clear of the jaw.
+        let beside = program(vec![rapid(10.0, 8.0, 5.0), rapid(10.0, 8.0, -3.0)]);
+        assert_eq!(fixture_hits(&simulate(&beside, &tool, &setup).unwrap()), 0);
+        // Level with the jaw's top: touching is not a hit.
+        let level = program(vec![rapid(10.0, 1.0, 5.0), rapid(10.0, 1.0, -2.0)]);
+        assert_eq!(fixture_hits(&simulate(&level, &tool, &setup).unwrap()), 0);
+    }
+
+    #[test]
+    fn stock_carried_through_three_setups_only_ever_shrinks() {
+        // Each setup faces a further 2 mm off the whole block; the heights
+        // it leaves are the next one's stock.
+        let mut setup = block();
+        setup.part = vec![None; setup.grid.len()];
+        let tool = tools(ToolShape::Flat { diameter: 6.0 });
+        let mut total = 0.0;
+        for level in [-2.0, -4.0, -6.0] {
+            let mut steps = vec![rapid(-5.0, 0.0, 2.0)];
+            for y in [0.0, 5.0, 10.0, 15.0, 20.0] {
+                steps.push(cut(-5.0, y, level));
+                steps.push(cut(25.0, y, level));
+            }
+            steps.push(rapid(25.0, 20.0, 5.0));
+            let report = simulate(&program(steps), &tool, &setup).unwrap();
+            assert!(report.collisions.is_empty(), "{report:?}");
+            assert!(
+                report
+                    .heights
+                    .iter()
+                    .zip(&setup.heights)
+                    .all(|(a, b)| a <= b),
+                "stock grew"
+            );
+            total += report.removed;
+            setup.heights = report.heights;
+        }
+        assert!(total > 0.0);
+        let middle = setup.grid.len() / 2 + setup.grid.nx / 2;
+        assert!(
+            (setup.heights[middle] - (-6.0)).abs() < 1e-9,
+            "{}",
+            setup.heights[middle]
+        );
+    }
+
+    #[test]
     fn every_error_says_what_is_wrong() {
         for e in [
             SimError::Cancelled,
