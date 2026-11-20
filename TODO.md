@@ -188,18 +188,18 @@ Added by the refill run. Same rules as above. G8 and G10 have open PRs: do not s
       difference is a **problem**. Done: tests where a post writes a wrong S, a missing coolant code and a wrong T
       each fail without the code; shipped posts still verify clean; GRBL (no tool numbers) is still review-only;
       `docs/safety.md` "Known gap" updated; `cargo xtask ci` exits 0.
-- [~] **H2 Post gate tests, machine limits and rapids through material** (PR pending; machine limit half done: it is a hard "machine" refusal the override does not lift, docs/safety.md corrected; the rapid-through-material half is H2b) (G4 left these two problem kinds). Through the
+- [x] **H2 Post gate tests, machine limits and rapids through material** (PR #103; machine limit half done: it is a hard "machine" refusal the override does not lift, docs/safety.md corrected; the rapid-through-material half is H2b) (G4 left these two problem kinds). Through the
       API, `post` refuses a program that breaks a machine travel limit and one with a rapid through material,
       without the override, and with it lists each in the header. Done: one test per kind, each failing without
       the code it covers.
-- [ ] **H2b Post gate test, rapid through material** (H2 left it; tried: facing/holes/two-setup variants through the
+- [blocked] **H2b Post gate test, rapid through material** (H2 left it; a second run found no way either: the planner has no user-set heights and every operation's rapids stay above the stock by construction, so such a program needs a planner bug; tried earlier: facing/holes/two-setup variants through the
       API, none plans a rapid into stock, and a post writing G0 for cuts is caught earlier by the read-back
       comparison). Find or build a planned program whose rapid enters stock (a `cndt-sim` fixture is not enough:
       it must go through `post`), then test refusal and the header listing with the override.
 - [ ] **H3 Test gaps, pocket and step-over** (G3 left these). In `process-mill`: a pocket narrower than its tool is
       refused with the size needed; a step-over above the tool diameter is refused or clamped as the code says.
       Done: tests for both, each failing when the check is removed; `cargo xtask ci` exits 0.
-- [ ] **H4 Vise floor depth in the UI** (G2 left it). A field for the vise `body` height in the setup panel in
+- [~] **H4 Vise floor depth in the UI** (PR pending; no headless browser was available, so the load check was the build only) (G2 left it). A field for the vise `body` height in the setup panel in
       `main.ts`, empty meaning none, sent through the existing command. Done: a pure function parsing the field
       (empty, number, negative refused) with tests, UI build passes, headless load check, strings in `strings.ts`.
 - [ ] **H5 Rings for holes over twice the largest end mill** (decision 0030 "Not in this slice", still Accepted). Bore

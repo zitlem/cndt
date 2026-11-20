@@ -29,6 +29,7 @@ import {
   jobProgress,
 } from "./api";
 import { progressFraction, progressPercent } from "./job";
+import { MAX_BODY, parseBody } from "./vise";
 import { firstSentence, matchEntries, type PaletteEntry } from "./palette";
 import { operationRange, type Toolpath, visibleMoves } from "./scrub";
 import { edgePairName } from "./edgepick";
@@ -1073,18 +1074,43 @@ function renderSetups(state: DocumentState): void {
       along.append(option);
     }
     along.value = setup.vise?.along ?? "x";
+    // The fixed body under the parallels: how far below the stock's bottom
+    // its floor stands; empty for none.
+    const body = globalThis.document.createElement("input");
+    body.type = "number";
+    body.min = "0";
+    body.max = String(MAX_BODY);
+    body.step = "any";
+    body.placeholder = text.noViseBody;
+    body.title = text.viseBodyTitle;
+    body.value = setup.vise?.body === undefined ? "" : String(setup.vise.body);
+    body.disabled = !setup.vise;
     const applyVise = guarded(async () => {
       const grip = vise.value.trim() === "" ? null : Number(vise.value);
+      const floor = parseBody(body.value);
+      if (floor.kind === "refused") {
+        body.value = setup.vise?.body === undefined ? "" : String(setup.vise.body);
+        throw new Error(text.viseBodyRefused[floor.reason]);
+      }
       render(
         await execute(
           "cam.set_vise",
-          grip === null ? { setup: id } : { setup: id, grip, along: along.value, jaw: setup.vise?.jaw ?? 25, body: setup.vise?.body },
+          grip === null
+            ? { setup: id }
+            : {
+                setup: id,
+                grip,
+                along: along.value,
+                jaw: setup.vise?.jaw ?? 25,
+                ...(floor.kind === "depth" ? { body: floor.value } : {}),
+              },
         ),
       );
     });
     vise.addEventListener("change", applyVise);
     along.addEventListener("change", applyVise);
-    viseRow.append(text.viseLabel, vise, along);
+    body.addEventListener("change", applyVise);
+    viseRow.append(text.viseLabel, vise, along, body);
     item.append(head, ops);
     if (shownSetup === id && shownPath) item.append(scrubRow(shownPath));
     item.append(row, viseRow);

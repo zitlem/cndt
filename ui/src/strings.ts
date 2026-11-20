@@ -609,6 +609,13 @@ export const ui = {
   viseLabel: "Vise",
   viseTitle: "How much of the stock the vise jaws hold, from its bottom up. The simulation checks every tool against the jaws. Empty: no vise.",
   noVise: "mm",
+  noViseBody: "floor mm",
+  viseBodyTitle: "How far below the stock's bottom the vise's fixed body (its floor) stands. The simulation reports a tool going down onto it. Empty: none.",
+  viseBodyRefused: {
+    "not-a-number": "The vise floor depth must be a number of millimetres, or empty for none.",
+    "not-positive": "The vise floor must be below the stock: a depth above 0 mm, or empty for none.",
+    "too-deep": "The vise floor depth is at most 500 mm below the stock.",
+  },
   jawsFrontBack: "jaws front/back",
   jawsLeftRight: "jaws left/right",
   toolDialogTitle: (number: number | null) => (number === null ? "New tool" : `Tool T${number}`),
