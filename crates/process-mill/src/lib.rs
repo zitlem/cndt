@@ -3313,6 +3313,163 @@ mod tests {
         );
     }
 
+    /// The block with a stock and one top setup holding `operation`, planned.
+    fn plan_one(operation: impl FnOnce(&[String]) -> OperationDef) -> Result<Planned, CamError> {
+        let mut d = block_with_bottom_hole();
+        d.edit_cam(CamEdit::SetStock(cndt_model::cam::Stock {
+            side: 2.0,
+            top: 2.0,
+            bottom: 3.0,
+        }))
+        .unwrap();
+        let top = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
+                angle: None,
+            })
+            .unwrap()
+            .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        let faces: Vec<String> = r.faces.iter().flatten().map(ToString::to_string).collect();
+        d.edit_cam(CamEdit::AddOperation {
+            setup: top,
+            operation: operation(&faces),
+        })
+        .unwrap();
+        plan_setup(&d, &r, &OpenCascade, Some(top))
+    }
+
+    fn bottom_face(faces: &[String]) -> String {
+        faces
+            .iter()
+            .find(|n| n.starts_with("f0/start/"))
+            .unwrap()
+            .clone()
+    }
+
+    fn contour_with(face: String, tool: Option<u32>, depth: Option<f64>) -> OperationDef {
+        OperationDef::Contour { face, tool, depth }
+    }
+
+    fn contour_error(tool: Option<u32>, depth: Option<f64>) -> CamError {
+        plan_one(|f| contour_with(bottom_face(f), tool, depth)).unwrap_err()
+    }
+
+    #[test]
+    fn a_contour_depth_of_zero_or_less_is_refused() {
+        for depth in [0.0, -3.0, f64::NAN] {
+            let got = contour_error(None, Some(depth));
+            assert!(
+                matches!(got, CamError::Contour(ref why) if why.contains("more than zero")),
+                "{depth}: {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_contour_with_a_tool_that_is_not_in_the_library_names_it() {
+        assert_eq!(
+            contour_error(Some(999), None),
+            CamError::NoTool(String::from("tool 999"))
+        );
+    }
+
+    #[test]
+    fn a_contour_of_a_face_that_is_gone_says_to_pick_it_again() {
+        let got = plan_one(|_| contour_with(String::from("f9/nothing/0"), None, None)).unwrap_err();
+        assert!(
+            matches!(got, CamError::Contour(ref why) if why.contains("no longer exists")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_contour_of_a_wall_is_refused_as_not_square_to_the_spindle() {
+        // Any named face that is not the bottom or the top is a side wall.
+        let got = plan_one(|faces| {
+            let wall = faces
+                .iter()
+                .find(|n| !n.starts_with("f0/start/") && !n.starts_with("f0/end/"))
+                .unwrap()
+                .clone();
+            contour_with(wall, None, None)
+        })
+        .unwrap_err();
+        assert!(
+            matches!(got, CamError::Contour(ref why) if why.contains("not square")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_chamfer_of_no_width_or_a_width_beyond_the_tool_is_refused() {
+        let chamfer = |width: f64, tool: Option<u32>| {
+            plan_one(move |f| OperationDef::Chamfer {
+                face: bottom_face(f),
+                width,
+                tool,
+            })
+            .unwrap_err()
+        };
+        for width in [0.0, -1.0, f64::INFINITY] {
+            let got = chamfer(width, None);
+            assert!(
+                matches!(got, CamError::Contour(ref why) if why.contains("more than zero")),
+                "{width}: {got:?}"
+            );
+        }
+        let got = chamfer(1000.0, None);
+        assert!(
+            matches!(got, CamError::Contour(ref why) if why.contains("too wide")),
+            "{got:?}"
+        );
+        assert_eq!(
+            chamfer(1.0, Some(999)),
+            CamError::NoTool(String::from("tool 999"))
+        );
+    }
+
+    #[test]
+    fn a_chamfer_of_a_face_that_looks_away_from_the_spindle_is_refused() {
+        // In a top setup the bottom face looks down, away from the spindle.
+        let got = plan_one(|f| OperationDef::Chamfer {
+            face: bottom_face(f),
+            width: 0.5,
+            tool: None,
+        })
+        .unwrap_err();
+        assert!(
+            matches!(got, CamError::Contour(ref why) if why.contains("does not face the spindle")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_pocket_of_a_face_that_is_gone_or_has_no_walls_is_refused_with_words() {
+        let got = plan_one(|_| OperationDef::Pocket {
+            floor: String::from("f9/nothing/0"),
+            tool: None,
+            finish: None,
+        })
+        .unwrap_err();
+        assert!(
+            matches!(got, CamError::Contour(ref why) if why.contains("no longer exists")),
+            "{got:?}"
+        );
+        // The block's bottom is the outside of the part, not a pocket floor.
+        let got = plan_one(|f| OperationDef::Pocket {
+            floor: bottom_face(f),
+            tool: None,
+            finish: None,
+        })
+        .unwrap_err();
+        assert!(got.to_string().len() > 10, "{got:?}");
+    }
+
     #[test]
     fn every_error_says_what_to_do_or_what_is_wrong() {
         for e in [
