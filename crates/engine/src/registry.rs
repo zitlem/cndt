@@ -66,6 +66,9 @@ pub enum ArgKind {
     /// `center`, `start` and `end` (counter-clockwise), circles `center`
     /// and `radius`.
     Curves,
+    /// A list of sketch points, each a position `{"x": 1, "y": 2}` or the id
+    /// of an existing point, such as `[{"x": 0, "y": 0}, 4, {"x": 9, "y": 2}]`.
+    Points,
     /// What a projected edge looks like in the sketch plane, as the API
     /// computes it: `{"type": "line", "start": {"x": 0, "y": 0}, "end": ...}`.
     /// Not typed by hand.
@@ -1600,6 +1603,49 @@ impl Registry {
                 },
             },
             CommandSpec {
+                name: "sketch.add_spline",
+                description: "Add a spline: a smooth curve through three or more points, each a new position or an existing point's id. Closed, it also returns from the last point to the first. Move a point and the curve follows; constrain the points as usual. It can be a profile, but cannot be trimmed or offset.",
+                args: &[
+                    SKETCH,
+                    ArgSpec {
+                        name: "through",
+                        kind: ArgKind::Points,
+                        required: true,
+                        description: "At least three points, in order: positions or existing point ids.",
+                    },
+                    ArgSpec {
+                        name: "closed",
+                        kind: ArgKind::Boolean,
+                        required: false,
+                        description: "true to close the curve back on its first point (default false).",
+                    },
+                ],
+                build: |args| {
+                    let items = args
+                        .get("through")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| String::from("\"through\" must be a list of points"))?;
+                    let through = items
+                        .iter()
+                        .map(|item| {
+                            let mut one = Map::new();
+                            one.insert(String::from("point"), item.clone());
+                            point_ref(&one, "point").map_err(|_| {
+                                String::from(
+                                    "\"through\" must hold positions like {\"x\": 1, \"y\": 2} or point ids",
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let closed = if args.contains_key("closed") {
+                        boolean(args, "closed")?
+                    } else {
+                        false
+                    };
+                    edit(args, SketchEdit::AddSpline { through, closed })
+                },
+            },
+            CommandSpec {
                 name: "sketch.trim",
                 description: "Trim a line, arc or circle: remove the stretch of it nearest a picked point, between the places where other curves cross it. Refused if nothing crosses it. Constraints on the trimmed entity are dropped.",
                 args: &[
@@ -2901,6 +2947,10 @@ mod tests {
             (
                 "sketch.add_slot",
                 json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 20, "y": 0}, "width": 6}),
+            ),
+            (
+                "sketch.add_spline",
+                json!({"sketch": 0, "through": [{"x": 0, "y": 0}, {"x": 5, "y": 4}, {"x": 10, "y": 0}]}),
             ),
             (
                 "sketch.trim",

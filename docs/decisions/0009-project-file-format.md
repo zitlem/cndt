@@ -194,3 +194,10 @@ A sketch record may carry `"projections"`, a list of `{"first", "second", "entit
 
 - **Why a version bump:** a version 28 build refuses the unknown field as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 28 or older file with projections is refused as damaged.
+
+## Version 30 (2026-11-19)
+
+A sketch entity may be `{"type": "spline", "through": [point ids], "closed": true}`; `closed` is left out when false (decision 0034).
+
+- **Why a version bump:** a version 29 build refuses the unknown entity type as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 29 or older file with a spline is refused as damaged.

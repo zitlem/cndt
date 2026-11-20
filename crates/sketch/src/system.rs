@@ -44,6 +44,7 @@ fn owners(sketch: &crate::Sketch, id: EntityId) -> Vec<EntityId> {
         Some(Geometry::Line { start, end }) => vec![*start, *end],
         Some(Geometry::Circle { center, .. }) => vec![*center, id],
         Some(Geometry::Arc { center, start, end }) => vec![*center, *start, *end],
+        Some(Geometry::Spline { through, .. }) => through.clone(),
         None => Vec::new(),
     }
 }

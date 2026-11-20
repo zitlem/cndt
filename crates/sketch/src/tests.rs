@@ -820,3 +820,106 @@ fn held_points_do_not_move() {
     assert_eq!(at(&s, a), Point2::new(0.0, 0.0));
     assert!(close(at(&s, b).x, 4.0));
 }
+
+fn ring_points(s: &mut Sketch, n: usize, r: f64) -> Vec<EntityId> {
+    (0..n)
+        .map(|k| {
+            let a = std::f64::consts::TAU * k as f64 / n as f64;
+            pt(s, r * a.cos(), r * a.sin())
+        })
+        .collect()
+}
+
+#[test]
+fn a_closed_spline_is_one_region_of_about_the_right_area() {
+    let mut s = Sketch::new();
+    let ids = ring_points(&mut s, 12, 10.0);
+    s.add_spline(ids, true).unwrap();
+    let profiles = s.profiles();
+    assert_eq!(profiles.profiles.len(), 1);
+    assert!(profiles.open.is_empty());
+    let area = profiles.profiles[0].outer.area;
+    let circle = std::f64::consts::PI * 100.0;
+    assert!((area - circle).abs() / circle < 0.01, "{area}");
+}
+
+#[test]
+fn an_open_spline_and_a_line_close_a_region_and_a_lone_open_spline_does_not() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    let b = pt(&mut s, 5.0, 4.0);
+    let c = pt(&mut s, 10.0, 0.0);
+    let spline = s.add_spline(vec![a, b, c], false).unwrap();
+    let alone = s.profiles();
+    assert!(alone.profiles.is_empty());
+    assert_eq!(alone.open, vec![spline]);
+    s.add_line(c, a).unwrap();
+    let closed = s.profiles();
+    assert_eq!(closed.profiles.len(), 1);
+    assert!(closed.open.is_empty());
+    let area = closed.profiles[0].outer.area;
+    assert!(area > 20.0 && area < 40.0, "{area}");
+}
+
+#[test]
+fn a_circle_inside_a_closed_spline_is_its_hole() {
+    let mut s = Sketch::new();
+    let ids = ring_points(&mut s, 8, 10.0);
+    s.add_spline(ids, true).unwrap();
+    let c = pt(&mut s, 0.0, 0.0);
+    s.add_circle(c, 2.0).unwrap();
+    let profiles = s.profiles();
+    assert_eq!(profiles.profiles.len(), 2);
+    assert_eq!(profiles.profiles[0].holes.len(), 1);
+}
+
+#[test]
+fn a_spline_needs_three_points_that_exist_and_are_distinct() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    let b = pt(&mut s, 1.0, 0.0);
+    assert!(matches!(
+        s.add_spline(vec![a, b], false),
+        Err(SketchError::BadValue { .. })
+    ));
+    assert_eq!(
+        s.add_spline(vec![a, b, EntityId(9)], false),
+        Err(SketchError::UnknownEntity(EntityId(9)))
+    );
+    assert_eq!(
+        s.add_spline(vec![a, b, a], false),
+        Err(SketchError::SameEntity(a))
+    );
+}
+
+#[test]
+fn constraints_on_a_splines_points_still_solve() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    let b = pt(&mut s, 5.0, 4.0);
+    let c = pt(&mut s, 9.0, 1.0);
+    s.add_spline(vec![a, b, c], false).unwrap();
+    con(&mut s, Constraint::Fix { point: a });
+    con(&mut s, Constraint::HorizontalPoints { a, b: c });
+    s.solve(&opts()).unwrap();
+    assert!(close(at(&s, c).y, 0.0));
+}
+
+#[test]
+fn a_spline_survives_json() {
+    let mut s = Sketch::new();
+    let ids = ring_points(&mut s, 4, 3.0);
+    s.add_spline(ids, true).unwrap();
+    let text = serde_json::to_string(&s).unwrap();
+    assert!(text.contains("spline") && text.contains("closed"));
+    let back: Sketch = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, s);
+}
+
+#[test]
+fn removing_a_point_of_a_spline_is_refused_while_the_spline_uses_it() {
+    let mut s = Sketch::new();
+    let ids = ring_points(&mut s, 4, 3.0);
+    s.add_spline(ids.clone(), true).unwrap();
+    assert!(s.remove_entity(ids[0]).is_err());
+}

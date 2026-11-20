@@ -104,6 +104,26 @@ fn samples(sketch: &Sketch, curve: LoopCurve) -> Vec<Point2> {
                 }
             }
         }
+        Some(Geometry::Spline { through, closed }) => {
+            let pts: Vec<Point2> = through.iter().filter_map(|id| at(*id)).collect();
+            let mut run = crate::spline_samples(&pts, *closed, 16);
+            if !*closed {
+                run.pop();
+            }
+            if curve.reversed {
+                // Running backwards, an open run starts at the last point;
+                // a closed one keeps its first point first. Either way the
+                // point it ends on is left out, as for every curve.
+                if *closed {
+                    run[1..].reverse();
+                } else if let Some(last) = pts.last() {
+                    run.reverse();
+                    run.insert(0, *last);
+                    run.pop();
+                }
+            }
+            out.extend(run);
+        }
         Some(Geometry::Circle { center, radius }) => {
             if let Some(c) = at(*center) {
                 for k in 0..64 {
@@ -152,8 +172,13 @@ fn inside(p: Point2, polygon: &[Point2]) -> bool {
 
 /// The end points of a line or arc.
 fn ends(geometry: &Geometry) -> Option<(EntityId, EntityId)> {
-    match *geometry {
-        Geometry::Line { start, end } | Geometry::Arc { start, end, .. } => Some((start, end)),
+    match geometry {
+        Geometry::Line { start, end } | Geometry::Arc { start, end, .. } => Some((*start, *end)),
+        Geometry::Spline { through, closed } => {
+            let first = *through.first()?;
+            let last = *through.last()?;
+            Some((first, if *closed { first } else { last }))
+        }
         _ => None,
     }
 }

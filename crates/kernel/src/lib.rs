@@ -329,7 +329,7 @@ pub trait Kernel: fmt::Debug + Send + Sync {
 }
 
 /// A profile curve in model coordinates, millimetres.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Curve {
     /// A straight line.
     Line {
@@ -353,6 +353,15 @@ pub enum Curve {
         center: Point3,
         /// Radius.
         radius: f64,
+    },
+    /// A smooth curve through three or more points (a cubic B-spline fitted
+    /// through them). If `closed` it runs from the last point back to the
+    /// first, which is not repeated.
+    Spline {
+        /// The points it passes through, in order.
+        points: Vec<Point3>,
+        /// Whether it closes on itself.
+        closed: bool,
     },
 }
 
@@ -479,7 +488,11 @@ fn occt_loops(loops: &[Vec<Curve>]) -> Vec<Vec<cndt_occt_sys::Curve>> {
         .map(|curves| {
             curves
                 .iter()
-                .map(|c| match *c {
+                .map(|c| match c.clone() {
+                    Curve::Spline { points, closed } => C::Spline {
+                        points: points.into_iter().map(xyz).collect(),
+                        closed,
+                    },
                     Curve::Line { start, end } => C::Line {
                         start: xyz(start),
                         end: xyz(end),

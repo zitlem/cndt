@@ -25,9 +25,11 @@
 mod equations;
 mod profiles;
 mod solver;
+mod spline;
 mod system;
 
 pub use profiles::{Loop, LoopCurve, Profile, ProfileKey, Profiles};
+pub use spline::spline_samples;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -91,6 +93,17 @@ pub enum Geometry {
         /// Where the arc ends.
         end: EntityId,
     },
+    /// A smooth curve through three or more points (a fit-point spline). An
+    /// open spline runs from the first point to the last; a closed one also
+    /// returns from the last to the first, smoothly. The solver holds no
+    /// equation of its own for it: the points carry the constraints.
+    Spline {
+        /// The points it passes through, in order.
+        through: Vec<EntityId>,
+        /// Whether it closes back on its first point.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+    },
 }
 
 impl Geometry {
@@ -102,16 +115,22 @@ impl Geometry {
             Geometry::Line { .. } => "line",
             Geometry::Circle { .. } => "circle",
             Geometry::Arc { .. } => "arc",
+            Geometry::Spline { .. } => "spline",
         }
     }
 
     /// The points this geometry is built on.
-    fn points(&self) -> Vec<EntityId> {
+    #[must_use]
+    pub fn points(&self) -> Vec<EntityId> {
+        if let Geometry::Spline { through, .. } = self {
+            return through.clone();
+        }
         match *self {
             Geometry::Point { .. } => Vec::new(),
             Geometry::Line { start, end } => vec![start, end],
             Geometry::Circle { center, .. } => vec![center],
             Geometry::Arc { center, start, end } => vec![center, start, end],
+            Geometry::Spline { .. } => Vec::new(),
         }
     }
 }
@@ -646,6 +665,16 @@ impl Sketch {
         self.add(Geometry::Arc { center, start, end }, false)
     }
 
+    /// Adds a spline through existing points, closed back on the first if
+    /// `closed`.
+    pub fn add_spline(
+        &mut self,
+        through: Vec<EntityId>,
+        closed: bool,
+    ) -> Result<EntityId, SketchError> {
+        self.add(Geometry::Spline { through, closed }, false)
+    }
+
     /// Adds any entity. Its points must already exist.
     pub fn add(&mut self, geometry: Geometry, construction: bool) -> Result<EntityId, SketchError> {
         let points = geometry.points();
@@ -674,6 +703,13 @@ impl Sketch {
                     kind: "radius",
                     value: radius,
                     expected: "more than zero",
+                });
+            }
+            Geometry::Spline { ref through, .. } if through.len() < 3 => {
+                return Err(SketchError::BadValue {
+                    kind: "spline points",
+                    value: through.len() as f64,
+                    expected: "at least 3",
                 });
             }
             _ => {}
