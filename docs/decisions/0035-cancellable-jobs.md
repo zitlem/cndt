@@ -42,6 +42,12 @@ that can be kept where another thread reaches it without the lock.
 ## Consequences
 
 - Cancel is prompt for simulation and verification (one program step).
-- Rebuilds, toolpath planning and kernel calls are not interruptible yet;
-  they are short next to a fine-grid simulation. Left as a follow-up task.
+- Toolpath planning checks the flag before each operation
+  (`plan_setup_with`, `plan_setups_with`, error `CamError::Cancelled`, API
+  kind `cancelled`) and `rebuild_to_with` checks it before each feature
+  (returns `None`). Both only read the document, so a cancel changes
+  nothing. The API's own rebuild after an edit is not cancelled: stopping it
+  halfway would leave the part out of step with the document.
+- Kernel calls inside one operation or feature are not interruptible; the
+  check is between them.
 - No safety check, tolerance or golden file changes.

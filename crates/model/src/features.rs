@@ -2153,6 +2153,19 @@ pub fn rebuild(document: &Document, kernel: &dyn Kernel) -> Rebuilt {
 /// history. Later features get no status.
 #[must_use]
 pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>) -> Rebuilt {
+    rebuild_to_with(document, kernel, count, &|| false).unwrap_or_default()
+}
+
+/// [`rebuild_to`] that asks `cancel` before each feature: once it says
+/// `true` the rebuild stops and returns `None`, so the caller keeps the part
+/// it had (decision 0035). It only reads the document.
+#[must_use]
+pub fn rebuild_to_with(
+    document: &Document,
+    kernel: &dyn Kernel,
+    count: Option<usize>,
+    cancel: &dyn Fn() -> bool,
+) -> Option<Rebuilt> {
     let mut part: Option<(Body, Names)> = None;
     let mut status = BTreeMap::new();
     let mut frames = BTreeMap::new();
@@ -2162,6 +2175,9 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
     let features = document.features();
     let features = &features[..count.map_or(features.len(), |n| n.min(features.len()))];
     for entry in features {
+        if cancel() {
+            return None;
+        }
         if entry.suppressed {
             suppressed.insert(entry.id);
             status.insert(entry.id, FeatureStatus::Suppressed);
@@ -2299,14 +2315,14 @@ pub fn rebuild_to(document: &Document, kernel: &dyn Kernel, count: Option<usize>
         Some((body, names)) => (Some(body), names),
         None => (None, Vec::new()),
     };
-    Rebuilt {
+    Some(Rebuilt {
         body,
         faces,
         status,
         properties,
         frames,
         references,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -3047,6 +3063,30 @@ mod tests {
         assert_eq!(r.references.len(), 1);
         // Rolled back to before it, the mesh is not there.
         assert!(rebuild_to(&d, &OpenCascade, Some(0)).references.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_rebuild_returns_nothing_and_leaves_the_document_alone() {
+        let mut d = Document::new("t");
+        d.add_feature(import("Import1", box_step(), Operation::Join))
+            .unwrap();
+        d.add_feature(import("Import2", box_step(), Operation::Join))
+            .unwrap();
+        let before = d.features().len();
+        // Cancelled before the first feature.
+        assert!(rebuild_to_with(&d, &OpenCascade, None, &|| true).is_none());
+        // Cancelled between the two features: after one check passes.
+        let checks = std::cell::Cell::new(0);
+        let cancel = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 1
+        };
+        assert!(rebuild_to_with(&d, &OpenCascade, None, &cancel).is_none());
+        assert_eq!(checks.get(), 2, "it stopped at the second feature");
+        assert_eq!(d.features().len(), before);
+        // Not cancelled: the same result as `rebuild`.
+        let full = rebuild_to_with(&d, &OpenCascade, None, &|| false).unwrap();
+        assert_eq!(full.status, rebuild(&d, &OpenCascade).status);
     }
 
     /// A polygon through the given points (x, y), closed, in `s`.

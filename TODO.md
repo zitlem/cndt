@@ -167,14 +167,14 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       spline's end tangent to a line or arc at a shared end point. Done: solver tests (converges, refuses a
       conflicting or over-constrained set with a message), command `sketch.add_constraint` accepts it, file
       version +1 only if the constraint list needs a new kind (decision amended first), `cargo xtask ci` exits 0.
-- [~] **G9 Splines in the sketcher UI** (PR pending: draw, show, pick and drag through points; no headless browser was available, so the load check was the build only) (follow-up B8c). Draw, show, select and drag splines in `sketch.ts` and
+- [x] **G9 Splines in the sketcher UI** (PR #98, merged; draw, show, pick and drag through points; no headless browser was available, so the load check was the build only) (follow-up B8c). Draw, show, select and drag splines in `sketch.ts` and
       `viewer.ts`; their points no longer show as loose points. Done: a pure function for the spline's sampled
       polyline with tests, UI build passes, headless load check with no `[[` marker, strings in `strings.ts`.
 - [ ] **G10 Cancel button and progress bar** (decision 0035, follow-up of D7). Wrappers for `job_cancel` and
       `job_progress` in `ui/src/api.ts`, a cancel button and a progress bar for simulation and verification.
       Done: a pure function turning progress into a label with tests, UI build passes, headless load check,
       strings in `strings.ts`.
-- [ ] **G11 Interruptible rebuild and toolpath planning** (decision 0035 "Left as a follow-up"). Extend the job
+- [~] **G11 Interruptible rebuild and toolpath planning** (decision 0035 "Left as a follow-up"). Extend the job
       control to rebuild and operation planning, checked between features and between passes. Done: a test
       cancels a planning of a pocket and gets a "cancelled" result with the document unchanged, another cancels
       a rebuild; no change to any golden file; `cargo xtask ci` exits 0.
