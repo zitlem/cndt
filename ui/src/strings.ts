@@ -96,6 +96,9 @@ export const page = {
   "tool.circle": "Circle",
   "tool.arc.title": "Arc (A): centre, start, end, counter-clockwise",
   "tool.arc": "Arc",
+  "tool.spline.title":
+    "Spline (S): click the points to pass through; Enter or a click on the last point ends it, a click on the first point closes it",
+  "tool.spline": "Spline",
   "tool.point.title": "Point (P)",
   "tool.point": "Point",
   "sketch-tools.create": "Create",

@@ -1087,6 +1087,7 @@ function freePoints(id: string, state: DocumentState): number[] {
     if (g.type === "line") [g.start, g.end].forEach((p) => used.add(p));
     if (g.type === "circle") used.add(g.center);
     if (g.type === "arc") [g.center, g.start, g.end].forEach((p) => used.add(p));
+    if (g.type === "spline") g.through.forEach((p) => used.add(p));
   }
   return Object.entries(entities)
     .filter(([key, e]) => e.geometry.type === "point" && !e.construction && !used.has(Number(key)))
@@ -2282,6 +2283,7 @@ const toolKeys: Record<string, Tool> = {
   r: "rectangle",
   c: "circle",
   a: "arc",
+  s: "spline",
   p: "point",
   d: "dimension",
 };
@@ -2294,6 +2296,7 @@ window.addEventListener("keydown", (event) => {
     const key = event.key.toLowerCase();
     const tool = toolKeys[key];
     if (event.key === "Escape") editor.escape();
+    else if (event.key === "Enter" && editor.finishSpline()) event.preventDefault();
     else if (event.key === "Delete" || event.key === "Backspace") guarded(() => editor.deleteSelection())();
     else if (tool) editor.setTool(tool);
     else if (key === "x") guarded(() => editor.toggleConstruction())();

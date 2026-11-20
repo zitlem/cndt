@@ -26,7 +26,8 @@ export type Geometry =
   | { type: "point"; at: XY }
   | { type: "line"; start: number; end: number }
   | { type: "circle"; center: number; radius: number }
-  | { type: "arc"; center: number; start: number; end: number };
+  | { type: "arc"; center: number; start: number; end: number }
+  | { type: "spline"; through: number[]; closed?: boolean };
 
 export interface Entity {
   geometry: Geometry;
