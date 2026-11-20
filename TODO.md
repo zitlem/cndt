@@ -116,7 +116,7 @@ named below exist and pass · the page still loads headless with no `[[` marker 
 
 ## E. Hygiene
 
-- [ ] **E1 UI strings, the rest**: the unit suffixes in `main.ts`, and the visible text in `sketch.ts` and
+- [~] **E1 UI strings, the rest** (claimed: uncommitted work sits in the worktree /Users/ai/Desktop/CNDT-E1 on branch loop/E1-ui-strings; the loop must not start it; the owner finishes or releases it): the unit suffixes in `main.ts`, and the visible text in `sketch.ts` and
       `viewer.ts`, into `strings.ts`. Done: the rendered page is byte-identical before and after (headless
       DOM dump), build passes.
 - [ ] **E2 Spec and repo in step**: after each merged task update the status paragraph of the
