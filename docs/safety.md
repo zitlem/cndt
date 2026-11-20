@@ -50,7 +50,7 @@ The reader reads what the shipped posts write: G0 to G3 with I and J, canned cyc
 
 ## Known gap
 
-The read-back compares material removed and, in order, the kind (rapid, cutting move, drilling cycle) and the feed rate of every move of the posted G-code with the plan's. A wrong `F`, or a cutting move posted as a rapid, is a problem. Not compared yet: where a move that removes no material ends (a rapid to a different but harmless place), spindle speed, coolant and tool numbers; the golden-file tests and verified posts cover those. A post that cannot be read back (GRBL) is flagged for review, not passed.
+The read-back compares material removed and, in order, the kind (rapid, cutting move, drilling cycle) and the feed rate of every move of the posted G-code with the plan's. It also compares the machine state each cutting stretch runs in: tool number, spindle speed and direction, and coolant. A wrong `F`, a cutting move posted as a rapid, a wrong `S`, a missing coolant code or a wrong `T` is a problem. Not compared yet: where a move that removes no material ends (a rapid to a different but harmless place), and the state outside cutting (a spindle or coolant left running at the end); the golden-file tests and verified posts cover those. A post that cannot be read back (GRBL) is flagged for review, not passed.
 
 ## Rules for contributors
 

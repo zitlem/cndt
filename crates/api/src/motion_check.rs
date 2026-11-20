@@ -4,7 +4,7 @@
 //! read back. Material removed is compared by the simulation; this catches
 //! what removes no material, a wrong `F` or a cutting move posted as a rapid.
 
-use cndt_cam_core::{CycleKind, Move, Program, Step};
+use cndt_cam_core::{Coolant, CycleKind, Event, Move, Program, SpindleDirection, Step};
 
 /// The posts write feed rates with at most whole mm/min, so a difference up
 /// to half of that is rounding, not an error.
@@ -127,6 +127,102 @@ pub(crate) fn compare(planned: &Program, back: &Program) -> Option<String> {
     }
 }
 
+/// The machine state a cutting move runs in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct State {
+    tool: Option<u32>,
+    /// Speed and direction; `None` while the spindle is stopped.
+    spindle: Option<(f64, SpindleDirection)>,
+    coolant: Coolant,
+}
+
+impl State {
+    fn same(self, other: Self) -> bool {
+        self.tool == other.tool
+            && self.coolant == other.coolant
+            && match (self.spindle, other.spindle) {
+                (None, None) => true,
+                (Some((a, d)), Some((b, e))) => d == e && (a - b).abs() <= FEED_TOLERANCE,
+                _ => false,
+            }
+    }
+
+    fn describe(self) -> String {
+        let tool = self
+            .tool
+            .map_or(String::from("no tool"), |t| format!("T{t}"));
+        let spindle = match self.spindle {
+            None => String::from("the spindle stopped"),
+            Some((rpm, SpindleDirection::Clockwise)) => format!("S{rpm:.0} clockwise"),
+            Some((rpm, SpindleDirection::CounterClockwise)) => {
+                format!("S{rpm:.0} counter-clockwise")
+            }
+        };
+        let coolant = match self.coolant {
+            Coolant::Off => "no coolant",
+            Coolant::Flood => "flood coolant",
+            Coolant::Mist => "mist coolant",
+        };
+        format!("{tool}, {spindle}, {coolant}")
+    }
+}
+
+/// The distinct states the cutting moves of a program run in, in order.
+fn states(program: &Program) -> Vec<State> {
+    let mut now = State {
+        tool: None,
+        spindle: None,
+        coolant: Coolant::Off,
+    };
+    let mut out: Vec<State> = Vec::new();
+    for step in program.operations.iter().flat_map(|o| &o.steps) {
+        match step {
+            Step::Event(Event::ToolChange { number, .. }) => now.tool = Some(*number),
+            Step::Event(Event::SpindleOn { rpm, direction }) => {
+                now.spindle = Some((*rpm, *direction));
+            }
+            Step::Event(Event::SpindleOff) => now.spindle = None,
+            Step::Event(Event::Coolant { mode }) => now.coolant = *mode,
+            Step::Move(Move::Linear { .. } | Move::Arc { .. } | Move::Cycle(_))
+                if !out.last().is_some_and(|last| last.same(now)) =>
+            {
+                out.push(now);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `None` when the cutting moves of the posted program run with the
+/// planned tool, spindle speed and direction and coolant, in order;
+/// otherwise what differs first.
+#[must_use]
+pub(crate) fn compare_state(planned: &Program, back: &Program) -> Option<String> {
+    let (a, b) = (states(planned), states(back));
+    let hint = "The post may be wrong; do not run it.";
+    for (i, (p, q)) in a.iter().zip(&b).enumerate() {
+        if !p.same(*q) {
+            return Some(format!(
+                "the posted G-code cuts in a different machine state from the plan: cutting \
+                 stretch {} should run with {} but runs with {}. {hint}",
+                i + 1,
+                p.describe(),
+                q.describe()
+            ));
+        }
+    }
+    if a.len() == b.len() {
+        None
+    } else {
+        Some(format!(
+            "the plan cuts in {} machine states and the posted G-code in {}. {hint}",
+            a.len(),
+            b.len()
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +283,79 @@ mod tests {
         assert!(found.contains("a cutting move at F500"), "{found}");
         // A rapid posted as a cut is found too.
         assert!(compare(&b, &a).is_some());
+    }
+
+    fn with_state(tool: u32, rpm: f64, coolant: Coolant) -> Program {
+        Program {
+            name: String::new(),
+            number: 1,
+            work_offset: 1,
+            operations: vec![Operation {
+                name: String::new(),
+                steps: vec![
+                    Step::Event(Event::ToolChange {
+                        number: tool,
+                        description: String::new(),
+                    }),
+                    Step::Event(Event::SpindleOn {
+                        rpm,
+                        direction: SpindleDirection::Clockwise,
+                    }),
+                    Step::Event(Event::Coolant { mode: coolant }),
+                    Step::Move(rapid(0.0)),
+                    Step::Move(cut(1.0, 500.0)),
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn same_state_agrees_and_rounding_is_tolerated() {
+        let a = with_state(3, 8000.0, Coolant::Flood);
+        assert_eq!(
+            compare_state(&a, &with_state(3, 8000.4, Coolant::Flood)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_wrong_spindle_speed_is_found() {
+        let a = with_state(3, 8000.0, Coolant::Off);
+        let found = compare_state(&a, &with_state(3, 800.0, Coolant::Off)).expect("differs");
+        assert!(
+            found.contains("S8000") && found.contains("S800 "),
+            "{found}"
+        );
+    }
+
+    #[test]
+    fn a_missing_coolant_is_found() {
+        let a = with_state(3, 8000.0, Coolant::Flood);
+        let found = compare_state(&a, &with_state(3, 8000.0, Coolant::Off)).expect("differs");
+        assert!(
+            found.contains("flood coolant") && found.contains("no coolant"),
+            "{found}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_tool_is_found() {
+        let a = with_state(3, 8000.0, Coolant::Off);
+        let found = compare_state(&a, &with_state(4, 8000.0, Coolant::Off)).expect("differs");
+        assert!(found.contains("T3") && found.contains("T4"), "{found}");
+    }
+
+    #[test]
+    fn a_wrong_direction_or_a_stopped_spindle_is_found() {
+        let a = with_state(3, 8000.0, Coolant::Off);
+        let mut b = a.clone();
+        b.operations[0].steps[1] = Step::Event(Event::SpindleOn {
+            rpm: 8000.0,
+            direction: SpindleDirection::CounterClockwise,
+        });
+        assert!(compare_state(&a, &b).is_some());
+        b.operations[0].steps[1] = Step::Event(Event::SpindleOff);
+        assert!(compare_state(&a, &b).is_some());
     }
 
     #[test]
