@@ -78,7 +78,7 @@ named below exist and pass · the page still loads headless with no `[[` marker 
       on a work plane; revolve and circular pattern about a work axis. Tests.
 - [x] **B7 Projected edges into a sketch** (PR #84, merged) (approved; decision first, format +1). Project a model edge by
       its two-face name; a lost edge says so.
-- [~] **B8 Splines** (PR open; decision 0034, format 30; format change, so not self-merged). Done in this
+- [~] **B8 Splines** (PR #85; decision 0034, format 30; format change, so not self-merged). Done in this
       PR: fit-point spline entity, profile detection, kernel curve (extrude, cut, revolve), command
       `sketch.add_spline`, mirror/pattern/delete, DXF export, tests. **Still to do (new tasks, in order):**
       B8b a solver constraint for a spline end tangent (tangent to a line or arc at an end point);
