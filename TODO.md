@@ -188,15 +188,15 @@ Added by the refill run. Same rules as above. G8 and G10 have open PRs: do not s
       difference is a **problem**. Done: tests where a post writes a wrong S, a missing coolant code and a wrong T
       each fail without the code; shipped posts still verify clean; GRBL (no tool numbers) is still review-only;
       `docs/safety.md` "Known gap" updated; `cargo xtask ci` exits 0.
-- [~] **H2 Post gate tests, machine limits and rapids through material** (PR pending; machine limit half done: it is a hard "machine" refusal the override does not lift, docs/safety.md corrected; the rapid-through-material half is H2b) (G4 left these two problem kinds). Through the
+- [x] **H2 Post gate tests, machine limits and rapids through material** (PR #103; machine limit half done: it is a hard "machine" refusal the override does not lift, docs/safety.md corrected; the rapid-through-material half is H2b) (G4 left these two problem kinds). Through the
       API, `post` refuses a program that breaks a machine travel limit and one with a rapid through material,
       without the override, and with it lists each in the header. Done: one test per kind, each failing without
       the code it covers.
-- [ ] **H2b Post gate test, rapid through material** (H2 left it; tried: facing/holes/two-setup variants through the
+- [blocked] **H2b Post gate test, rapid through material** (unreachable through the API: the planner never emits a rapid into stock, and a post writing G0 for cuts is caught by the read-back comparison before the simulation runs, `verify.rs` `read_back_check`; a prove-out lift only raises moves; needs a planner bug or a new fixture hook, so the owner decides; H2 left it; tried: facing/holes/two-setup variants through the
       API, none plans a rapid into stock, and a post writing G0 for cuts is caught earlier by the read-back
       comparison). Find or build a planned program whose rapid enters stock (a `cndt-sim` fixture is not enough:
       it must go through `post`), then test refusal and the header listing with the override.
-- [ ] **H3 Test gaps, pocket and step-over** (G3 left these). In `process-mill`: a pocket narrower than its tool is
+- [~] **H3 Test gaps, pocket and step-over** (PR pending; the step-over is the constant `POCKET_STEPOVER`, not an input, so only the pocket-narrower-than-tool half exists) (G3 left these). In `process-mill`: a pocket narrower than its tool is
       refused with the size needed; a step-over above the tool diameter is refused or clamped as the code says.
       Done: tests for both, each failing when the check is removed; `cargo xtask ci` exits 0.
 - [ ] **H4 Vise floor depth in the UI** (G2 left it). A field for the vise `body` height in the setup panel in

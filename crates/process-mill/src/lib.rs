@@ -3548,6 +3548,112 @@ mod tests {
         );
     }
 
+    /// The block with a square pocket `side` mm wide cut 5 mm into its top,
+    /// planned as one top-setup pocket with `tool`.
+    fn plan_square_pocket(side: f64, tool: Option<u32>) -> Result<Planned, CamError> {
+        let mut d = block_with_bottom_hole();
+        let top = rebuild(&d, &OpenCascade)
+            .faces
+            .iter()
+            .flatten()
+            .map(ToString::to_string)
+            .find(|n| n.starts_with("f0/end/"))
+            .unwrap();
+        let s = d.add_sketch("", Plane::Face(top)).unwrap();
+        d.edit_sketch(s, |k| {
+            let corners = [
+                (30.0, 20.0),
+                (30.0 + side, 20.0),
+                (30.0 + side, 20.0 + side),
+                (30.0, 20.0 + side),
+            ];
+            let p: Vec<EntityId> = corners
+                .iter()
+                .map(|&(x, y)| k.add_point(Point2::new(x, y)))
+                .collect::<Result<_, _>>()?;
+            for i in 0..4 {
+                k.add_line(p[i], p[(i + 1) % 4])?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let profiles = default_profiles(&d.sketch(s).unwrap().sketch);
+        d.add_feature(Feature::Extrude {
+            name: "Pocket".into(),
+            sketch: s,
+            profiles,
+            distance: -5.0,
+            distance_expression: None,
+            operation: Join::Cut,
+        })
+        .unwrap();
+        d.edit_cam(CamEdit::SetStock(cndt_model::cam::Stock {
+            side: 2.0,
+            top: 2.0,
+            bottom: 3.0,
+        }))
+        .unwrap();
+        let setup = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
+                angle: None,
+            })
+            .unwrap()
+            .unwrap();
+        let r = rebuild(&d, &OpenCascade);
+        let floor = r
+            .faces
+            .iter()
+            .flatten()
+            .map(ToString::to_string)
+            .find(|n| n.starts_with("f2/") && n.contains("/start/") || n.starts_with("f2/end/"))
+            .unwrap_or_else(|| panic!("no pocket floor in {:?}", r.faces));
+        d.edit_cam(CamEdit::AddOperation {
+            setup,
+            operation: OperationDef::Pocket {
+                floor,
+                tool,
+                finish: None,
+            },
+        })
+        .unwrap();
+        plan_setup(&d, &r, &OpenCascade, Some(setup))
+    }
+
+    #[test]
+    fn a_tool_wider_than_the_pocket_is_refused_and_a_narrow_one_is_used() {
+        // A 6 mm pocket takes the largest end mill that fits: 4 mm, tool 13.
+        let planned = plan_square_pocket(6.0, None).unwrap();
+        let used = planned
+            .program
+            .operations
+            .iter()
+            .flat_map(|op| &op.steps)
+            .find_map(|step| match step {
+                Step::Event(Event::ToolChange { number, .. }) => Some(*number),
+                _ => None,
+            });
+        assert_eq!(used, Some(13));
+        // Asked for by number, the same tool does not fit a 3 mm pocket,
+        // and the message names the tool and its size.
+        let got = plan_square_pocket(3.0, Some(13)).unwrap_err();
+        assert!(
+            matches!(got, CamError::Contour(ref why)
+                if why.contains("tool 13") && why.contains("does not fit")),
+            "{got:?}"
+        );
+        // Left to choose, a pocket smaller than every end mill says so.
+        let got = plan_square_pocket(0.5, None).unwrap_err();
+        assert_eq!(
+            got,
+            CamError::NoTool(String::from("end mill small enough for the pocket"))
+        );
+    }
+
     #[test]
     fn a_pocket_of_a_face_that_is_gone_or_has_no_walls_is_refused_with_words() {
         let got = plan_one(|_| OperationDef::Pocket {
