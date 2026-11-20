@@ -76,11 +76,14 @@ named below exist and pass · the page still loads headless with no `[[` marker 
       reason, undo, reorder refuses an order that puts a feature before its sketch or source.
 - [x] **B6 Reference geometry: work planes, axes, points** (PR #78; format change, not self-merged) (approved; decision first, format +1). Sketch
       on a work plane; revolve and circular pattern about a work axis. Tests.
-- [~] **B7 Projected edges into a sketch** (PR #84) (approved; decision first, format +1). Project a model edge by
+- [x] **B7 Projected edges into a sketch** (PR #84, merged) (approved; decision first, format +1). Project a model edge by
       its two-face name; a lost edge says so.
-- [ ] **B8 Splines** (approved; decision first, format +1: a new entity type, solver support, profile
-      detection, kernel curve). The largest sketch item; do it last in B. Tests: closed spline profile,
-      extrude, solver with a spline end tangent.
+- [~] **B8 Splines** (PR #85; decision 0034, format 30; format change, so not self-merged). Done in this
+      PR: fit-point spline entity, profile detection, kernel curve (extrude, cut, revolve), command
+      `sketch.add_spline`, mirror/pattern/delete, DXF export, tests. **Still to do (new tasks, in order):**
+      B8b a solver constraint for a spline end tangent (tangent to a line or arc at an end point);
+      B8c drawing, showing and dragging splines in the UI (`sketch.ts`, `viewer.ts`: the UI does not draw
+      them yet, and their points show as loose points).
 
 ## C. Milling operations (spec v1.0: 2D group)
 

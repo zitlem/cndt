@@ -42,11 +42,7 @@ fn read_source(sketch: &Sketch, entities: &[EntityId]) -> Result<Source, SketchE
             Geometry::Point { .. } => {
                 points.insert(id);
             }
-            Geometry::Line { start, end } => points.extend([start, end]),
-            Geometry::Circle { center, .. } => {
-                points.insert(center);
-            }
-            Geometry::Arc { center, start, end } => points.extend([center, start, end]),
+            ref other => points.extend(other.points()),
         }
     }
     Ok(Source {
@@ -90,6 +86,11 @@ fn copy(
                 .ok_or_else(|| error("a copy lost a point"))
         };
         let copy = match geometry {
+            Geometry::Spline { through, closed } => {
+                let copied: Result<Vec<EntityId>, SketchError> =
+                    through.iter().map(|p| at(*p)).collect();
+                sketch.add_spline(copied?, closed)?
+            }
             Geometry::Point { .. } => {
                 made.insert(id, at(id)?);
                 continue;

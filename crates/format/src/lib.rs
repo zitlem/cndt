@@ -63,7 +63,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 27: reference geometry (decision 0029).
 /// - 28: setups turned to any angle about model Y (decision 0032).
 /// - 29: model edges projected into sketches (decision 0033).
-pub const SCHEMA_VERSION: u32 = 29;
+/// - 30: splines in sketches (decision 0034).
+pub const SCHEMA_VERSION: u32 = 30;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -367,6 +368,20 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     {
         return Err(FormatError::Corrupt(format!(
             "a version {} file cannot contain revolve features",
+            manifest.schema_version
+        )));
+    }
+    // Version 29 knew nothing of splines.
+    if manifest.schema_version < 30
+        && document.sketches().values().any(|record| {
+            record
+                .sketch
+                .entities()
+                .any(|(_, e)| matches!(e.geometry, cndt_model::sketch::Geometry::Spline { .. }))
+        })
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain splines",
             manifest.schema_version
         )));
     }
@@ -1304,6 +1319,36 @@ mod tests {
         let v21 = raw_zip(&[(MANIFEST, &manifest(21)), (DOCUMENT, &json)]);
         let error = read(Cursor::new(v21)).unwrap_err();
         assert!(error.to_string().contains("revolve"), "{error}");
+    }
+
+    #[test]
+    fn splines_need_version_30() {
+        use cndt_model::Plane;
+        use cndt_model::sketch::Point2;
+        let mut document = Document::new("Splined");
+        let sketch = document.add_sketch("", Plane::Xy).unwrap();
+        document
+            .edit_sketch(sketch, |s| {
+                let a = s.add_point(Point2::new(0.0, 0.0))?;
+                let b = s.add_point(Point2::new(5.0, 4.0))?;
+                let c = s.add_point(Point2::new(10.0, 0.0))?;
+                s.add_spline(vec![a, b, c], true)
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        assert!(json.contains("\"spline\""), "{json}");
+        let v29 = raw_zip(&[(MANIFEST, &manifest(29)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v29)).unwrap_err();
+        assert!(error.to_string().contains("splines"), "{error}");
+        // A sketch without splines is the same bytes as before.
+        let mut plain = Document::new("Plain");
+        let sketch = plain.add_sketch("", Plane::Xy).unwrap();
+        plain
+            .edit_sketch(sketch, |s| s.add_point(Point2::new(1.0, 1.0)))
+            .unwrap();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("spline"));
     }
 
     #[test]

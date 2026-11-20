@@ -588,12 +588,7 @@ fn standalone_points(document: &Document, sketch: SketchId) -> Vec<EntityId> {
     let used: Vec<EntityId> = record
         .sketch
         .entities()
-        .flat_map(|(_, e)| match e.geometry {
-            Geometry::Line { start, end } => vec![start, end],
-            Geometry::Circle { center, .. } => vec![center],
-            Geometry::Arc { center, start, end } => vec![center, start, end],
-            Geometry::Point { .. } => Vec::new(),
-        })
+        .flat_map(|(_, e)| e.geometry.points())
         .collect();
     record
         .sketch

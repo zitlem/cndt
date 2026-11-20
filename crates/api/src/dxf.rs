@@ -155,6 +155,25 @@ impl Api {
             };
             let curve = match entity.geometry {
                 Geometry::Point { .. } => None,
+                // A spline goes out as short lines along it, which every
+                // reader of the format understands.
+                Geometry::Spline {
+                    ref through,
+                    closed,
+                } => {
+                    let pts: Vec<_> = through.iter().filter_map(|p| sketch.point(*p)).collect();
+                    let mut run = cndt_model::sketch::spline_samples(&pts, closed, 16);
+                    if closed {
+                        run.extend(run.first().copied());
+                    }
+                    for pair in run.windows(2) {
+                        curves.push((
+                            Curve::Line([pair[0].x, pair[0].y], [pair[1].x, pair[1].y]),
+                            layer,
+                        ));
+                    }
+                    None
+                }
                 Geometry::Line { start, end } => {
                     at(start).zip(at(end)).map(|(a, b)| Curve::Line(a, b))
                 }

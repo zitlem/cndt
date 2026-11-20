@@ -36,6 +36,8 @@
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
+#include <GeomAPI_Interpolate.hxx>
+#include <TColgp_HArray1OfPnt.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -372,12 +374,17 @@ struct cndt_history {
 //  kind 0: line from p0 to p1
 //  kind 1: arc around p0, counter-clockwise about the normal, from p1 to p2
 //  kind 2: full circle around p0 with `radius`
+//  kind 3: smooth curve through `point_count` points at `points` (x, y, z
+//          each); a closed loop if `closed`, the first point not repeated
 struct cndt_curve {
     std::int32_t kind;
     double p0[3];
     double p1[3];
     double p2[3];
     double radius;
+    const double* points;
+    std::size_t point_count;
+    std::int32_t closed;
 };
 
 // Volume and bounds of a shape. Layout must match `RawProperties`.
@@ -426,6 +433,21 @@ TopoDS_Edge make_edge(const cndt_curve& curve, const gp_Dir& normal) {
         }
         case 2:
             return BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(point(curve.p0), normal), curve.radius)).Edge();
+        case 3: {
+            if (curve.points == nullptr || curve.point_count < 3) {
+                throw Standard_Failure("a spline needs at least three points");
+            }
+            Handle(TColgp_HArray1OfPnt) through = new TColgp_HArray1OfPnt(1, static_cast<Standard_Integer>(curve.point_count));
+            for (std::size_t i = 0; i < curve.point_count; ++i) {
+                through->SetValue(static_cast<Standard_Integer>(i + 1), point(curve.points + 3 * i));
+            }
+            GeomAPI_Interpolate interpolate(through, curve.closed != 0, 1e-7);
+            interpolate.Perform();
+            if (!interpolate.IsDone()) {
+                throw Standard_Failure("the spline could not be fitted through its points");
+            }
+            return BRepBuilderAPI_MakeEdge(interpolate.Curve()).Edge();
+        }
         default:
             throw Standard_Failure("unknown curve kind");
     }
@@ -500,7 +522,8 @@ static int make_profile_face(
         }
         wires.push_back(wire.Wire());
     }
-    const gp_Pln plane(point(curves[0].kind == 2 ? curves[0].p0 : curves[0].p1), normal);
+    const double* origin = curves[0].kind == 3 ? curves[0].points : (curves[0].kind == 2 ? curves[0].p0 : curves[0].p1);
+    const gp_Pln plane(point(origin), normal);
     // Orient the loops whichever way they were drawn: the outer boundary
     // runs counter-clockwise about the normal, holes clockwise. Reversing
     // a wire keeps its edges, so the history still finds them.

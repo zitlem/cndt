@@ -111,7 +111,7 @@ impl ProjectedShape {
                 center: sketch.point(center)?,
                 radius,
             }),
-            Geometry::Point { .. } => None,
+            Geometry::Point { .. } | Geometry::Spline { .. } => None,
         }
     }
 
