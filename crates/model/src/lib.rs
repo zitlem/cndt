@@ -24,7 +24,7 @@ pub use features::{
     Counterbore, EdgeTarget, FaceName, FaceOrigin, Feature, FeatureEntry, FeatureId, FeatureStatus,
     Frame, FrameStatus, HoleDepth, HoleSpec, HoleSurface, ImportData, ImportFormat,
     MAX_IMPORT_BYTES, MirrorPlane, Operation, Rebuilt, ReferenceMesh, RevolveAxis, Thread,
-    default_profiles, project_edge, rebuild, rebuild_to,
+    default_profiles, project_edge, rebuild, rebuild_to, rebuild_to_with,
 };
 pub use projection::{ProjectedShape, Projection};
 pub use reference::{OriginPlane, Reference, ReferenceId};

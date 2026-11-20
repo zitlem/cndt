@@ -412,6 +412,8 @@ pub enum CamError {
     Contour(String),
     /// Setups cannot be joined into one program; says why.
     Join(String),
+    /// The planning was cancelled (decision 0035); nothing was changed.
+    Cancelled,
 }
 
 impl fmt::Display for CamError {
@@ -423,6 +425,7 @@ impl fmt::Display for CamError {
             Self::UnknownSetup(id) => write!(f, "there is no setup {id}"),
             Self::Contour(reason) => write!(f, "the contour cannot be made: {reason}"),
             Self::Join(reason) => write!(f, "the setups cannot share one program: {reason}"),
+            Self::Cancelled => write!(f, "the planning was cancelled"),
             Self::NoStock => write!(f, "facing needs the stock; set it first (cam.set_stock)"),
             Self::NoSetups => write!(
                 f,
@@ -2331,6 +2334,23 @@ pub fn plan_setup(
     kernel: &dyn cndt_kernel::Kernel,
     setup_id: Option<u32>,
 ) -> Result<Planned, CamError> {
+    plan_setup_with(document, rebuilt, kernel, setup_id, &|| false)
+}
+
+/// [`plan_setup`] that asks `cancel` before each operation: once it says
+/// `true` the planning stops with [`CamError::Cancelled`] and returns
+/// nothing (decision 0035). Planning only reads the document.
+///
+/// # Errors
+///
+/// As [`plan_setup`], and [`CamError::Cancelled`].
+pub fn plan_setup_with(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    setup_id: Option<u32>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Planned, CamError> {
     let cam = document.cam();
     let entry = match setup_id {
         Some(id) => cam
@@ -2340,7 +2360,7 @@ pub fn plan_setup(
             .ok_or(CamError::UnknownSetup(id))?,
         None => cam.setups.first().ok_or(CamError::NoSetups)?,
     };
-    let mut planned = plan_entry(document, rebuilt, kernel, entry)?;
+    let mut planned = plan_entry(document, rebuilt, kernel, entry, cancel)?;
     // A side the table turns to: turn it there first, whatever B was.
     if let Some(angle) = entry.setup.index {
         planned.program.operations.insert(
@@ -2376,6 +2396,21 @@ pub fn plan_setups(
     kernel: &dyn cndt_kernel::Kernel,
     setup_ids: &[u32],
 ) -> Result<Planned, CamError> {
+    plan_setups_with(document, rebuilt, kernel, setup_ids, &|| false)
+}
+
+/// [`plan_setups`] that can be cancelled, as [`plan_setup_with`].
+///
+/// # Errors
+///
+/// As [`plan_setups`], and [`CamError::Cancelled`].
+pub fn plan_setups_with(
+    document: &Document,
+    rebuilt: &Rebuilt,
+    kernel: &dyn cndt_kernel::Kernel,
+    setup_ids: &[u32],
+    cancel: &dyn Fn() -> bool,
+) -> Result<Planned, CamError> {
     let cam = document.cam();
     let mut entries = Vec::new();
     for id in setup_ids {
@@ -2407,11 +2442,11 @@ pub fn plan_setups(
             }
         }
     }
-    let mut planned = plan_setup(document, rebuilt, kernel, Some(first.id))?;
+    let mut planned = plan_setup_with(document, rebuilt, kernel, Some(first.id), cancel)?;
     planned.setup = None;
     let mut names = vec![first.setup.name.clone()];
     for entry in rest {
-        let next = plan_entry(document, rebuilt, kernel, entry)?;
+        let next = plan_entry(document, rebuilt, kernel, entry, cancel)?;
         let def = &entry.setup;
         let mut steps = vec![
             Step::Event(Event::SpindleOff),
@@ -2457,6 +2492,7 @@ fn plan_entry(
     rebuilt: &Rebuilt,
     kernel: &dyn cndt_kernel::Kernel,
     entry: &cndt_model::cam::SetupEntry,
+    cancel: &dyn Fn() -> bool,
 ) -> Result<Planned, CamError> {
     // A side setup is planned on the part turned so that side is on top.
     let world = world(
@@ -2483,6 +2519,9 @@ fn plan_entry(
     // Whether an operation before the holes has faced the stock.
     let mut faced = false;
     for op in &entry.setup.operations {
+        if cancel() {
+            return Err(CamError::Cancelled);
+        }
         match op.operation {
             OperationDef::Chamfer {
                 ref face,
@@ -2908,6 +2947,67 @@ mod tests {
         let back = setup.model_point(setup.program_point(p));
         assert!((back.x - p.x).abs() < 1e-9 && (back.y - p.y).abs() < 1e-9);
         assert!((back.z - p.z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_cancelled_planning_returns_cancelled_and_changes_nothing() {
+        let mut d = block_with_bottom_hole();
+        d.edit_cam(CamEdit::SetStock(cndt_model::cam::Stock {
+            side: 2.0,
+            top: 2.0,
+            bottom: 3.0,
+        }))
+        .unwrap();
+        let top = d
+            .edit_cam(CamEdit::AddSetup {
+                name: String::new(),
+                side: Side::Top,
+                work_offset: 1,
+                flip_about: cndt_model::cam::FlipAxis::X,
+                index: None,
+                angle: None,
+            })
+            .unwrap()
+            .unwrap();
+        for operation in [
+            OperationDef::Face { tool: None },
+            OperationDef::Face { tool: None },
+        ] {
+            d.edit_cam(CamEdit::AddOperation {
+                setup: top,
+                operation,
+            })
+            .unwrap();
+        }
+        let r = rebuild(&d, &OpenCascade);
+        let cam_before = d.cam().clone();
+        let full = plan_setup(&d, &r, &OpenCascade, Some(top)).unwrap();
+        // Cancelled before the first operation.
+        assert_eq!(
+            plan_setup_with(&d, &r, &OpenCascade, Some(top), &|| true),
+            Err(CamError::Cancelled)
+        );
+        // Cancelled between the two operations.
+        let checks = std::cell::Cell::new(0);
+        let cancel = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 1
+        };
+        assert_eq!(
+            plan_setup_with(&d, &r, &OpenCascade, Some(top), &cancel),
+            Err(CamError::Cancelled)
+        );
+        assert_eq!(checks.get(), 2);
+        assert_eq!(
+            plan_setups_with(&d, &r, &OpenCascade, &[top], &|| true),
+            Err(CamError::Cancelled)
+        );
+        assert_eq!(d.cam(), &cam_before, "the document is unchanged");
+        // Never cancelled: identical to the plain call.
+        assert_eq!(
+            plan_setup_with(&d, &r, &OpenCascade, Some(top), &|| false),
+            Ok(full)
+        );
     }
 
     #[test]

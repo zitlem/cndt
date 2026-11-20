@@ -65,6 +65,16 @@ pub(crate) fn sim_error(error: cndt_sim::SimError) -> ApiError {
     ApiError::new(kind, error.to_string())
 }
 
+/// A planning failure as an API error: a cancel has its own kind.
+pub(crate) fn cam_error(error: cndt_process_mill::CamError) -> ApiError {
+    let kind = if error == cndt_process_mill::CamError::Cancelled {
+        "cancelled"
+    } else {
+        "cam"
+    };
+    ApiError::new(kind, error.to_string())
+}
+
 /// The colour classes of the simulated stock mesh, as its "faces".
 pub const STOCK_CLASSES: u32 = 4;
 
@@ -152,10 +162,14 @@ impl Api {
 
     fn simulate_one(&self, id: u32, cell: f64, carry: &mut Carry) -> Result<Simulated, ApiError> {
         let document = self.session.document();
-        let cam_error = |e: cndt_process_mill::CamError| ApiError::new("cam", e.to_string());
-        let planned =
-            cndt_process_mill::plan_setup(document, &self.rebuilt, self.kernel.as_ref(), Some(id))
-                .map_err(cam_error)?;
+        let planned = cndt_process_mill::plan_setup_with(
+            document,
+            &self.rebuilt,
+            self.kernel.as_ref(),
+            Some(id),
+            &|| self.control.is_cancelled(),
+        )
+        .map_err(cam_error)?;
         let Some(placed) = planned.setup else {
             return Err(ApiError::new("cam", "the setup has no placement"));
         };

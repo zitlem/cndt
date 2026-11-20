@@ -1140,20 +1140,22 @@ impl Api {
                     "give either setup or setups, not both",
                 ));
             }
-            (_, Some(ids)) => cndt_process_mill::plan_setups(
+            (_, Some(ids)) => cndt_process_mill::plan_setups_with(
                 self.session.document(),
                 &self.rebuilt,
                 self.kernel.as_ref(),
                 ids,
+                &|| self.control.is_cancelled(),
             ),
-            (setup, None) => cndt_process_mill::plan_setup(
+            (setup, None) => cndt_process_mill::plan_setup_with(
                 self.session.document(),
                 &self.rebuilt,
                 self.kernel.as_ref(),
                 setup,
+                &|| self.control.is_cancelled(),
             ),
         }
-        .map_err(|e| ApiError::new("cam", e.to_string()))?;
+        .map_err(crate::simulate::cam_error)?;
         let mut notes = planned.notes;
         let lifted = prove_out
             .map(|lift| planned.program.lifted(lift))

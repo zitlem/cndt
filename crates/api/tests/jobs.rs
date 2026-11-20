@@ -125,3 +125,20 @@ fn a_cancel_with_no_work_running_does_not_spoil_the_next_request() {
     let reply = call(&mut api, &json!({"method": "simulate", "setup": 0}));
     assert_eq!(reply["ok"], true, "{reply}");
 }
+
+#[test]
+fn a_cancelled_post_fails_as_cancelled_and_the_next_one_is_unchanged() {
+    let mut api = pocketed_block();
+    let request = json!({"method": "post", "post": "mazak-smoothg", "setup": 0});
+    let before = call(&mut api, &request);
+    assert_eq!(before["ok"], true, "{before}");
+
+    let (stop, thread) = cancel_repeatedly(&api);
+    let cancelled = call(&mut api, &request);
+    stop.store(true, Ordering::Relaxed);
+    thread.join().unwrap();
+    assert_eq!(cancelled["ok"], false, "{cancelled}");
+    assert_eq!(cancelled["error"]["kind"], "cancelled", "{cancelled}");
+
+    assert_eq!(call(&mut api, &request), before);
+}
