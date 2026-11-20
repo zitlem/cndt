@@ -141,7 +141,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       into the floor is a problem, with the finding naming it; no change to setups without a vise; format +1
       only if a field is added (refuse older builds' files with the update message); setup sheet and
       `docs/safety.md` updated.
-- [~] **G3 Test gaps, process-mill and sim** (PR pending: 5 sim tests, 7 process-mill tests; a pocket
+- [~] **G3 Test gaps, process-mill and sim** (PR #95: 5 sim tests, 7 process-mill tests; a pocket
       wider than its tool and a step-over above the tool are still untested) (`process-mill` has 11 tests for 3300 lines, `sim` 10 for 1100).
       Refusal paths and boundaries: tool wider than a pocket or slot, depth below the part, step-over above the
       tool, zero-length contours, a vise along `y`, a carried-stock chain of three setups. Done: at least 12
