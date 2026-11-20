@@ -28,6 +28,7 @@ import {
 } from "./api";
 import { firstSentence, matchEntries, type PaletteEntry } from "./palette";
 import { operationRange, type Toolpath, visibleMoves } from "./scrub";
+import { sideFromNormal } from "./sidepick";
 import { SketchEditor, type Tool } from "./sketch";
 import { ui as text } from "./strings";
 import { type Layer, type ViewName, Viewer } from "./viewer";
@@ -1941,6 +1942,47 @@ element("draw-what").addEventListener(
 );
 element("cam-side").addEventListener("change", () => {
   element("cam-angle-field").hidden = element<HTMLSelectElement>("cam-side").value !== "turned";
+});
+// Choosing the side by clicking a face (decision 0019): only the four quarter-turn sides.
+let pickingSide = false;
+function stopPickingSide(): void {
+  pickingSide = false;
+  viewer.canvas.style.cursor = "";
+  ui.viewportHint.hidden = true;
+}
+element("cam-pick-side").addEventListener("click", () => {
+  if (!current?.body) {
+    showError(new Error(text.noPartYet));
+    return;
+  }
+  pickingSide = true;
+  viewer.canvas.style.cursor = "pointer";
+  ui.viewportHint.textContent = text.clickSideFace;
+  ui.viewportHint.hidden = false;
+});
+viewer.canvas.addEventListener("click", (event) => {
+  if (!pickingSide) return;
+  const normal = viewer.faceNormalAt(event.clientX, event.clientY);
+  if (normal === null) return;
+  const pick = sideFromNormal(normal);
+  if (pick.ok) {
+    stopPickingSide();
+    element<HTMLSelectElement>("cam-side").value = pick.side;
+    element("cam-angle-field").hidden = true;
+    return;
+  }
+  // A refused face keeps the picker open, with the reason in the hint.
+  ui.viewportHint.textContent =
+    pick.reason === "up"
+      ? text.sidePickUp
+      : pick.reason === "down"
+        ? text.sidePickDown
+        : pick.reason === "tilted"
+          ? text.sidePickTilted
+          : text.sidePickNone;
+});
+window.addEventListener("keydown", (event) => {
+  if (pickingSide && event.key === "Escape") stopPickingSide();
 });
 element("cam-post-all").addEventListener(
   "click",

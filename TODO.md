@@ -150,7 +150,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       refuses each problem kind without the override; the override is listed in the program header; an
       unverified post and machine are flagged for review; an edited or custom post is named in the header.
       Done: one test per item, each failing without the code it covers.
-- [ ] **G5 Pick a side by picking a face** (decision 0019 "Not yet"). Choose a side setup's side by clicking a
+- [~] **G5 Pick a side by picking a face** (PR #92, not merged: no CI checks reported) (decision 0019 "Not yet"). Choose a side setup's side by clicking a
       face of the part in the 3D view; only the four quarter-turn sides, anything else says so. Done: a pure
       function mapping a face normal to a side with tests (including a tilted face refused), UI build passes,
       page loads headless with no `[[` marker, strings in `strings.ts`.
