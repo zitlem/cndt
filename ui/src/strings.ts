@@ -335,6 +335,9 @@ export const page = {
   "tl-end.title": "To the end",
   "no-features": "No features yet. The history of the part appears here, oldest first.",
   "status-path": "Not saved yet",
+  "job-progress.aria": "Progress of the running job",
+  "job-cancel.label": "Cancel",
+  "job-cancel.title": "Stop the running simulation or verification; nothing is changed",
   "status.units": "Millimetres",
 } as const;
 
@@ -444,6 +447,11 @@ export const ui = {
   materialLeft: (amount: string) => `Up to ${amount} left on the part (yellow).`,
   machinedToSize: "The part is machined to size.",
   cuttingTime: (minutes: string) => `Cutting time ${minutes} min.`,
+  jobRunning: (what: string) => `${what}…`,
+  jobRunningPercent: (what: string, percent: number) => `${what} ${percent}%`,
+  jobSimulating: "Simulating",
+  jobVerifying: "Verifying",
+  jobCancelled: "Cancelled. Nothing was changed.",
   simulated: (parts: string) => `Simulated (UNVERIFIED): ${parts}`,
   opFace: "Face the stock",
   opContour: "Contour the outline",

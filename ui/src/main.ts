@@ -25,7 +25,10 @@ import {
   type StepInfo,
   stepPreview,
   simulationMesh,
+  jobCancel,
+  jobProgress,
 } from "./api";
+import { progressFraction, progressPercent } from "./job";
 import { firstSentence, matchEntries, type PaletteEntry } from "./palette";
 import { operationRange, type Toolpath, visibleMoves } from "./scrub";
 import { edgePairName } from "./edgepick";
@@ -204,6 +207,46 @@ function showError(error: unknown): void {
     ui.toast.hidden = true;
   }, 6000);
 }
+
+/**
+ * Runs a simulation or verification with a progress bar and a cancel button
+ * in the status bar (decision 0035). Resolves to `null` when the person
+ * cancelled, so callers leave everything as it was.
+ */
+async function withJob<T>(what: string, run: () => Promise<T>): Promise<T | null> {
+  const box = element<HTMLElement>("status-job");
+  const label = element<HTMLElement>("job-label");
+  const bar = element<HTMLProgressElement>("job-progress");
+  label.textContent = text.jobRunning(what);
+  bar.removeAttribute("value");
+  box.hidden = false;
+  const poll = window.setInterval(() => {
+    jobProgress()
+      .then((progress) => {
+        const fraction = progressFraction(progress);
+        const percent = progressPercent(progress);
+        if (fraction === null || percent === null) return;
+        bar.value = Math.round(fraction * 100);
+        label.textContent = text.jobRunningPercent(what, percent);
+      })
+      .catch(() => {});
+  }, 250);
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof ApiFailure && error.kind === "cancelled") {
+      showError(new Error(text.jobCancelled));
+      return null;
+    }
+    throw error;
+  } finally {
+    window.clearInterval(poll);
+    box.hidden = true;
+  }
+}
+element("job-cancel").addEventListener("click", () => {
+  jobCancel().catch(showError);
+});
 
 /** Runs an action and reports any failure, so no click fails silently. */
 function guarded(action: () => Promise<void>): () => void {
@@ -638,7 +681,13 @@ async function simulateSetup(setup: number | null): Promise<void> {
   simulatedSetup = null;
   viewer.setStock(null);
   if (setup !== null) {
-    const report = await request<SimReport>({ method: "simulate", setup, cell: 0.5 });
+    const report = await withJob(text.jobSimulating, () =>
+      request<SimReport>({ method: "simulate", setup, cell: 0.5 }),
+    );
+    if (report === null) {
+      if (current) renderSetups(current);
+      return;
+    }
     viewer.setStock(await simulationMesh(setup));
     simulatedSetup = setup;
     showError(new Error(simulationText(report)));
@@ -753,14 +802,17 @@ async function postSetup(setup: number | number[], name: string): Promise<void> 
   if (!path) return;
   // Every check first; the report goes next to the program.
   const reportPath = path.replace(/\.[^./\\]*$/, "") + ".report.txt";
-  const report = await request<Verification>({
-    method: "verify",
-    post,
-    definition,
-    machine,
-    setups: Array.isArray(setup) ? setup : [setup],
-    path: reportPath,
-  });
+  const report = await withJob(text.jobVerifying, () =>
+    request<Verification>({
+      method: "verify",
+      post,
+      definition,
+      machine,
+      setups: Array.isArray(setup) ? setup : [setup],
+      path: reportPath,
+    }),
+  );
+  if (report === null) return;
   if (report.verdict === "problems") {
     const list = report.problems.map((p) => `• ${p}`).join("\n");
     const go = await ask(
@@ -2524,7 +2576,10 @@ element("cam-verify").addEventListener(
     const setups = (current?.document.cam?.setups ?? []).map((s) => s.id);
     if (setups.length === 0) throw new Error(text.addSetupFirst);
     const { post, machine, definition } = chosenTarget;
-    showReport(await request<Verification>({ method: "verify", post, definition, machine, setups }));
+    const report = await withJob(text.jobVerifying, () =>
+      request<Verification>({ method: "verify", post, definition, machine, setups }),
+    );
+    if (report !== null) showReport(report);
   }),
 );
 element("report-close").addEventListener("click", () => {

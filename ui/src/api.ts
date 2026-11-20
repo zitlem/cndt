@@ -416,3 +416,9 @@ function decodeToolpath(buffer: ArrayBuffer): Toolpath {
   }
   return { coords, kinds, operations };
 }
+
+/** Asks the running simulation or verification to stop (decision 0035). Does not wait for the document. */
+export const jobCancel = () => invoke<void>("job_cancel");
+
+/** Steps done and steps in all of the running simulation; [0, 0] when nothing runs. */
+export const jobProgress = () => invoke<[number, number]>("job_progress");

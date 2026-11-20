@@ -1965,3 +1965,18 @@ span.ribbon-label {
   width: 16px;
   height: 16px;
 }
+
+.status-job {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-job[hidden] {
+  display: none;
+}
+
+.status-job progress {
+  width: 120px;
+  height: 8px;
+}
