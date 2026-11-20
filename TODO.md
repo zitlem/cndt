@@ -183,15 +183,19 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
 
 Added by the refill run. Same rules as above. G8 and G10 have open PRs: do not start them again.
 
-- [~] **H1 Read-back compares spindle, coolant and tool numbers** (PR pending; compared per cutting stretch, before the simulation) (docs/safety.md "Known gap"). Compare, in order, the
+- [x] **H1 Read-back compares spindle, coolant and tool numbers** (PR #102; compared per cutting stretch, before the simulation) (docs/safety.md "Known gap"). Compare, in order, the
       spindle speed and direction, coolant state and tool number of the read-back program with the plan; a
       difference is a **problem**. Done: tests where a post writes a wrong S, a missing coolant code and a wrong T
       each fail without the code; shipped posts still verify clean; GRBL (no tool numbers) is still review-only;
       `docs/safety.md` "Known gap" updated; `cargo xtask ci` exits 0.
-- [ ] **H2 Post gate tests, machine limits and rapids through material** (G4 left these two problem kinds). Through the
+- [~] **H2 Post gate tests, machine limits and rapids through material** (PR pending; machine limit half done: it is a hard "machine" refusal the override does not lift, docs/safety.md corrected; the rapid-through-material half is H2b) (G4 left these two problem kinds). Through the
       API, `post` refuses a program that breaks a machine travel limit and one with a rapid through material,
       without the override, and with it lists each in the header. Done: one test per kind, each failing without
       the code it covers.
+- [ ] **H2b Post gate test, rapid through material** (H2 left it; tried: facing/holes/two-setup variants through the
+      API, none plans a rapid into stock, and a post writing G0 for cuts is caught earlier by the read-back
+      comparison). Find or build a planned program whose rapid enters stock (a `cndt-sim` fixture is not enough:
+      it must go through `post`), then test refusal and the header listing with the override.
 - [ ] **H3 Test gaps, pocket and step-over** (G3 left these). In `process-mill`: a pocket narrower than its tool is
       refused with the size needed; a step-over above the tool diameter is refused or clamped as the code says.
       Done: tests for both, each failing when the check is removed; `cargo xtask ci` exits 0.
