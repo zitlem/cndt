@@ -77,6 +77,19 @@ pub(crate) enum Form {
         external: bool,
         order: f64,
     },
+    /// A spline end tangent to a line: the chord from the spline's end point
+    /// to its next fit point runs along the line.
+    ChordAlongLine {
+        chord: (P, P),
+        line: L,
+    },
+    /// A spline end tangent to an arc at `at`: the chord from `at` to the
+    /// next fit point runs at right angles to the radius.
+    ChordTangentArc {
+        chord: (P, P),
+        center: P,
+        at: P,
+    },
     Concentric(P, P),
     Symmetric(P, P, L),
     Distance {
@@ -364,6 +377,13 @@ impl Form {
             } => {
                 let (a, b) = line(x, l);
                 out.push(dir(a, b).dot(dir(pt(x, center), pt(x, at))));
+            }
+            Form::ChordAlongLine { chord, line: l } => {
+                let (a, b) = line(x, l);
+                out.push(dir(pt(x, chord.0), pt(x, chord.1)).cross(dir(a, b)));
+            }
+            Form::ChordTangentArc { chord, center, at } => {
+                out.push(dir(pt(x, chord.0), pt(x, chord.1)).dot(dir(pt(x, center), pt(x, at))));
             }
             Form::TangentArcsAt { a, b, at } => {
                 let p = pt(x, at);

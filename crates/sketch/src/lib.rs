@@ -158,6 +158,16 @@ pub enum Axis {
     Vertical,
 }
 
+/// One end of an open spline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SplineEnd {
+    /// The first fit point.
+    Start,
+    /// The last fit point.
+    End,
+}
+
 /// A geometric or dimensional constraint. Dimensions are millimetres, angles
 /// degrees.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,6 +260,17 @@ pub enum Constraint {
         /// A circle or arc.
         b: EntityId,
     },
+    /// A spline leaving a line or arc smoothly: its end runs along the line,
+    /// or at right angles to the arc's radius, at the end point they share
+    /// (decision 0034).
+    SplineTangent {
+        /// An open spline.
+        spline: EntityId,
+        /// Which end of the spline.
+        end: SplineEnd,
+        /// The line or arc, which must have the spline's end point as an end.
+        to: EntityId,
+    },
     /// Two circles or arcs with one centre.
     Concentric {
         /// A circle or arc.
@@ -339,6 +360,7 @@ impl Constraint {
             Constraint::Collinear { .. } => "collinear",
             Constraint::Equal { .. } => "equal",
             Constraint::Tangent { .. } => "tangent",
+            Constraint::SplineTangent { .. } => "spline tangent",
             Constraint::Concentric { .. } => "concentric",
             Constraint::Symmetric { .. } => "symmetric",
             Constraint::Fix { .. } => "fix",
@@ -364,6 +386,7 @@ impl Constraint {
             | C::PointLineDistance { point, line, .. } => vec![point, line],
             C::PointOnCurve { point, curve } => vec![point, curve],
             C::Symmetric { a, b, axis } => vec![a, b, axis],
+            C::SplineTangent { spline, to, .. } => vec![spline, to],
             C::Coincident { a, b }
             | C::HorizontalPoints { a, b }
             | C::VerticalPoints { a, b }
@@ -457,6 +480,8 @@ pub enum SketchError {
         /// The constraints that already fix the same thing.
         constraints: Vec<ConstraintId>,
     },
+    /// A spline end tangent that cannot be made, and why.
+    SplineTangent(&'static str),
     /// The constraint system is too large to solve interactively.
     TooLarge,
     /// A loaded sketch breaks the rules the editing methods keep.
@@ -509,6 +534,7 @@ impl fmt::Display for SketchError {
             SketchError::Fixed(id) => {
                 write!(f, "{id} is fixed; remove its fix constraint to move it")
             }
+            SketchError::SplineTangent(why) => write!(f, "{why}"),
             SketchError::NotADimension(id) => write!(f, "{id} has no value to change"),
             SketchError::Conflict { constraints } => write!(
                 f,
@@ -926,6 +952,20 @@ impl Sketch {
         self.expect(id, "a line", |g| matches!(g, Geometry::Line { .. }))
     }
 
+    /// The end point of an open spline, and `None` for a closed one.
+    pub(crate) fn spline_end(&self, spline: EntityId, end: SplineEnd) -> Option<EntityId> {
+        match self.geometry(spline).ok() {
+            Some(Geometry::Spline {
+                through,
+                closed: false,
+            }) => match end {
+                SplineEnd::Start => through.first().copied(),
+                SplineEnd::End => through.last().copied(),
+            },
+            _ => None,
+        }
+    }
+
     fn expect_curve(&self, id: EntityId) -> Result<(), SketchError> {
         self.expect(id, "a circle or arc", |g| {
             matches!(g, Geometry::Circle { .. } | Geometry::Arc { .. })
@@ -993,6 +1033,31 @@ impl Sketch {
                         })?;
                 }
                 self.expect_curve(b)?;
+            }
+            C::SplineTangent { spline, end, to } => {
+                self.expect(spline, "a spline", |g| matches!(g, Geometry::Spline { .. }))?;
+                let at = self
+                    .spline_end(spline, end)
+                    .ok_or(SketchError::SplineTangent(
+                        "a closed spline has no ends; use an open spline",
+                    ))?;
+                let ends = match self.geometry(to).ok() {
+                    Some(Geometry::Line { start, end } | Geometry::Arc { start, end, .. }) => {
+                        [*start, *end]
+                    }
+                    _ => {
+                        return Err(SketchError::WrongGeometry {
+                            entity: to,
+                            found: self.geometry(to).map_or("entity", Geometry::kind),
+                            expected: "a line or arc",
+                        });
+                    }
+                };
+                if !ends.contains(&at) {
+                    return Err(SketchError::SplineTangent(
+                        "the spline's end point must be an end point of the line or arc; make them share that point first",
+                    ));
+                }
             }
             C::Concentric { a, b } => {
                 self.expect_curve(a)?;

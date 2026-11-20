@@ -246,3 +246,44 @@ fn a_project_with_a_spline_survives_save_and_open() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!((before - after).abs() < 1e-6, "{before} against {after}");
 }
+
+#[test]
+fn a_spline_start_can_be_made_tangent_to_a_line() {
+    // Points 0 and 1 are the ends of the base, 2 the far end of a diagonal.
+    let mut s = Session::new();
+    for at in [
+        json!({"x": 0, "y": 0}),
+        json!({"x": 20, "y": 0}),
+        json!({"x": 8, "y": 8}),
+    ] {
+        s.exec("sketch.add_point", json!({"sketch": 0, "at": at}));
+    }
+    s.exec(
+        "sketch.add_spline",
+        json!({"sketch": 0, "through": [0, {"x": 10, "y": 6}, 1]}),
+    );
+    s.exec(
+        "sketch.add_line",
+        json!({"sketch": 0, "start": 0, "end": 1}),
+    );
+    s.exec(
+        "sketch.add_line",
+        json!({"sketch": 0, "start": 0, "end": 2}),
+    );
+    let fix = |point: u64| json!({"sketch": 0, "constraint": {"type": "fix", "point": point}});
+    s.exec("sketch.constrain", fix(0));
+    s.exec("sketch.constrain", fix(2));
+    let tangent = |end: &str| {
+        json!({"sketch": 0, "constraint": {
+            "type": "spline_tangent", "spline": 4, "end": end, "to": 6}})
+    };
+    s.exec("sketch.constrain", tangent("start"));
+    // The point after the start (id 3) now lies on the diagonal y = x.
+    let state = s.state();
+    let point = &state["document"]["sketches"]["0"]["sketch"]["entities"]["3"]["geometry"]["at"];
+    let (x, y) = (point["x"].as_f64().unwrap(), point["y"].as_f64().unwrap());
+    assert!((x - y).abs() < 1e-6, "({x}, {y})");
+    // The diagonal does not touch the spline's end, so that is refused.
+    let message = s.refused("sketch.constrain", tangent("end"));
+    assert!(message.contains("share that point"), "{message}");
+}
