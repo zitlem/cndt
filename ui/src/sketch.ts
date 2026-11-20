@@ -15,8 +15,9 @@ import type {
   SketchRecord,
   XY,
 } from "./api";
+import { pathDistance, splineSamples } from "./splinepath";
 
-export type Tool = "select" | "line" | "rectangle" | "circle" | "arc" | "point" | "dimension";
+export type Tool = "select" | "line" | "rectangle" | "circle" | "arc" | "spline" | "point" | "dimension";
 
 /** What the editor needs from the app. */
 export interface SketchHost {
@@ -36,6 +37,7 @@ type Key = `e${number}` | `c${number}`;
 const SVG = "http://www.w3.org/2000/svg";
 const SNAP_PX = 9;
 const PICK_PX = 7;
+const SPLINE_SAMPLES = 12;
 
 function svg<K extends keyof SVGElementTagNameMap>(
   tag: K,
@@ -397,6 +399,20 @@ export class SketchEditor {
     return null;
   }
 
+  /** The sampled curve of a spline, in sketch coordinates, with whether it is closed. */
+  private spline(id: number): { path: XY[]; closed: boolean } | null {
+    const g = this.geometry(id);
+    if (g?.type !== "spline") return null;
+    const through: XY[] = [];
+    for (const p of g.through) {
+      const at = this.at(p);
+      if (!at) return null;
+      through.push(at);
+    }
+    const closed = g.closed === true;
+    return { path: splineSamples(through, closed, SPLINE_SAMPLES), closed };
+  }
+
   private kind(id: number): Geometry["type"] | undefined {
     return this.geometry(id)?.type;
   }
@@ -454,6 +470,8 @@ export class SketchEditor {
         const onArc = c.from === undefined || c.to === undefined || inSweep(angle, c.from, c.to);
         if (onArc) d = Math.abs(dist(at, c.c) - c.r);
       }
+      const sp = this.spline(id);
+      if (sp) d = pathDistance(at, sp.path, sp.closed);
       if (d < bestDistance) {
         best = id;
         bestDistance = d;
@@ -525,8 +543,23 @@ export class SketchEditor {
       this.draw();
       return;
     }
-    this.clicks.push(this.ref(at));
+    const ref = this.ref(at);
+    if (this.tool === "spline" && this.clicks.length >= 3) {
+      // A click on the first point closes the spline; on the last, ends it.
+      const first = this.clicks[0] as Ref;
+      const last = this.clicks[this.clicks.length - 1] as Ref;
+      if (ref.point !== null && ref.point === first.point) {
+        this.finishSpline(true);
+        return;
+      }
+      if (ref.point !== null && ref.point === last.point) {
+        this.finishSpline(false);
+        return;
+      }
+    }
+    this.clicks.push(ref);
     void this.complete();
+    if (this.tool === "spline") this.draw();
   }
 
   private move(event: PointerEvent): void {
@@ -632,10 +665,29 @@ export class SketchEditor {
           end: SketchEditor.arg(c),
         });
         break;
+      case "spline":
+        // Points gather until Enter or a click on the first or last point (finishSpline).
+        return;
       default:
         this.clicks = [];
     }
     this.draw();
+  }
+
+  /**
+   * Ends the spline being drawn through the clicked points: closed if `closed`, open
+   * otherwise. Returns false when no spline is in progress, so the key can mean
+   * something else. Fewer than three points is dropped with nothing sent, since the
+   * core would refuse it.
+   */
+  finishSpline(closed = false): boolean {
+    if (this.tool !== "spline" || this.clicks.length === 0) return false;
+    const through = this.clicks.map((c) => SketchEditor.arg(c));
+    this.clicks = [];
+    this.draw();
+    if (through.length < 3) return true;
+    void this.run("sketch.add_spline", { through, closed });
+    return true;
   }
 
   private nextEntity(): number {
@@ -878,6 +930,17 @@ export class SketchEditor {
     return parts.join(" ");
   }
 
+  /** An SVG path through sketch-space points. */
+  private pathData(path: XY[], closed: boolean): string {
+    const d = path
+      .map((p, i) => {
+        const s = this.toScreen(p);
+        return `${i === 0 ? "M" : "L"}${s.x} ${s.y}`;
+      })
+      .join("");
+    return closed ? `${d}Z` : d;
+  }
+
   private drawShapes(): void {
     this.shapes.replaceChildren();
     const pointNodes: SVGElement[] = [];
@@ -909,6 +972,11 @@ export class SketchEditor {
           const d = `M${s.x} ${s.y}A${r} ${r} 0 ${sweep > Math.PI ? 1 : 0} 0 ${e.x} ${e.y}`;
           this.shapes.append(svg("path", { d, class: this.classes(id, "curve"), "data-key": `e${id}` }));
         }
+      } else if (g.type === "spline") {
+        const sp = this.spline(id);
+        if (!sp || sp.path.length < 2) continue;
+        const d = this.pathData(sp.path, sp.closed);
+        this.shapes.append(svg("path", { d, class: this.classes(id, "curve"), fill: "none", "data-key": `e${id}` }));
       } else {
         const at = this.at(id);
         if (!at) continue;
@@ -1036,6 +1104,13 @@ export class SketchEditor {
         this.preview.append(
           svg("path", { d: `M${pb.x} ${pb.y}A${r} ${r} 0 ${sweep > Math.PI ? 1 : 0} 0 ${end.x} ${end.y}`, class: "ghost" }),
         );
+        break;
+      }
+      case "spline": {
+        const shown = [...this.clicks.map((c) => c.at), snap.at];
+        if (shown.length < 2) break;
+        const d = this.pathData(splineSamples(shown, false, SPLINE_SAMPLES), false);
+        this.preview.append(svg("path", { d, class: "ghost", fill: "none" }));
         break;
       }
       default:
