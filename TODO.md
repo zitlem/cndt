@@ -207,6 +207,36 @@ Added by the refill run. Same rules as above. G8 and G10 have open PRs: do not s
       two rings (material removed against the closed form, no uncut ring), the refusal when even rings cannot fit,
       golden files for all five posts, no change to existing goldens, `cargo xtask ci` exits 0.
 
+## I. Refill of 2026-11-20
+
+Added by the refill run. Same rules as above. H3 has an open PR and H4 is `[~]`: do not start them again. Re-check each line against the code before starting it.
+
+- [ ] **I1 Every command refuses bad input** (test gap; a failed command must leave the document unchanged). One test walks the
+      registry (`cndt commands`) and calls each command with an empty parameter set and with a wrong-type value.
+      Done: each call returns an error message, never a panic, and the document is byte-identical afterwards; the
+      test fails if a command is added that panics on empty input; `cargo xtask ci` exits 0.
+- [ ] **I2 Spline end tangent button** (G8 left the UI out). A button in the sketcher to make a selected spline end
+      tangent to a selected line or arc, sent through `sketch.constrain`; a refusal shows its message. Done: a pure
+      function from a selection to the constraint's parameters (or a reason it cannot be one) with tests, UI build
+      passes, headless load check, strings in `strings.ts`.
+- [ ] **I3 Mirror in the ribbon** (decision 0023 "a ribbon button follows"). Buttons for `feature.mirror` and
+      `feature.edit_mirror` with a plane choice, the source picked in the timeline. Done: a pure function listing the
+      planes offered for a feature with tests, UI build passes, headless load check, strings in `strings.ts`.
+- [ ] **I4 Slot, trim and offset sketch tools** (B1 to B3 are commands only). Tools in `sketch.ts` for
+      `sketch.add_slot`, `sketch.trim` (click the piece to remove) and `sketch.offset` (distance field). Done: a pure
+      function from a click to the trim's parameters with tests, UI build passes, headless load check, strings in
+      `strings.ts`.
+- [ ] **I5 Sketch mirror and patterns in the UI** (B4 is commands only). Tools for `sketch.mirror`,
+      `sketch.pattern_linear` and `sketch.pattern_circular` using the selection. Done: a pure function from a
+      selection and a mirror line to the command's parameters, with tests and the refusal when nothing or no line is
+      selected; UI build passes, headless load check, strings in `strings.ts`.
+- [ ] **I6 Work planes, axes and points in the UI** (decision 0029, B6 is commands only). Add, list and delete them in
+      the timeline panel, sketch on a work plane. Done: a pure function from the form to the command's parameters
+      with tests (a refused offset says why), UI build passes, headless load check, strings in `strings.ts`.
+- [ ] **I7 Recent projects list** (decision 0025 "a later addition"). Remember opened paths in per-user state and show them
+      with their thumbnails in Open; a missing file is shown as missing, not an error. Done: a pure function keeping
+      the last 10 distinct paths with tests, UI build passes, headless load check, strings in `strings.ts`.
+
 ## F. Never by the loop (need the machine or the owner)
 
 - [!] First real cut on the Mazak HCN-5000 from CNDT G-code (Phase 2 exit gate).
