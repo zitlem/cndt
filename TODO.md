@@ -122,9 +122,51 @@ named below exist and pass · the page still loads headless with no `[[` marker 
 - [x] **E3 Test gaps** (PR #73; not merged: no CI checks reported): kernel (6 tests), cam-core, post refusal paths; each new test must fail without
       the code it covers.
 
+## G. Refill of 2026-11-19 (safety and verification first)
+
+Added by the refill run. Same rules as above. Re-check each line against the code and `gh pr list` before starting.
+
+- [ ] **G1 Read-back compares feeds and rapids** (decision 0016, docs/safety.md "Known gap"). `verify`'s read-back
+      today compares material removed only. Also compare, move by move, the feed rate and the rapid/feed kind of
+      the read-back toolpath with the planned one; a difference is a **problem**. Done: tests where a post
+      writes a wrong F, and where a cutting move is posted as G0, each fail without the code; the shipped posts
+      still verify clean; `docs/safety.md` "Known gap" updated.
+- [ ] **G2 Vise body and floor** (decision 0020 "Not yet"). Amend 0020 (still Accepted) so the vise has a fixed
+      body and floor under the parallels, entered as one number (`body` height, default none). The simulation
+      reports a tool going below the parallels onto it as a fixture problem. Done: a drill through the full stock
+      into the floor is a problem, with the finding naming it; no change to setups without a vise; format +1
+      only if a field is added (refuse older builds' files with the update message); setup sheet and
+      `docs/safety.md` updated.
+- [ ] **G3 Test gaps, process-mill and sim** (`process-mill` has 11 tests for 3300 lines, `sim` 10 for 1100).
+      Refusal paths and boundaries: tool wider than a pocket or slot, depth below the part, step-over above the
+      tool, zero-length contours, a vise along `y`, a carried-stock chain of three setups. Done: at least 12
+      new tests across the two crates, each failing when the code it covers is changed; `cargo xtask ci` exits 0.
+- [ ] **G4 Test gaps, verify and post gate** (docs/safety.md gates 2 and 4). Tests through the API that: `post`
+      refuses each problem kind without the override; the override is listed in the program header; an
+      unverified post and machine are flagged for review; an edited or custom post is named in the header.
+      Done: one test per item, each failing without the code it covers.
+- [ ] **G5 Pick a side by picking a face** (decision 0019 "Not yet"). Choose a side setup's side by clicking a
+      face of the part in the 3D view; only the four quarter-turn sides, anything else says so. Done: a pure
+      function mapping a face normal to a side with tests (including a tilted face refused), UI build passes,
+      page loads headless with no `[[` marker, strings in `strings.ts`.
+- [ ] **G6 Pick an edge for projection** (decision 0033 "Not covered here"). In the sketcher, pick a model edge in
+      the 3D view to run the project-edge command; a lost edge shows its message. Done: a pure function
+      from a pick to the edge's two-face name with tests, UI build passes, headless load check, strings in
+      `strings.ts`.
+- [ ] **G7 README and docs in step with the code**. The README status table still says Phase 1 is "done for the
+      test block" and Phase 3 is "in progress: stock simulation"; list what `cndt commands` and the decisions
+      0017 to 0033 now provide and what remains. Done: a table row per phase that matches the code, every
+      command named in docs exists in `cndt commands`, no code change.
+
 ## F. Never by the loop (need the machine or the owner)
 
 - [!] First real cut on the Mazak HCN-5000 from CNDT G-code (Phase 2 exit gate).
 - [!] Verified posts on two machines (Phase 3 exit gate); machine and post `verified = true` flags.
 - [!] Product name and trademark check, cloud sync decision, turning in v1.0 (README "Open decisions").
 - [!] Phase 4 and later (adaptive clearing, rest machining, sweep, loft, turning, wire EDM): after v1.0.
+- [!] Spindle and spine collisions, and travel checked against the machine's real coordinates (docs/safety.md
+      "Not yet"): need the machine's measured geometry and work offsets.
+- [!] Clamps, fixture plates and anything on the B table (decision 0020): a fixture library and a way to place
+      solids; a large design decision, so the owner decides.
+- [!] Trochoidal slotting, turning about X (A axis), stock carried at any angle (decisions 0031, 0032): later
+      work tied to adaptive clearing (Phase 4) or a machine with the axis.
