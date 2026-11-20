@@ -229,6 +229,13 @@ export class SketchEditor {
     this.draw();
   }
 
+  /** Hides or shows the drawing surface without closing the sketch, so the 3D view under it can be clicked. */
+  setSurfaceHidden(hidden: boolean): void {
+    if (this.id === null) return;
+    this.element.toggleAttribute("hidden", hidden);
+    if (!hidden) this.draw();
+  }
+
   fit(): void {
     const { clientWidth: width, clientHeight: height } = this.host;
     const points = this.points();
