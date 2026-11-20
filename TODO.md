@@ -107,9 +107,10 @@ named below exist and pass · the page still loads headless with no `[[` marker 
       offered on next open after a crash; atomic writes already exist. Tests with a simulated crash.
 - [x] **D6 Post inheritance** (PR #69, merged) (approved; decision first). A post may `extends` a shipped base so upstream
       fixes still apply; the post editor shows the merged result. Golden tests for an extending post.
-- [ ] **D7 Cancellable background jobs** (approved; decision first). Long work (simulation, verification,
-      rebuild) runs as a job with progress and cancel through the API; the UI no longer blocks. Tests:
-      cancel stops promptly, a finished job's result equals the synchronous one.
+- [~] **D7 Cancellable background jobs** (PR #87, not merged: no CI checks reported; decision 0035: simulation and verification only; cancel
+      and progress through `Api::job_control` and the desktop's `job_cancel`/`job_progress`).
+      Left: rebuild and toolpath planning are not interruptible, and the UI has no cancel button or
+      progress bar yet (`ui/src/api.ts` wrappers and a button).
 - [!] **D8 Post script hook (Rhai or Lua)**. Needs the owner: choose the language, and a new dependency
       must be approved (CLAUDE.md: ask before adding a dependency).
 

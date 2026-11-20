@@ -59,6 +59,7 @@ The owner can overturn any agent-accepted record in review; the record is then s
 | [0032](0032-turned-setups.md) | Setups turned to any angle about the upright axis | Accepted |
 | [0033](0033-projected-edges.md) | Model edges projected into a sketch, by the two faces that meet at them | Accepted |
 | [0034](0034-splines.md) | Splines in sketches: fit-point curves through sketch points | Accepted |
+| [0035](0035-cancellable-jobs.md) | Cancel and progress for simulation and verification | Accepted |
 
 ## Open decisions
 

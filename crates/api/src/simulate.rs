@@ -55,6 +55,16 @@ fn placement_of(placed: &cndt_process_mill::Setup) -> Option<cndt_sim::Placement
     )
 }
 
+/// A simulation failure as an API error: a cancel has its own kind.
+pub(crate) fn sim_error(error: cndt_sim::SimError) -> ApiError {
+    let kind = if error == cndt_sim::SimError::Cancelled {
+        "cancelled"
+    } else {
+        "simulation"
+    };
+    ApiError::new(kind, error.to_string())
+}
+
 /// The colour classes of the simulated stock mesh, as its "faces".
 pub const STOCK_CLASSES: u32 = 4;
 
@@ -359,8 +369,8 @@ impl Api {
             part,
             fixture,
         };
-        let report = cndt_sim::simulate(&planned.program, &tools, &input)
-            .map_err(|e| ApiError::new("simulation", e.to_string()))?;
+        let report = cndt_sim::simulate_controlled(&planned.program, &tools, &input, &self.control)
+            .map_err(sim_error)?;
         // What this setup left, back into the carried stock.
         match (&placement, carry) {
             (None, _) | (Some(_), Carry::Dexels(None)) => {}

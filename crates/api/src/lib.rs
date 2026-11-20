@@ -26,6 +26,10 @@ mod stale;
 mod thumbnail;
 mod verify;
 
+/// Cancel and progress of the running simulation or verification (decision
+/// 0035); see [`Api::job_control`].
+pub use cndt_sim::Control as JobControl;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -513,6 +517,10 @@ pub struct Api {
     revision: u64,
     /// The last stock simulation, for drawing it.
     simulated: Option<simulate::Simulated>,
+    /// Cancel and progress of the simulation or verification that is
+    /// running (decision 0035). Shared, so it can be reached without the
+    /// lock that guards the `Api` while it works.
+    control: cndt_sim::Control,
     /// The last verification and what it was of, so posting right after
     /// verifying does not simulate again.
     verified: Option<(String, verify::Verification)>,
@@ -750,6 +758,7 @@ impl Api {
             rebuilt: Rebuilt::default(),
             revision: 0,
             simulated: None,
+            control: cndt_sim::Control::new(),
             rollback: None,
             verified: None,
             planned: std::sync::Mutex::new(BTreeMap::new()),
@@ -1461,8 +1470,20 @@ impl Api {
         })
     }
 
+    /// The handle to cancel the running simulation or verification and to
+    /// read its progress (decision 0035). Clone it and keep it where
+    /// another thread can reach it. A cancelled request fails with the
+    /// error kind `cancelled` and changes nothing.
+    #[must_use]
+    pub fn job_control(&self) -> JobControl {
+        self.control.clone()
+    }
+
     /// Handles one request.
     pub fn handle(&mut self, request: Request) -> Response {
+        // A cancel belongs to the work it was sent to: a new request starts
+        // clean.
+        self.control.reset();
         let changes_document = matches!(
             request,
             Request::NewDocument { .. }

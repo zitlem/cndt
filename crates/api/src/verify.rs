@@ -67,7 +67,7 @@ impl Api {
             .map_err(|e| e.message)?;
         let gcode = posted["gcode"].as_str().unwrap_or_default();
         let back = cndt_post::read_back(gcode).map_err(|e| e.to_string())?;
-        let report = cndt_sim::simulate(&back, &sim.tools, &sim.input)
+        let report = cndt_sim::simulate_controlled(&back, &sim.tools, &sim.input, &self.control)
             .map_err(|e| format!("it could not be simulated: {e}"))?;
         let worst = report
             .heights
@@ -157,6 +157,10 @@ impl Api {
         // simulated on the stock the ones before it left.
         let mut sims = self.simulate_chain(&ids, cell.or(Some(0.5)))?.into_iter();
         for id in &ids {
+            // A cancelled verification is not a failed one: no report.
+            if self.control.is_cancelled() {
+                return Err(crate::simulate::sim_error(cndt_sim::SimError::Cancelled));
+            }
             let simulated = sims
                 .next()
                 .unwrap_or_else(|| Err(ApiError::new("internal", "not simulated")));

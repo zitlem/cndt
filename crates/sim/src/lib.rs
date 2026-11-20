@@ -22,6 +22,8 @@ pub use dexel::{Dexels, Placement};
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use cndt_cam_core::{ArcDirection, Event, Move, Program, Step};
 use cndt_geom::Point3;
@@ -299,11 +301,14 @@ pub enum SimError {
     /// The program turns the table or changes the offset after cutting:
     /// simulate one side at a time.
     SeveralSides,
+    /// The run was cancelled through its [`Control`] (decision 0035).
+    Cancelled,
 }
 
 impl fmt::Display for SimError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => f.write_str("the simulation was cancelled"),
             Self::MissingTool(number) => write!(f, "tool {number} has no shape to simulate"),
             Self::BadInput(what) => write!(f, "cannot simulate: {what}"),
             Self::SeveralSides => f.write_str(
@@ -314,6 +319,52 @@ impl fmt::Display for SimError {
 }
 
 impl std::error::Error for SimError {}
+
+/// A handle to a running simulation (decision 0035): cancel it, and read
+/// how far it got. Clones share the same state, so one can be kept where
+/// another thread can reach it while the work runs.
+#[derive(Debug, Clone, Default)]
+pub struct Control {
+    cancelled: Arc<AtomicBool>,
+    done: Arc<AtomicUsize>,
+    total: Arc<AtomicUsize>,
+}
+
+impl Control {
+    /// A fresh handle: not cancelled, no progress.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Asks the work to stop at its next step. It then returns
+    /// [`SimError::Cancelled`] and changes nothing else.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether [`Control::cancel`] was called since the last [`Control::reset`].
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Clears the cancel flag and the progress, for the next piece of work.
+    pub fn reset(&self) {
+        self.cancelled.store(false, Ordering::Relaxed);
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(0, Ordering::Relaxed);
+    }
+
+    /// Steps of the current program done, and in all (0 before it starts).
+    #[must_use]
+    pub fn progress(&self) -> (usize, usize) {
+        (
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// The most cells a simulation may have.
 const MAX_CELLS: usize = 16_000_000;
@@ -328,6 +379,22 @@ pub fn simulate(
     program: &Program,
     tools: &BTreeMap<u32, Tool>,
     setup: &Setup,
+) -> Result<Report, SimError> {
+    simulate_controlled(program, tools, setup, &Control::new())
+}
+
+/// [`simulate`] that checks `control` before every step: once cancelled it
+/// stops and returns [`SimError::Cancelled`], and it reports its progress
+/// there. The result of a run that is not cancelled equals [`simulate`]'s.
+///
+/// # Errors
+///
+/// As [`simulate`], and [`SimError::Cancelled`].
+pub fn simulate_controlled(
+    program: &Program,
+    tools: &BTreeMap<u32, Tool>,
+    setup: &Setup,
+    control: &Control,
 ) -> Result<Report, SimError> {
     let grid = setup.grid;
     let bad = |what: &str| Err(SimError::BadInput(what.to_owned()));
@@ -371,8 +438,17 @@ pub fn simulate(
         rapid_length: 0.0,
         cut_minutes: 0.0,
     };
+    control.done.store(0, Ordering::Relaxed);
+    control.total.store(
+        program.operations.iter().map(|o| o.steps.len()).sum(),
+        Ordering::Relaxed,
+    );
     for (index, operation) in program.operations.iter().enumerate() {
         for (number, step) in operation.steps.iter().enumerate() {
+            if control.is_cancelled() {
+                return Err(SimError::Cancelled);
+            }
+            control.done.fetch_add(1, Ordering::Relaxed);
             let at = At {
                 operation: index,
                 name: &operation.name,
@@ -1144,8 +1220,54 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_run_stops_and_says_so() {
+        let setup = block();
+        let steps: Vec<Step> = (0..200)
+            .map(|i| rapid(f64::from(i % 20), 5.0, 5.0))
+            .collect();
+        let control = Control::new();
+        control.cancel();
+        let tools = tools(ToolShape::Flat { diameter: 4.0 });
+        let result = simulate_controlled(&program(steps.clone()), &tools, &setup, &control);
+        assert_eq!(result, Err(SimError::Cancelled));
+        // It stopped before the first step: nothing was done.
+        assert_eq!(control.progress().0, 0);
+        assert_eq!(control.progress().1, 202);
+        // Reset, the same work runs to the end and equals the plain call.
+        control.reset();
+        let whole = simulate_controlled(&program(steps.clone()), &tools, &setup, &control);
+        assert_eq!(control.progress(), (202, 202));
+        assert_eq!(whole, simulate(&program(steps), &tools, &setup));
+        assert!(whole.is_ok());
+    }
+
+    #[test]
+    fn a_cancel_from_another_thread_stops_a_long_run() {
+        let setup = block();
+        let steps: Vec<Step> = (0..2_000_000)
+            .map(|i| rapid(f64::from(i % 20), 5.0, 5.0))
+            .collect();
+        let program = program(steps);
+        let tools = tools(ToolShape::Flat { diameter: 4.0 });
+        let control = Control::new();
+        let remote = control.clone();
+        let canceller = std::thread::spawn(move || {
+            while remote.progress().0 < 100 {
+                std::thread::yield_now();
+            }
+            remote.cancel();
+        });
+        let result = simulate_controlled(&program, &tools, &setup, &control);
+        canceller.join().unwrap();
+        assert_eq!(result, Err(SimError::Cancelled));
+        let (done, total) = control.progress();
+        assert!(done >= 100 && done < total, "{done} of {total}");
+    }
+
+    #[test]
     fn every_error_says_what_is_wrong() {
         for e in [
+            SimError::Cancelled,
             SimError::MissingTool(4),
             SimError::BadInput(String::from("x")),
             SimError::SeveralSides,
