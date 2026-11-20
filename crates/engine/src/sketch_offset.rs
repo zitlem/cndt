@@ -249,7 +249,7 @@ fn plan(
             Geometry::Line { start, end } | Geometry::Arc { start, end, .. } => {
                 segments.push((id, start, end));
             }
-            Geometry::Point { .. } => {
+            Geometry::Point { .. } | Geometry::Spline { .. } => {
                 return Err(SketchError::WrongGeometry {
                     entity: id,
                     found: entity.geometry.kind(),

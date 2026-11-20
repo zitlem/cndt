@@ -35,7 +35,8 @@ enum Curve {
 
 fn curve(sketch: &Sketch, id: EntityId) -> Option<Curve> {
     match sketch.entity(id)?.geometry {
-        Geometry::Point { .. } => None,
+        // A spline is neither trimmed nor cut by another curve (decision 0034).
+        Geometry::Point { .. } | Geometry::Spline { .. } => None,
         Geometry::Line { start, end } => Some(Curve::Line {
             a: sketch.point(start)?,
             b: sketch.point(end)?,
@@ -375,20 +376,12 @@ fn entity_geometry(sketch: &Sketch, id: EntityId) -> Result<Geometry, SketchErro
 
 /// Removes the entity and the points it leaves unused and unconstrained.
 fn remove_entity_and_orphans(sketch: &mut Sketch, id: EntityId) -> Result<(), SketchError> {
-    let points: Vec<EntityId> = match entity_geometry(sketch, id)? {
-        Geometry::Line { start, end } => vec![start, end],
-        Geometry::Circle { center, .. } => vec![center],
-        Geometry::Arc { center, start, end } => vec![center, start, end],
-        Geometry::Point { .. } => Vec::new(),
-    };
+    let points: Vec<EntityId> = entity_geometry(sketch, id)?.points();
     sketch.remove_entity(id)?;
     for p in points {
-        let used = sketch.entities().any(|(_, e)| match e.geometry {
-            Geometry::Line { start, end } => start == p || end == p,
-            Geometry::Circle { center, .. } => center == p,
-            Geometry::Arc { center, start, end } => center == p || start == p || end == p,
-            Geometry::Point { .. } => false,
-        });
+        let used = sketch
+            .entities()
+            .any(|(_, e)| e.geometry.points().contains(&p));
         let constrained = sketch.constraints().any(|(_, c)| c.entities().contains(&p));
         if !used && !constrained && sketch.entity(p).is_some() {
             sketch.remove_entity(p)?;

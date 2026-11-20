@@ -47,6 +47,9 @@ struct RawCurve {
     p1: [f64; 3],
     p2: [f64; 3],
     radius: f64,
+    points: *const f64,
+    point_count: usize,
+    closed: i32,
 }
 
 #[repr(C)]
@@ -267,7 +270,7 @@ unsafe extern "C" {
 const MODEL_FAILED: i32 = 6;
 
 /// A profile curve in model coordinates (millimetres).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Curve {
     /// A straight line.
     Line {
@@ -292,32 +295,40 @@ pub enum Curve {
         /// Radius.
         radius: f64,
     },
+    /// A smooth curve through three or more points. If `closed` it runs from
+    /// the last point back to the first, which is not repeated.
+    Spline {
+        /// The points it passes through, in order.
+        points: Vec<[f64; 3]>,
+        /// Whether it closes on itself.
+        closed: bool,
+    },
 }
 
 impl Curve {
-    fn raw(self) -> RawCurve {
+    /// The bridge's view of the curve. A spline's raw form points into the
+    /// curve's own points, so the curve must outlive the raw one.
+    fn raw(&self) -> RawCurve {
         let zero = [0.0; 3];
+        let plain = |kind, p0, p1, p2, radius| RawCurve {
+            kind,
+            p0,
+            p1,
+            p2,
+            radius,
+            points: std::ptr::null(),
+            point_count: 0,
+            closed: 0,
+        };
         match self {
-            Self::Line { start, end } => RawCurve {
-                kind: 0,
-                p0: start,
-                p1: end,
-                p2: zero,
-                radius: 0.0,
-            },
-            Self::Arc { center, start, end } => RawCurve {
-                kind: 1,
-                p0: center,
-                p1: start,
-                p2: end,
-                radius: 0.0,
-            },
-            Self::Circle { center, radius } => RawCurve {
-                kind: 2,
-                p0: center,
-                p1: zero,
-                p2: zero,
-                radius,
+            Self::Line { start, end } => plain(0, *start, *end, zero, 0.0),
+            Self::Arc { center, start, end } => plain(1, *center, *start, *end, 0.0),
+            Self::Circle { center, radius } => plain(2, *center, zero, zero, *radius),
+            Self::Spline { points, closed } => RawCurve {
+                points: points.as_ptr().cast::<f64>(),
+                point_count: points.len(),
+                closed: i32::from(*closed),
+                ..plain(3, zero, zero, zero, 0.0)
             },
         }
     }

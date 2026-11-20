@@ -1097,6 +1097,21 @@ fn loop_curves(sketch: &Sketch, frame: &Frame, l: &Loop) -> Result<Vec<(Curve, E
                 center: point(*center)?,
                 radius: *radius,
             },
+            Some(Geometry::Spline { through, closed }) => {
+                let mut points = through
+                    .iter()
+                    .map(|p| point(*p))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // A loop running the other way round is the same curve
+                // through the same points reversed.
+                if c.reversed {
+                    points.reverse();
+                }
+                Curve::Spline {
+                    points,
+                    closed: *closed,
+                }
+            }
             _ => return Err(format!("{} is not a curve", c.entity)),
         };
         out.push((curve, c.entity));
@@ -1283,6 +1298,13 @@ fn curve_points(sketch: &Sketch, entity: EntityId) -> Vec<[f64; 2]> {
                     .collect()
             })
             .unwrap_or_default(),
+        Some(Geometry::Spline { through, closed }) => {
+            let points: Vec<_> = through.iter().filter_map(|p| sketch.point(*p)).collect();
+            cndt_sketch::spline_samples(&points, *closed, 16)
+                .into_iter()
+                .map(|p| [p.x, p.y])
+                .collect()
+        }
         _ => Vec::new(),
     }
 }

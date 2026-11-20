@@ -277,6 +277,15 @@ pub enum SketchEdit {
         /// The width across the slot, in millimetres.
         width: f64,
     },
+    /// Adds a spline: a smooth curve through three or more points, each an
+    /// existing point or a new one at a position. Closed, it also returns
+    /// from the last point to the first.
+    AddSpline {
+        /// The points it passes through, in order.
+        through: Vec<PointRef>,
+        /// Whether it closes back on the first point.
+        closed: bool,
+    },
     /// Trims a line, arc or circle: removes the stretch of it that holds
     /// `at`, between the places where other curves cross it.
     Trim {
@@ -373,6 +382,7 @@ impl SketchEdit {
             Self::AddArc { .. } => "sketch.add_arc",
             Self::AddRectangle { .. } => "sketch.add_rectangle",
             Self::AddSlot { .. } => "sketch.add_slot",
+            Self::AddSpline { .. } => "sketch.add_spline",
             Self::Trim { .. } => "sketch.trim",
             Self::Offset { .. } => "sketch.offset",
             Self::Mirror { .. } => "sketch.mirror",
@@ -397,6 +407,7 @@ impl SketchEdit {
             Self::AddArc { .. } => "Add arc",
             Self::AddRectangle { .. } => "Add rectangle",
             Self::AddSlot { .. } => "Add slot",
+            Self::AddSpline { .. } => "Add spline",
             Self::Trim { .. } => "Trim",
             Self::Offset { .. } => "Offset",
             Self::Mirror { .. } => "Mirror",
@@ -468,6 +479,25 @@ impl SketchEdit {
                 }
             }
             Self::AddSlot { from, to, width } => add_slot(sketch, from, to, width, &options)?,
+            Self::AddSpline {
+                ref through,
+                closed,
+            } => {
+                // Check the count before making any point, so a refusal
+                // leaves nothing behind.
+                if through.len() < 3 {
+                    return Err(SketchError::BadValue {
+                        kind: "spline points",
+                        value: through.len() as f64,
+                        expected: "at least 3",
+                    });
+                }
+                let ids = through
+                    .iter()
+                    .map(|p| point(sketch, *p))
+                    .collect::<Result<Vec<_>, _>>()?;
+                sketch.add_spline(ids, closed)?;
+            }
             Self::Trim { entity, at } => crate::sketch_trim::trim(sketch, entity, at, &options)?,
             Self::Offset {
                 ref entities,
@@ -600,14 +630,7 @@ fn remove_with_dependents(sketch: &mut Sketch, id: EntityId) -> Result<(), Sketc
     let uses = |sketch: &Sketch, point: EntityId| -> Vec<EntityId> {
         sketch
             .entities()
-            .filter(|(_, e)| match e.geometry {
-                Geometry::Line { start, end } => start == point || end == point,
-                Geometry::Circle { center, .. } => center == point,
-                Geometry::Arc { center, start, end } => {
-                    center == point || start == point || end == point
-                }
-                Geometry::Point { .. } => false,
-            })
+            .filter(|(_, e)| e.geometry.points().contains(&point))
             .map(|(other, _)| other)
             .collect()
     };
@@ -619,9 +642,7 @@ fn remove_with_dependents(sketch: &mut Sketch, id: EntityId) -> Result<(), Sketc
             }
             Vec::new()
         }
-        Some(Geometry::Line { start, end }) => vec![*start, *end],
-        Some(Geometry::Circle { center, .. }) => vec![*center],
-        Some(Geometry::Arc { center, start, end }) => vec![*center, *start, *end],
+        Some(other) => other.points(),
     };
     sketch.remove_entity(id)?;
     for p in points {
