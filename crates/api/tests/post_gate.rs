@@ -172,3 +172,44 @@ fn a_custom_post_is_named_in_the_header() {
         "{gcode}"
     );
 }
+
+/// A 800 × 40 × 20 block: wider than the HCN-5000's 730 mm of X travel.
+fn too_wide() -> Session {
+    let mut s = Session { api: Api::new() };
+    s.exec("sketch.create", json!({"plane": "xy", "name": "Block"}));
+    s.exec(
+        "sketch.add_rectangle",
+        json!({"sketch": 0, "from": {"x": 0, "y": 0}, "to": {"x": 800, "y": 40}}),
+    );
+    s.exec("feature.extrude", json!({"sketch": 0, "distance": 20}));
+    s.exec("cam.set_stock", json!({"side": 2, "top": 2, "bottom": 3}));
+    s.exec("cam.add_setup", json!({"side": "top"}));
+    s.exec("cam.add_operation", json!({"setup": 0, "type": "face"}));
+    s
+}
+
+#[test]
+fn a_broken_machine_limit_refuses_the_post_and_the_override_does_not_lift_it() {
+    // The same part posts without a machine, so the refusal is the limit.
+    let mut s = too_wide();
+    let reply = s.call(json!({"method": "post", "post": "mazak-smoothg", "setup": 0}));
+    assert_eq!(reply["ok"], true, "{reply}");
+
+    for override_problems in [false, true] {
+        let reply = s.call(json!({
+            "method": "post", "post": "mazak-smoothg", "machine": "mazak-hcn-5000",
+            "setup": 0, "override": override_problems
+        }));
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["error"]["kind"], "machine", "{reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("travel"), "{message}");
+        assert!(reply["result"].is_null(), "{reply}");
+    }
+
+    // Verification reports it as a problem too.
+    let verify = s.call(json!({
+        "method": "verify", "post": "mazak-smoothg", "machine": "mazak-hcn-5000", "setups": [0]
+    }));
+    assert_eq!(verify["result"]["verdict"], "problems", "{verify}");
+}
