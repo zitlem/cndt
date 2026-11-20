@@ -179,6 +179,30 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       cancels a planning of a pocket and gets a "cancelled" result with the document unchanged, another cancels
       a rebuild; no change to any golden file; `cargo xtask ci` exits 0.
 
+## H. Refill of 2026-11-19 (third)
+
+Added by the refill run. Same rules as above. G8 and G10 have open PRs: do not start them again.
+
+- [ ] **H1 Read-back compares spindle, coolant and tool numbers** (docs/safety.md "Known gap"). Compare, in order, the
+      spindle speed and direction, coolant state and tool number of the read-back program with the plan; a
+      difference is a **problem**. Done: tests where a post writes a wrong S, a missing coolant code and a wrong T
+      each fail without the code; shipped posts still verify clean; GRBL (no tool numbers) is still review-only;
+      `docs/safety.md` "Known gap" updated; `cargo xtask ci` exits 0.
+- [ ] **H2 Post gate tests, machine limits and rapids through material** (G4 left these two problem kinds). Through the
+      API, `post` refuses a program that breaks a machine travel limit and one with a rapid through material,
+      without the override, and with it lists each in the header. Done: one test per kind, each failing without
+      the code it covers.
+- [ ] **H3 Test gaps, pocket and step-over** (G3 left these). In `process-mill`: a pocket narrower than its tool is
+      refused with the size needed; a step-over above the tool diameter is refused or clamped as the code says.
+      Done: tests for both, each failing when the check is removed; `cargo xtask ci` exits 0.
+- [ ] **H4 Vise floor depth in the UI** (G2 left it). A field for the vise `body` height in the setup panel in
+      `main.ts`, empty meaning none, sent through the existing command. Done: a pure function parsing the field
+      (empty, number, negative refused) with tests, UI build passes, headless load check, strings in `strings.ts`.
+- [ ] **H5 Rings for holes over twice the largest end mill** (decision 0030 "Not in this slice", still Accepted). Bore
+      such holes by concentric helical rings instead of refusing. Amend 0030 first. Done: tests for a hole needing
+      two rings (material removed against the closed form, no uncut ring), the refusal when even rings cannot fit,
+      golden files for all five posts, no change to existing goldens, `cargo xtask ci` exits 0.
+
 ## F. Never by the loop (need the machine or the owner)
 
 - [!] First real cut on the Mazak HCN-5000 from CNDT G-code (Phase 2 exit gate).
