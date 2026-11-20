@@ -276,6 +276,21 @@ export class Viewer {
     return this.triangleFaces[hit.faceIndex] ?? null;
   }
 
+  /** The outward normal (model axes) of the triangle under a point of the canvas, or null. */
+  faceNormalAt(clientX: number, clientY: number): [number, number, number] | null {
+    if (!this.surface) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(pointer, this.camera);
+    const hit = this.raycaster.intersectObject(this.surface)[0];
+    if (!hit?.face) return null;
+    const n = hit.face.normal.clone().transformDirection(this.surface.matrixWorld);
+    return [n.x, n.y, n.z];
+  }
+
   /** Tints one face, or none. */
   highlightFace(face: number | null): void {
     this.highlightFaces(face === null ? [] : [face]);

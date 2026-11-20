@@ -35,4 +35,7 @@ So the part's top stays towards program +Y on the front and back, and model Y st
 ## Consequences
 
 - `cndt_process_mill::world` turns the document and part for a setup; `Setup.turn` records the rotation.
-- Not yet: angles other than quarter turns (a face at 30°), and choosing a side by picking a face.
+- The side can be chosen by clicking a face of the part (`ui/src/sidepick.ts`): the face normal must lie within
+  5° of the right, left, front or back axis; a face looking up or down, or a tilted one, is refused with a
+  message and sets nothing.
+- Not yet: angles other than quarter turns (a face at 30°) from a picked face.
