@@ -68,15 +68,18 @@ impl Api {
             .map_err(|e| e.message)?;
         let gcode = posted["gcode"].as_str().unwrap_or_default();
         let back = cndt_post::read_back(gcode).map_err(|e| e.to_string())?;
-        let report = cndt_sim::simulate_controlled(&back, &sim.tools, &sim.input, &self.control)
-            .map_err(|e| format!("it could not be simulated: {e}"))?;
-        // Material removed is not all: a wrong feed, or a cut posted as a
-        // rapid, removes the same stock.
+        // Material removed is not all: a wrong feed, a cut posted as a
+        // rapid, or a wrong spindle speed, coolant or tool number removes
+        // the same stock. Compared first, so a tool number that has no
+        // shape to simulate is still a problem, not only "not checked".
         if let Some(planned) = planned
             && let Some(problem) = crate::motion_check::compare(planned, &back)
+                .or_else(|| crate::motion_check::compare_state(planned, &back))
         {
             return Ok(Some(problem));
         }
+        let report = cndt_sim::simulate_controlled(&back, &sim.tools, &sim.input, &self.control)
+            .map_err(|e| format!("it could not be simulated: {e}"))?;
         let worst = report
             .heights
             .iter()

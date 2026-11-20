@@ -163,18 +163,18 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       0017 to 0033 now provide and what remains. Done: a table row per phase that matches the code, every
       command named in docs exists in `cndt commands`, no code change.
 
-- [~] **G8 Spline end tangent** (PR #97; format 32; format change, so not self-merged; the UI has no button for it yet: use `sketch.constrain`) (decision 0034 "Not in this record", follow-up B8b). A solver constraint that makes a
+- [x] **G8 Spline end tangent** (PR #97; format 32; format change, so not self-merged; the UI has no button for it yet: use `sketch.constrain`) (decision 0034 "Not in this record", follow-up B8b). A solver constraint that makes a
       spline's end tangent to a line or arc at a shared end point. Done: solver tests (converges, refuses a
       conflicting or over-constrained set with a message), command `sketch.add_constraint` accepts it, file
       version +1 only if the constraint list needs a new kind (decision amended first), `cargo xtask ci` exits 0.
 - [x] **G9 Splines in the sketcher UI** (PR #98, merged; draw, show, pick and drag through points; no headless browser was available, so the load check was the build only) (follow-up B8c). Draw, show, select and drag splines in `sketch.ts` and
       `viewer.ts`; their points no longer show as loose points. Done: a pure function for the spline's sampled
       polyline with tests, UI build passes, headless load check with no `[[` marker, strings in `strings.ts`.
-- [~] **G10 Cancel button and progress bar** (PR #99; no headless browser was available, so the load check was the build only) (decision 0035, follow-up of D7). Wrappers for `job_cancel` and
+- [x] **G10 Cancel button and progress bar** (PR #99; no headless browser was available, so the load check was the build only) (decision 0035, follow-up of D7). Wrappers for `job_cancel` and
       `job_progress` in `ui/src/api.ts`, a cancel button and a progress bar for simulation and verification.
       Done: a pure function turning progress into a label with tests, UI build passes, headless load check,
       strings in `strings.ts`.
-- [~] **G11 Interruptible rebuild and toolpath planning** (decision 0035 "Left as a follow-up"). Extend the job
+- [x] **G11 Interruptible rebuild and toolpath planning** (decision 0035 "Left as a follow-up"). Extend the job
       control to rebuild and operation planning, checked between features and between passes. Done: a test
       cancels a planning of a pocket and gets a "cancelled" result with the document unchanged, another cancels
       a rebuild; no change to any golden file; `cargo xtask ci` exits 0.
@@ -183,7 +183,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
 
 Added by the refill run. Same rules as above. G8 and G10 have open PRs: do not start them again.
 
-- [ ] **H1 Read-back compares spindle, coolant and tool numbers** (docs/safety.md "Known gap"). Compare, in order, the
+- [~] **H1 Read-back compares spindle, coolant and tool numbers** (PR pending; compared per cutting stretch, before the simulation) (docs/safety.md "Known gap"). Compare, in order, the
       spindle speed and direction, coolant state and tool number of the read-back program with the plan; a
       difference is a **problem**. Done: tests where a post writes a wrong S, a missing coolant code and a wrong T
       each fail without the code; shipped posts still verify clean; GRBL (no tool numbers) is still review-only;

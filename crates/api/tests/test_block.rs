@@ -619,6 +619,31 @@ fn the_cndt_test_block() {
         problems.contains("moves differently from the plan") && problems.contains("cycle"),
         "{problems}"
     );
+    // Spindle speed, coolant and tool number are compared too (decision
+    // 0016): each wrong template is a problem naming the machine state.
+    for (from, to, expect) in [
+        (
+            "spindle_cw = \"M3 S{rpm}\"",
+            "spindle_cw = \"M3 S1000\"",
+            "S1000",
+        ),
+        (
+            "coolant_flood = \"M8\"",
+            "coolant_flood = \"M9\"",
+            "no coolant",
+        ),
+        ("\"T{tool} M6\"", "\"T9 M6\"", "T9"),
+    ] {
+        let edited = shipped.replacen(from, to, 1);
+        assert_ne!(edited, shipped, "the fanuc post has no `{from}` to edit");
+        let verify = s.call(json!({"method": "verify", "definition": edited, "setups": [0]}));
+        assert_eq!(verify["result"]["verdict"], "problems", "{from}: {verify}");
+        let problems = verify["result"]["problems"].to_string();
+        assert!(
+            problems.contains("different machine state") && problems.contains(expect),
+            "{from}: {problems}"
+        );
+    }
     // The other shipped posts with rigid tapping take the whole setup too.
     for post in ["haas-mill", "linuxcnc-mill"] {
         let reply = s.call(json!({"method": "post", "post": post, "setup": 0}));
