@@ -157,7 +157,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       the 3D view to run the project-edge command; a lost edge shows its message. Done: a pure function
       from a pick to the edge's two-face name with tests, UI build passes, headless load check, strings in
       `strings.ts`.
-- [~] **G7 README and docs in step with the code** (PR pending). The README status table still says Phase 1 is "done for the
+- [~] **G7 README and docs in step with the code** (PR #93; not merged: no CI checks reported). The README status table still says Phase 1 is "done for the
       test block" and Phase 3 is "in progress: stock simulation"; list what `cndt commands` and the decisions
       0017 to 0033 now provide and what remains. Done: a table row per phase that matches the code, every
       command named in docs exists in `cndt commands`, no code change.
