@@ -123,7 +123,7 @@ fn a_contour_down_the_walls_hits_jaws_that_grip_too_high() {
 /// into the parallel.
 #[test]
 fn a_through_hole_over_a_parallel_hits_it() {
-    let hit = |y: f64| -> Vec<String> {
+    let hit = |y: f64, body: Option<f64>| -> Vec<String> {
         let mut s = Session { api: Api::new() };
         s.exec("sketch.create", json!({"plane": "xy", "name": "Plate"}));
         s.exec(
@@ -166,14 +166,27 @@ fn a_through_hole_over_a_parallel_hits_it() {
         s.exec("cam.set_stock", json!({"side": 2, "top": 1, "bottom": 0}));
         s.exec("cam.add_setup", json!({"side": "top"}));
         s.exec("cam.add_operation", json!({"setup": 0, "type": "holes"}));
-        s.exec("cam.set_vise", json!({"setup": 0, "grip": 5}));
+        let mut vise = json!({"setup": 0, "grip": 5});
+        if let Some(body) = body {
+            vise["body"] = json!(body);
+        }
+        s.exec("cam.set_vise", vise);
         s.fixture_problems()
     };
     assert!(
-        hit(20.0).is_empty(),
+        hit(20.0, None).is_empty(),
         "the middle is over the gap between the parallels"
     );
-    let problems = hit(3.0);
+    // A floor 0.5 mm under the stock: the through drill goes past the
+    // plate's bottom and into it, in the middle too.
+    let floor = hit(20.0, Some(0.5));
+    assert!(
+        floor.iter().any(|p| p.contains("floor")),
+        "a through drill into the vise's floor is a problem: {floor:?}"
+    );
+    // A floor far below is not reached.
+    assert!(hit(20.0, Some(30.0)).is_empty());
+    let problems = hit(3.0, None);
     assert!(
         problems.iter().any(|p| p.contains("parallel")),
         "a hole 3 mm from the clamped edge drills into the parallel: {problems:?}"

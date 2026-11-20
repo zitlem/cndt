@@ -1025,7 +1025,7 @@ function renderSetups(state: DocumentState): void {
       render(
         await execute(
           "cam.set_vise",
-          grip === null ? { setup: id } : { setup: id, grip, along: along.value, jaw: setup.vise?.jaw ?? 25 },
+          grip === null ? { setup: id } : { setup: id, grip, along: along.value, jaw: setup.vise?.jaw ?? 25, body: setup.vise?.body },
         ),
       );
     });

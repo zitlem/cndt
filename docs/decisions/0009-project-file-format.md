@@ -201,3 +201,10 @@ A sketch entity may be `{"type": "spline", "through": [point ids], "closed": tru
 
 - **Why a version bump:** a version 29 build refuses the unknown entity type as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 29 or older file with a spline is refused as damaged.
+
+## Version 31 (2026-11-19)
+
+A setup's `vise` may carry `"body"`, a number: how far below the stock's bottom the vise's floor stands, in millimetres (decision 0020). It is left out when there is none.
+
+- **Why a version bump:** a version 30 build refuses the unknown field as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 30 or older file with a body is refused as damaged; one without is read as before.

@@ -401,6 +401,11 @@ pub struct Vise {
     /// Each jaw's thickness away from the stock, in millimetres.
     #[serde(default = "default_jaw")]
     pub jaw: f64,
+    /// How far below the stock's bottom the vise's fixed body stands, in
+    /// millimetres: its top is a floor between the parallels, along the
+    /// whole simulated area (decision 0020). `None`: no floor is checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<f64>,
 }
 
 /// The program axis a vise's jaws run along.
@@ -451,6 +456,13 @@ impl Vise {
             return Err(format!(
                 "a vise jaw must be 1 to 200 mm thick, not {}",
                 self.jaw
+            ));
+        }
+        if let Some(body) = self.body
+            && !(body.is_finite() && body > 0.0 && body <= 500.0)
+        {
+            return Err(format!(
+                "the vise body must be above 0 and at most 500 mm below the stock, not {body}"
             ));
         }
         Ok(())
