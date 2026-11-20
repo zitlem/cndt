@@ -65,7 +65,8 @@ pub const FORMAT_NAME: &str = "cndt-project";
 /// - 29: model edges projected into sketches (decision 0033).
 /// - 30: splines in sketches (decision 0034).
 /// - 31: a vise body and floor (decision 0020).
-pub const SCHEMA_VERSION: u32 = 31;
+/// - 32: spline end tangent constraints (decision 0034).
+pub const SCHEMA_VERSION: u32 = 32;
 
 /// The file extension for project files.
 pub const EXTENSION: &str = "cndt";
@@ -369,6 +370,20 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Project, FormatError> {
     {
         return Err(FormatError::Corrupt(format!(
             "a version {} file cannot contain revolve features",
+            manifest.schema_version
+        )));
+    }
+    // Version 31 knew nothing of spline end tangents.
+    if manifest.schema_version < 32
+        && document.sketches().values().any(|record| {
+            record
+                .sketch
+                .constraints()
+                .any(|(_, c)| matches!(c, cndt_model::sketch::Constraint::SplineTangent { .. }))
+        })
+    {
+        return Err(FormatError::Corrupt(format!(
+            "a version {} file cannot contain spline end tangents",
             manifest.schema_version
         )));
     }
@@ -1363,6 +1378,39 @@ mod tests {
             .edit_sketch(sketch, |s| s.add_point(Point2::new(1.0, 1.0)))
             .unwrap();
         assert!(!serde_json::to_string(&plain).unwrap().contains("spline"));
+    }
+
+    #[test]
+    fn spline_end_tangents_need_version_32() {
+        use cndt_model::Plane;
+        use cndt_model::sketch::{Constraint, Point2, SolveOptions, SplineEnd};
+        let mut document = Document::new("Tangent");
+        let sketch = document.add_sketch("", Plane::Xy).unwrap();
+        document
+            .edit_sketch(sketch, |s| {
+                let a = s.add_point(Point2::new(0.0, 0.0))?;
+                let b = s.add_point(Point2::new(5.0, 4.0))?;
+                let c = s.add_point(Point2::new(10.0, 0.0))?;
+                let d = s.add_point(Point2::new(-5.0, -5.0))?;
+                let spline = s.add_spline(vec![a, b, c], false)?;
+                let line = s.add_line(a, d)?;
+                s.add_constraint(
+                    Constraint::SplineTangent {
+                        spline,
+                        end: SplineEnd::Start,
+                        to: line,
+                    },
+                    &SolveOptions::default(),
+                )
+            })
+            .unwrap();
+        let project = Project::new(document.clone());
+        assert_eq!(read(Cursor::new(to_bytes(&project))).unwrap(), project);
+        let json = serde_json::to_string(&document).unwrap();
+        assert!(json.contains("spline_tangent"), "{json}");
+        let v31 = raw_zip(&[(MANIFEST, &manifest(31)), (DOCUMENT, &json)]);
+        let error = read(Cursor::new(v31)).unwrap_err();
+        assert!(error.to_string().contains("spline end tangents"), "{error}");
     }
 
     #[test]

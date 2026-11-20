@@ -442,6 +442,17 @@ TopoDS_Edge make_edge(const cndt_curve& curve, const gp_Dir& normal) {
                 through->SetValue(static_cast<Standard_Integer>(i + 1), point(curve.points + 3 * i));
             }
             GeomAPI_Interpolate interpolate(through, curve.closed != 0, 1e-7);
+            if (curve.closed == 0) {
+                // An open spline leaves its first and last points along the chord to the
+                // neighbouring point, the end direction the sketch draws and its end
+                // tangent constraint uses (decision 0034).
+                const std::size_t n = curve.point_count;
+                const gp_Vec first(point(curve.points), point(curve.points + 3));
+                const gp_Vec last(point(curve.points + 3 * (n - 2)), point(curve.points + 3 * (n - 1)));
+                if (first.Magnitude() > 1e-9 && last.Magnitude() > 1e-9) {
+                    interpolate.Load(first, last, Standard_True);
+                }
+            }
             interpolate.Perform();
             if (!interpolate.IsDone()) {
                 throw Standard_Failure("the spline could not be fitted through its points");

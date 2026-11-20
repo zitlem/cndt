@@ -923,3 +923,134 @@ fn removing_a_point_of_a_spline_is_refused_while_the_spline_uses_it() {
     s.add_spline(ids.clone(), true).unwrap();
     assert!(s.remove_entity(ids[0]).is_err());
 }
+
+#[test]
+fn a_spline_start_leaves_a_line_along_it() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    let b = pt(&mut s, 5.0, 4.0);
+    let c = pt(&mut s, 9.0, 1.0);
+    let far = pt(&mut s, 10.0, 10.0);
+    let spline = s.add_spline(vec![a, b, c], false).unwrap();
+    let line = s.add_line(a, far).unwrap();
+    con(&mut s, Constraint::Fix { point: a });
+    con(&mut s, Constraint::Fix { point: far });
+    con(
+        &mut s,
+        Constraint::SplineTangent {
+            spline,
+            end: SplineEnd::Start,
+            to: line,
+        },
+    );
+    let (pa, pb) = (at(&s, a), at(&s, b));
+    // b now lies on the line y = x through a.
+    assert!(close(pb.y - pa.y, pb.x - pa.x), "{pb:?}");
+}
+
+#[test]
+fn a_spline_end_leaves_an_arc_at_right_angles_to_its_radius() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 1.0);
+    let b = pt(&mut s, 5.0, 4.0);
+    let end = pt(&mut s, 0.0, 0.0);
+    let centre = pt(&mut s, 0.0, -5.0);
+    let other = pt(&mut s, 5.0, -5.0);
+    let spline = s.add_spline(vec![a, b, end], false).unwrap();
+    let arc = s.add_arc(centre, end, other).unwrap();
+    con(&mut s, Constraint::Fix { point: centre });
+    con(&mut s, Constraint::Fix { point: end });
+    con(
+        &mut s,
+        Constraint::SplineTangent {
+            spline,
+            end: SplineEnd::End,
+            to: arc,
+        },
+    );
+    // The radius at `end` is vertical, so the chord from b to it is horizontal.
+    assert!(close(at(&s, b).y, at(&s, end).y), "{:?}", at(&s, b));
+}
+
+#[test]
+fn a_spline_end_tangent_is_refused_with_a_reason() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    let b = pt(&mut s, 5.0, 4.0);
+    let c = pt(&mut s, 9.0, 1.0);
+    let d = pt(&mut s, -4.0, -4.0);
+    let e = pt(&mut s, 3.0, 9.0);
+    let open = s.add_spline(vec![a, b, c], false).unwrap();
+    let apart = s.add_line(d, e).unwrap();
+    let on_start = s.add_line(a, d).unwrap();
+    let ring = ring_points(&mut s, 4, 3.0);
+    let closed = s.add_spline(ring, true).unwrap();
+    let try_it = |s: &mut Sketch, spline, end, to| {
+        s.add_constraint(Constraint::SplineTangent { spline, end, to }, &opts())
+    };
+    // A line that does not meet the end point.
+    let err = try_it(&mut s, open, SplineEnd::Start, apart).unwrap_err();
+    assert!(err.to_string().contains("share that point"), "{err}");
+    // The line meets the start, not the end.
+    assert!(try_it(&mut s, open, SplineEnd::End, on_start).is_err());
+    // A closed spline has no ends.
+    let err = try_it(&mut s, closed, SplineEnd::Start, on_start).unwrap_err();
+    assert!(err.to_string().contains("no ends"), "{err}");
+    // Not a spline, not a line or arc.
+    assert!(matches!(
+        try_it(&mut s, apart, SplineEnd::Start, on_start),
+        Err(SketchError::WrongGeometry { .. })
+    ));
+    assert!(matches!(
+        try_it(&mut s, open, SplineEnd::Start, b),
+        Err(SketchError::WrongGeometry { .. })
+    ));
+    // Nothing was added by the refusals.
+    assert_eq!(s.constraints().count(), 0);
+}
+
+#[test]
+fn a_spline_end_tangent_that_contradicts_another_constraint_conflicts() {
+    let mut s = Sketch::new();
+    let a = pt(&mut s, 0.0, 0.0);
+    let b = pt(&mut s, 5.0, 4.0);
+    let c = pt(&mut s, 9.0, 1.0);
+    let far = pt(&mut s, 10.0, 10.0);
+    let spline = s.add_spline(vec![a, b, c], false).unwrap();
+    let line = s.add_line(a, far).unwrap();
+    con(&mut s, Constraint::Fix { point: a });
+    con(&mut s, Constraint::Fix { point: far });
+    con(&mut s, Constraint::Fix { point: b });
+    let err = s
+        .add_constraint(
+            Constraint::SplineTangent {
+                spline,
+                end: SplineEnd::Start,
+                to: line,
+            },
+            &opts(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SketchError::Conflict { .. } | SketchError::Redundant { .. }
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_spline_end_tangent_survives_json() {
+    let c = Constraint::SplineTangent {
+        spline: EntityId(3),
+        end: SplineEnd::End,
+        to: EntityId(4),
+    };
+    let text = serde_json::to_string(&c).unwrap();
+    assert!(
+        text.contains("spline_tangent") && text.contains("\"end\":\"end\""),
+        "{text}"
+    );
+    assert_eq!(serde_json::from_str::<Constraint>(&text).unwrap(), c);
+}

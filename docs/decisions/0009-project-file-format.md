@@ -208,3 +208,10 @@ A setup's `vise` may carry `"body"`, a number: how far below the stock's bottom 
 
 - **Why a version bump:** a version 30 build refuses the unknown field as damaged; with the bump it says to update instead.
 - **Migration:** none needed. A version 30 or older file with a body is refused as damaged; one without is read as before.
+
+## Version 32 (2026-11-19)
+
+A sketch constraint may be `{"type": "spline_tangent", "spline": id, "end": "start" | "end", "to": id}` (decision 0034).
+
+- **Why a version bump:** a version 31 build refuses the unknown constraint type as damaged; with the bump it says to update instead.
+- **Migration:** none needed. A version 31 or older file with such a constraint is refused as damaged; one without is read as before.

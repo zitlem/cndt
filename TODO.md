@@ -154,7 +154,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       face of the part in the 3D view; only the four quarter-turn sides, anything else says so. Done: a pure
       function mapping a face normal to a side with tests (including a tilted face refused), UI build passes,
       page loads headless with no `[[` marker, strings in `strings.ts`.
-- [~] **G6 Pick an edge for projection** (PR #96) (decision 0033 "Not covered here"). In the sketcher, pick a model edge in
+- [x] **G6 Pick an edge for projection** (PR #96, merged) (decision 0033 "Not covered here"). In the sketcher, pick a model edge in
       the 3D view to run the project-edge command; a lost edge shows its message. Done: a pure function
       from a pick to the edge's two-face name with tests, UI build passes, headless load check, strings in
       `strings.ts`.
@@ -163,7 +163,7 @@ Added by the refill run. Same rules as above. Re-check each line against the cod
       0017 to 0033 now provide and what remains. Done: a table row per phase that matches the code, every
       command named in docs exists in `cndt commands`, no code change.
 
-- [ ] **G8 Spline end tangent** (decision 0034 "Not in this record", follow-up B8b). A solver constraint that makes a
+- [~] **G8 Spline end tangent** (PR pending; format 32; format change, so not self-merged; the UI has no button for it yet: use `sketch.constrain`) (decision 0034 "Not in this record", follow-up B8b). A solver constraint that makes a
       spline's end tangent to a line or arc at a shared end point. Done: solver tests (converges, refuses a
       conflicting or over-constrained set with a message), command `sketch.add_constraint` accepts it, file
       version +1 only if the constraint list needs a new kind (decision amended first), `cargo xtask ci` exits 0.
